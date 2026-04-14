@@ -64,6 +64,34 @@ interface OpenAIChatResponse {
   }
 }
 
+interface OpenAIResponseItem {
+  type: string
+  role?: string
+  content?: Array<{ type: string; text?: string }>
+  id?: string
+  name?: string
+  call_id?: string
+  arguments?: string
+}
+
+interface OpenAIResponsesFunctionCallOutput {
+  type: 'function_call_output'
+  call_id: string
+  output: string
+}
+
+interface OpenAIResponsesResponse {
+  id: string
+  output?: OpenAIResponseItem[]
+  output_text?: string
+  status?: string
+  usage?: {
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+  }
+}
+
 // --------------------------------------------------------------------------
 // Provider
 // --------------------------------------------------------------------------
@@ -79,7 +107,21 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResponse> {
-    // Convert to OpenAI format
+    if (this.shouldUseResponsesApi(params.model)) {
+      return this.createResponsesMessage(params)
+    }
+
+    return this.createChatCompletionsMessage(params)
+  }
+
+  private shouldUseResponsesApi(model: string): boolean {
+    const normalized = model.toLowerCase()
+    return normalized.includes('gpt-5')
+  }
+
+  private async createChatCompletionsMessage(
+    params: CreateMessageParams,
+  ): Promise<CreateMessageResponse> {
     const messages = this.convertMessages(params.system, params.messages)
     const tools = params.tools ? this.convertTools(params.tools) : undefined
 
@@ -93,7 +135,6 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
-    // Make API call
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -113,9 +154,53 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     const data = (await response.json()) as OpenAIChatResponse
+    return this.convertChatCompletionsResponse(data)
+  }
 
-    // Convert response back to normalized format
-    return this.convertResponse(data)
+  private async createResponsesMessage(
+    params: CreateMessageParams,
+  ): Promise<CreateMessageResponse> {
+    const input = this.convertResponsesInput(params.system, params.messages)
+    const tools = params.tools ? this.convertResponsesTools(params.tools) : undefined
+
+    const body: Record<string, any> = {
+      model: params.model,
+      max_output_tokens: params.maxTokens,
+      input,
+    }
+
+    if (tools && tools.length > 0) {
+      body.tools = tools
+    }
+
+    const response = await fetch(`${this.baseURL}/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      if (this.shouldFallbackToChatCompletions(response.status)) {
+        return this.createChatCompletionsMessage(params)
+      }
+
+      const errBody = await response.text().catch(() => '')
+      const err: any = new Error(
+        `OpenAI API error: ${response.status} ${response.statusText}: ${errBody}`,
+      )
+      err.status = response.status
+      throw err
+    }
+
+    const data = (await response.json()) as OpenAIResponsesResponse
+    return this.convertResponsesResponse(data)
+  }
+
+  private shouldFallbackToChatCompletions(status: number): boolean {
+    return status === 400 || status === 404 || status === 405 || status === 501
   }
 
   // --------------------------------------------------------------------------
@@ -185,7 +270,7 @@ export class OpenAIProvider implements LLMProvider {
 
   private convertAssistantMessage(
     msg: NormalizedMessageParam,
-    result: OpenAIChatMessage[],
+    result: Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput>,
   ): void {
     if (typeof msg.content === 'string') {
       result.push({ role: 'assistant', content: msg.content })
@@ -240,11 +325,66 @@ export class OpenAIProvider implements LLMProvider {
     }))
   }
 
+  private convertResponsesInput(
+    system: string,
+    messages: NormalizedMessageParam[],
+  ): Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput> {
+    const result: Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput> = []
+
+    if (system) {
+      result.push({ role: 'system', content: system })
+    }
+
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        if (typeof msg.content === 'string') {
+          result.push({ role: 'user', content: msg.content })
+          continue
+        }
+
+        const textParts: string[] = []
+
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            textParts.push(block.text)
+          } else if (block.type === 'tool_result') {
+            result.push({
+              type: 'function_call_output',
+              call_id: block.tool_use_id,
+              output: typeof block.content === 'string'
+                ? block.content
+                : JSON.stringify(block.content),
+            })
+          }
+        }
+
+        if (textParts.length > 0) {
+          result.push({ role: 'user', content: textParts.join('\n') })
+        }
+
+        continue
+      }
+
+      this.convertAssistantMessage(msg, result)
+    }
+
+    return result
+  }
+
+  private convertResponsesTools(tools: NormalizedTool[]): Record<string, any>[] {
+    return tools.map((t) => ({
+      type: 'function',
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    }))
+  }
+
   // --------------------------------------------------------------------------
   // Response Conversion: OpenAI → Internal
   // --------------------------------------------------------------------------
 
-  private convertResponse(data: OpenAIChatResponse): CreateMessageResponse {
+  private convertChatCompletionsResponse(data: OpenAIChatResponse): CreateMessageResponse {
     const choice = data.choices[0]
     if (!choice) {
       return {
@@ -294,6 +434,55 @@ export class OpenAIProvider implements LLMProvider {
       usage: {
         input_tokens: data.usage?.prompt_tokens || 0,
         output_tokens: data.usage?.completion_tokens || 0,
+      },
+    }
+  }
+
+  private convertResponsesResponse(
+    data: OpenAIResponsesResponse,
+  ): CreateMessageResponse {
+    const content: NormalizedResponseBlock[] = []
+
+    for (const item of data.output || []) {
+      if (item.type === 'message') {
+        for (const block of item.content || []) {
+          if (block.type === 'output_text' && block.text) {
+            content.push({ type: 'text', text: block.text })
+          }
+        }
+      }
+
+      if (item.type === 'function_call' && item.call_id && item.name) {
+        let input: any = item.arguments || '{}'
+        try {
+          input = JSON.parse(item.arguments || '{}')
+        } catch {
+          input = item.arguments || '{}'
+        }
+
+        content.push({
+          type: 'tool_use',
+          id: item.call_id,
+          name: item.name,
+          input,
+        })
+      }
+    }
+
+    if (content.length === 0 && data.output_text) {
+      content.push({ type: 'text', text: data.output_text })
+    }
+
+    if (content.length === 0) {
+      content.push({ type: 'text', text: '' })
+    }
+
+    return {
+      content,
+      stopReason: content.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
+      usage: {
+        input_tokens: data.usage?.input_tokens || 0,
+        output_tokens: data.usage?.output_tokens || 0,
       },
     }
   }
