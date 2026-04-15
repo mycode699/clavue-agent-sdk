@@ -200,6 +200,76 @@ const result = await agent.prompt('Use the "explain" skill to explain git rebase
 console.log(result.text);
 ```
 
+### Retro / eval core
+
+Run a deterministic engine-level evaluation loop and get structured findings, scores, and upgrade workstreams. `createDefaultRetroEvaluators()` currently returns a baseline no-op scaffold for the four core dimensions, so it is useful for wiring and policy testing but will not produce target-aware findings by itself:
+
+```typescript
+import {
+  createDefaultRetroEvaluators,
+  runRetroEvaluation,
+} from "@codeany/open-agent-sdk";
+
+const evaluators = createDefaultRetroEvaluators();
+
+const result = await runRetroEvaluation({
+  target: { name: "my-project", cwd: process.cwd() },
+  evaluators,
+});
+
+console.log(result.scores.overall.score); // 100 with the default scaffold
+console.log(result.proposed_workstreams); // [] until you supply real evaluators
+```
+
+Persist a run for later comparison:
+
+```typescript
+import {
+  compareRetroRuns,
+  loadRetroRun,
+  saveRetroRun,
+} from "@codeany/open-agent-sdk";
+
+await saveRetroRun("run-2026-04-14", result);
+const previous = await loadRetroRun("run-2026-04-13");
+
+if (previous) {
+  const drift = compareRetroRuns(previous, result);
+  console.log(drift.scoreDeltas.overall.delta);
+  console.log(drift.newFindings);
+}
+```
+
+Decide the next machine action from retro state:
+
+```typescript
+import {
+  compareRetroRuns,
+  decideRetroAction,
+  loadRetroRun,
+  runRetroEvaluation,
+  saveRetroRun,
+} from "@codeany/open-agent-sdk";
+
+const current = await runRetroEvaluation({
+  target: { name: "my-project", cwd: process.cwd() },
+  evaluators,
+});
+
+const previous = await loadRetroRun("run-previous");
+const comparison = previous ? compareRetroRuns(previous, current) : undefined;
+const action = decideRetroAction({
+  run: current,
+  previousRun: previous ?? undefined,
+  comparison,
+  attemptCount: 0,
+  policy: { maxAttempts: 3 },
+});
+
+await saveRetroRun("run-current", current);
+console.log(action.kind);
+```
+
 ### Hooks (lifecycle events)
 
 ```typescript
@@ -306,6 +376,15 @@ npx tsx examples/web/server.ts
 | `getAllBaseTools()`                   | Get all 35+ built-in tools                                     |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
+| `runRetroEvaluation(input)`           | Run deterministic retro/eval orchestration and return typed results |
+| `createDefaultRetroEvaluators()`      | Create baseline no-op scaffold evaluators for the core dimensions |
+| `compareRetroRuns(previous, current)` | Compare two retro runs for score deltas and finding drift      |
+| `decideRetroAction(input)`            | Decide the next machine action from current retro state        |
+| `saveRetroRun(runId, result, opts)`   | Persist a retro run result to the run ledger                   |
+| `loadRetroRun(runId, opts)`           | Load a persisted retro run result from the run ledger          |
+| `normalizeFindings(findings)`         | Normalize retro findings into a stable schema                  |
+| `scoreFindings(findings)`             | Compute per-dimension and overall retro scores                 |
+| `planUpgrades(findings)`              | Turn retro findings into prioritized workstreams               |
 | `createProvider(apiType, opts)`        | Create an LLM provider directly                                |
 | `createHookRegistry(config)`          | Create a hook registry for lifecycle events                    |
 | `listSessions()`                      | List persisted sessions                                        |

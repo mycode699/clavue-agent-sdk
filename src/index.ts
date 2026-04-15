@@ -50,6 +50,46 @@ export type { McpSdkServerConfig } from './sdk-mcp-server.js'
 // --------------------------------------------------------------------------
 
 export { QueryEngine } from './engine.js'
+export {
+  runRetroEvaluation,
+  normalizeFindings,
+  scoreFindings,
+  planUpgrades,
+  createDefaultRetroEvaluators,
+  compareRetroRuns,
+  decideRetroAction,
+  loadRetroRun,
+  saveRetroRun,
+  RETRO_DIMENSIONS,
+} from './retro/index.js'
+export type {
+  RetroActionKind,
+  RetroActionPlan,
+  RetroConfidence,
+  RetroDimension,
+  RetroDisposition,
+  RetroEvidence,
+  RetroEvaluator,
+  RetroEvaluatorResult,
+  RetroFinding,
+  RetroLedgerOptions,
+  RetroNormalizedFinding,
+  RetroPolicy,
+  RetroPolicyInput,
+  RetroRecommendation,
+  RetroRunComparison,
+  RetroRunComparisonSummary,
+  RetroScoreDelta,
+  RetroRunInput,
+  RetroRunMetadata,
+  RetroRunResult,
+  RetroScore,
+  RetroScores,
+  RetroSeverity,
+  RetroTarget,
+  RetroWorkstream,
+  RetroWorkstreamBucket,
+} from './retro/index.js'
 
 // --------------------------------------------------------------------------
 // LLM Providers (Anthropic + OpenAI)
