@@ -64,8 +64,8 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   )
   assert.ok(paths.has('dist/index.js'), 'expected dist/index.js to be published')
   assert.ok(paths.has('dist/index.d.ts'), 'expected dist/index.d.ts to be published')
-  assert.equal(packageJson.bin?.['clavue-agent-sdk'], './dist/cli.js')
-  assert.equal(packageJson.bin?.['clavue-agent'], './dist/cli.js')
+  assert.equal(packageJson.bin?.['clavue-agent-sdk'], 'dist/cli.js')
+  assert.equal(packageJson.bin?.['clavue-agent'], 'dist/cli.js')
   assert.ok(paths.has('dist/cli.js'), 'expected CLI entrypoint to be published')
   assert.ok(
     [...paths].every((path) => !path.startsWith('.tmp-retro-ledger/')),
