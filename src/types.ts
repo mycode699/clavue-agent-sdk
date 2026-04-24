@@ -197,6 +197,8 @@ export interface ToolContext {
   model?: string
   /** Parent agent's API type */
   apiType?: import('./providers/types.js').ApiType
+  /** Query engine policy inherited by nested agents */
+  policy?: ToolPolicy
 }
 
 export interface ToolResult {
@@ -231,6 +233,18 @@ export type CanUseToolFn = (
   tool: ToolDefinition,
   input: unknown,
 ) => Promise<CanUseToolResult>
+
+export interface ToolPolicy {
+  canUseTool: CanUseToolFn
+  permissionMode: PermissionMode
+}
+
+export function createDefaultToolPolicy(permissionMode: PermissionMode = 'trustedAutomation'): ToolPolicy {
+  return {
+    canUseTool: async () => ({ behavior: 'allow' }),
+    permissionMode,
+  }
+}
 
 // --------------------------------------------------------------------------
 // MCP Types
@@ -389,7 +403,7 @@ export interface AgentOptions {
   outputFormat?: OutputFormat
   /** Permission handler callback */
   canUseTool?: CanUseToolFn
-  /** Permission mode controlling tool approval behavior. Defaults to trustedAutomation, which allows tools unless canUseTool denies them. */
+  /** Permission mode reported in metadata and prompts. Defaults to trustedAutomation. Tool policy is enforced by canUseTool, allowedTools, and disallowedTools. */
   permissionMode?: PermissionMode
   /** Abort controller for cancellation */
   abortController?: AbortController
@@ -530,8 +544,7 @@ export interface QueryEngineConfig {
   maxTokens: number
   thinking?: ThinkingConfig
   jsonSchema?: Record<string, unknown>
-  canUseTool: CanUseToolFn
-  permissionMode: PermissionMode
+  policy: ToolPolicy
   includePartialMessages: boolean
   abortSignal?: AbortSignal
   agents?: Record<string, AgentDefinition>

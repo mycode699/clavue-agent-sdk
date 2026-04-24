@@ -4,15 +4,40 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-Clavue Agent SDK runs the full agent loop **in-process** — no subprocess and no local CLI dependency. It supports both **Anthropic** and **OpenAI-compatible** APIs, so you can embed the same agent runtime in cloud services, serverless jobs, Docker containers, and CI/CD workflows.
+Clavue Agent SDK runs the full agent loop **in-process** for library integrations — no subprocess and no local CLI dependency. An optional `npx` CLI is also available for terminal and CI automation. It supports both **Anthropic** and **OpenAI-compatible** APIs, so you can embed the same agent runtime in cloud services, serverless jobs, Docker containers, and CI/CD workflows.
 
-Clavue Agent SDK 在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时支持 **Anthropic** 与 **OpenAI-compatible** API，适合直接嵌入云服务、Serverless、Docker 与 CI/CD。
+Clavue Agent SDK 作为库集成时会在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时也提供可选的 `npx` CLI，方便终端和 CI 自动化使用。它支持 **Anthropic** 与 **OpenAI-compatible** API，适合直接嵌入云服务、Serverless、Docker 与 CI/CD。
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
 
 ## Quick start / 快速开始
 
-### 1. Install / 安装
+### Use directly with npx / 直接用 npx 运行
+
+No local install is required for quick automation from a terminal or CI job.
+
+终端或 CI 里可以直接用 `npx` 运行，不需要先安装到项目里。
+
+```bash
+export CLAVUE_AGENT_API_KEY=your-api-key
+npx clavue-agent-sdk "Read package.json and summarize this project"
+
+# Safer read-only review / 更安全的只读审查
+npx clavue-agent-sdk "Review src for obvious bugs" --allow Read,Glob,Grep
+
+# OpenAI-compatible model / OpenAI 兼容模型
+npx clavue-agent-sdk \
+  --api-type openai-completions \
+  --model gpt-5.4 \
+  --base-url https://api.openai.com/v1 \
+  "Explain the repository structure"
+```
+
+CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--deny`, `--json`.
+
+命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--deny`、`--json`。
+
+### 1. Install as a library / 作为库安装
 
 ```bash
 npm install clavue-agent-sdk
@@ -47,7 +72,40 @@ export CLAVUE_AGENT_API_KEY=sk-or-...
 export CLAVUE_AGENT_MODEL=anthropic/claude-sonnet-4
 ```
 
-### 3. First request / 第一个请求
+### 3. Easiest integration for another program / 其他程序最简单集成方式
+
+If another Node.js service just needs one clear call, use `run()`. It creates an agent, executes the prompt, closes the agent, and returns a complete typed artifact.
+
+如果其他 Node.js 服务只想用最简单的一次调用，使用 `run()`。它会创建 agent、执行 prompt、关闭 agent，并返回完整的类型化结果。
+
+```typescript
+import { run } from "clavue-agent-sdk";
+
+const result = await run({
+  prompt: "Read package.json and return the name and version as JSON.",
+  options: {
+    cwd: process.cwd(),
+    allowedTools: ["Read"],
+    maxTurns: 3,
+  },
+});
+
+if (result.status !== "completed") {
+  throw new Error(result.errors?.join("\n") || result.subtype);
+}
+
+console.log(result.text);
+```
+
+`run()` returns `AgentRunResult`: `status`, `subtype`, final `text`, `events`, `messages`, `usage`, `num_turns`, `duration_ms`, `duration_api_ms`, `total_cost_usd`, timestamps, and optional `errors`.
+
+`run()` 返回 `AgentRunResult`：包含 `status`、`subtype`、最终 `text`、`events`、`messages`、`usage`、`num_turns`、耗时、费用、时间戳和可选 `errors`。
+
+### 4. Streaming events / 流式事件
+
+Use `query()` when your program wants live events: assistant text, tool calls, tool results, and the final result.
+
+当你的程序需要实时事件流时使用 `query()`：包括 assistant 文本、工具调用、工具结果和最终结果。
 
 ```typescript
 import { query } from "clavue-agent-sdk";
@@ -63,24 +121,36 @@ for await (const message of query({
       if ("text" in block) console.log(block.text);
     }
   }
+
+  if (message.type === "result") {
+    console.log(`Done in ${message.num_turns} turns`);
+  }
 }
 ```
 
-### 4. Reusable agent / 可复用 Agent
+### 5. Reusable agent / 可复用 Agent
+
+Use `createAgent()` when your application needs multi-turn state, session persistence, MCP connections, hooks, or repeated calls.
+
+当你的应用需要多轮上下文、会话持久化、MCP 连接、hooks 或重复调用时，使用 `createAgent()`。
 
 ```typescript
 import { createAgent } from "clavue-agent-sdk";
 
 const agent = createAgent({ model: "claude-sonnet-4-6" });
-const result = await agent.prompt("What files are in this project?");
+try {
+  const result = await agent.prompt("What files are in this project?");
 
-console.log(result.text);
-console.log(
-  `Turns: ${result.num_turns}, Tokens: ${result.usage.input_tokens + result.usage.output_tokens}`,
-);
+  console.log(result.text);
+  console.log(
+    `Turns: ${result.num_turns}, Tokens: ${result.usage.input_tokens + result.usage.output_tokens}`,
+  );
+} finally {
+  await agent.close();
+}
 ```
 
-### 5. OpenAI / GPT models
+### 6. OpenAI / GPT models
 
 ```typescript
 import { createAgent } from "clavue-agent-sdk";
@@ -100,7 +170,7 @@ The `apiType` is auto-detected from model name — models containing `gpt-`, `o1
 
 `apiType` 也可以根据模型名自动推断：包含 `gpt-`、`o1`、`o3`、`deepseek`、`qwen`、`mistral` 等关键字时，会自动选择 `openai-completions`。
 
-### 6. Web demo / Web 演示
+### 7. Web demo / Web 演示
 
 ```bash
 npm run web
@@ -453,10 +523,29 @@ npx tsx examples/web/server.ts
 
 ## API reference
 
+### Which API should I use? / 应该使用哪个 API？
+
+| Need / 需求 | Use / 使用 |
+| ----------- | ---------- |
+| Terminal or CI one-off task / 终端或 CI 一次性任务 | `npx clavue-agent-sdk "prompt"` |
+| Simplest Node.js integration / 最简单 Node.js 集成 | `run({ prompt, options })` |
+| Streaming UI or progress logs / 流式 UI 或进度日志 | `query({ prompt, options })` |
+| Multi-turn service, sessions, MCP, hooks / 多轮服务、会话、MCP、hooks | `createAgent(options)` |
+
+### Program logic / 程序逻辑
+
+1. Your app calls `run()`, `query()`, or a reusable `agent.prompt()` / `agent.query()`.
+2. The SDK builds the system context from options, repo context files, git status, tools, MCP servers, skills, hooks, and permission policy.
+3. The provider layer sends normalized messages and tool schemas to Anthropic Messages or an OpenAI-compatible chat endpoint.
+4. When the model requests a tool, the engine applies allow/deny filters, `canUseTool`, permission mode, and hooks, then executes the tool.
+5. Tool results are appended to the conversation and the engine repeats until the provider returns a final answer or the run reaches limits.
+6. The SDK returns either streaming `SDKMessage` events or a structured `AgentRunResult` artifact, and reusable agents can persist sessions under `~/.clavue-agent-sdk`.
+
 ### Top-level functions
 
 | Function                              | Description                                                    |
 | ------------------------------------- | -------------------------------------------------------------- |
+| `run({ prompt, options })`            | One-shot blocking run, returns `Promise<AgentRunResult>`       |
 | `query({ prompt, options })`          | One-shot streaming query, returns `AsyncGenerator<SDKMessage>` |
 | `createAgent(options)`                | Create a reusable agent with session persistence               |
 | `tool(name, desc, schema, handler)`   | Create a tool with Zod schema validation                       |
@@ -656,6 +745,58 @@ Start the web UI:
 
 ```bash
 npx tsx examples/web/server.ts
+```
+
+## GitHub, npm, and deployment / GitHub、npm 与部署
+
+### Repository checklist / 仓库检查
+
+- Keep `README.md`, `package.json`, and examples aligned when changing public APIs.
+- Run `npm run build` and `npm test` before publishing or cutting a release.
+- Use `npm pack --dry-run --json` to inspect the exact package payload.
+- The package publishes only `dist/`; `prepack` runs `npm run build` so TypeScript output is generated before packing.
+
+### Publish to npm / 发布到 npm
+
+```bash
+npm run build
+npm test
+npm pack --dry-run --json
+npm publish --access public
+```
+
+The published package exposes two binaries:
+
+```bash
+npx clavue-agent-sdk "Summarize this repo"
+npx clavue-agent "Summarize this repo"
+```
+
+### Deploy inside another service / 在其他服务中部署
+
+For a server, worker, CI job, Docker image, or serverless function, install `clavue-agent-sdk`, provide `CLAVUE_AGENT_API_KEY`, restrict tools with `allowedTools` when the agent only needs read-only access, and call `run()` for single-shot jobs or `createAgent()` for long-lived sessions.
+
+对于服务端、worker、CI、Docker 或 Serverless：安装 `clavue-agent-sdk`，提供 `CLAVUE_AGENT_API_KEY`；如果 agent 只需要只读能力，用 `allowedTools` 限制工具；一次性任务用 `run()`，长会话用 `createAgent()`。
+
+```typescript
+import { run } from "clavue-agent-sdk";
+
+export async function handleRepositorySummary(repoPath: string) {
+  const result = await run({
+    prompt: "Summarize this repository for onboarding.",
+    options: {
+      cwd: repoPath,
+      allowedTools: ["Read", "Glob", "Grep"],
+      maxTurns: 5,
+    },
+  });
+
+  return {
+    ok: result.status === "completed",
+    text: result.text,
+    usage: result.usage,
+  };
+}
 ```
 
 ## Star History

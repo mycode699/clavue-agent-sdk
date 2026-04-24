@@ -6,6 +6,7 @@
  */
 
 import type { ToolDefinition, ToolResult } from '../types.js'
+import { parseCommaSeparatedList } from '../utils/parsing.js'
 
 // Registry of deferred tools (set by the agent)
 let deferredTools: ToolDefinition[] = []
@@ -53,7 +54,7 @@ export const ToolSearchTool: ToolDefinition = {
 
     if (query.startsWith('select:')) {
       // Exact name selection
-      const names = query.slice(7).split(',').map((n: string) => n.trim())
+      const names = parseCommaSeparatedList(query.slice(7))
       matches = deferredTools.filter(t => names.includes(t.name))
     } else {
       // Keyword search

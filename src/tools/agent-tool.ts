@@ -6,6 +6,7 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult, AgentDefinition } from '../types.js'
+import { createDefaultToolPolicy } from '../types.js'
 import { QueryEngine } from '../engine.js'
 import { getAllBaseTools, filterTools } from './index.js'
 import { createProvider, type ApiType } from '../providers/index.js'
@@ -97,10 +98,6 @@ export const AgentTool: ToolDefinition = {
     // Remove AgentTool from subagent to prevent infinite recursion
     tools = tools.filter(t => t.name !== 'Agent')
 
-    // Build system prompt
-    const systemPrompt = agentDef?.prompt ||
-      'You are a helpful assistant. Complete the given task using the available tools.'
-
     // Inherit provider and model from parent agent context, fall back to env vars
     const subModel = input.model || context.model || process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6'
     const provider = context.provider ?? createProvider(
@@ -111,35 +108,38 @@ export const AgentTool: ToolDefinition = {
       },
     )
 
+    const policy = context.policy ?? createDefaultToolPolicy()
     // Create subagent engine
     const engine = new QueryEngine({
       cwd: context.cwd,
       model: subModel,
       provider,
       tools,
-      systemPrompt,
+      appendSystemPrompt: agentDef?.prompt,
       maxTurns: agentDef?.maxTurns || 10,
       maxTokens: 16384,
-      canUseTool: async () => ({ behavior: 'allow' }),
-      permissionMode: 'trustedAutomation',
+      policy,
       includePartialMessages: false,
     })
 
     // Run the subagent
-    let resultText = ''
-    let toolCalls: string[] = []
+    let finalResult = ''
+    let lastAssistantText = ''
+    const toolCalls: string[] = []
 
     try {
       for await (const event of engine.submitMessage(input.prompt)) {
         if (event.type === 'assistant') {
           for (const block of event.message.content) {
-            if ('text' in block && block.text) {
-              resultText = block.text
+            if ('text' in block && block.text.trim()) {
+              lastAssistantText = block.text
             }
-            if ('name' in block) {
-              toolCalls.push(block.name as string)
+            if ('name' in block && typeof block.name === 'string') {
+              toolCalls.push(block.name)
             }
           }
+        } else if (event.type === 'result' && event.result?.trim()) {
+          finalResult = event.result
         }
       }
     } catch (err: any) {
@@ -151,9 +151,11 @@ export const AgentTool: ToolDefinition = {
       }
     }
 
-    const output = resultText || '(Subagent completed with no text output)'
-    const toolSummary = toolCalls.length > 0
-      ? `\n[Tools used: ${toolCalls.join(', ')}]`
+    const output = finalResult || lastAssistantText || '(Subagent completed with no text output)'
+    const uniqueToolCalls = [...new Set(toolCalls)]
+    const displayedTools = uniqueToolCalls.slice(0, 10)
+    const toolSummary = displayedTools.length > 0
+      ? `\n[Tools used: ${displayedTools.join(', ')}${uniqueToolCalls.length > displayedTools.length ? `, ...${uniqueToolCalls.length - displayedTools.length} more` : ''}]`
       : ''
 
     return {

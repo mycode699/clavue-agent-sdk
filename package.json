@@ -17,6 +17,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "clavue-agent-sdk": "./dist/cli.js",
+    "clavue-agent": "./dist/cli.js"
+  },
   "files": [
     "dist"
   ],

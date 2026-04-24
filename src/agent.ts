@@ -24,7 +24,6 @@ import type {
   QueryResult,
   SDKMessage,
   ToolDefinition,
-  CanUseToolFn,
   Message,
   PermissionMode,
   TokenUsage,
@@ -44,6 +43,7 @@ import { createHookRegistry, type HookRegistry } from './hooks.js'
 import { initBundledSkills } from './skills/index.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
+import { createDefaultToolPolicy } from './types.js'
 
 // --------------------------------------------------------------------------
 // Agent class
@@ -263,11 +263,11 @@ export class Agent {
       systemPrompt = opts.systemPrompt as string | undefined
     }
 
-    // Build canUseTool based on permission mode
-    const permMode = opts.permissionMode ?? 'trustedAutomation'
-    const canUseTool: CanUseToolFn = opts.canUseTool ?? (async () => {
-      return { behavior: 'allow' }
-    })
+    // Resolve permission metadata and tool policy
+    const policy = createDefaultToolPolicy(opts.permissionMode)
+    if (opts.canUseTool) {
+      policy.canUseTool = opts.canUseTool
+    }
 
     // Resolve tools with overrides
     let tools = this.toolPool
@@ -306,8 +306,7 @@ export class Agent {
       maxTokens: opts.maxTokens ?? 16384,
       thinking: opts.thinking,
       jsonSchema: opts.jsonSchema,
-      canUseTool,
-      permissionMode: permMode,
+      policy,
       includePartialMessages: opts.includePartialMessages ?? false,
       abortSignal: this.abortCtrl.signal,
       agents: opts.agents,

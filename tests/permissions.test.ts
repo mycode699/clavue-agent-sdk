@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Agent } from '../src/index.ts'
+import { Agent, AgentTool, clearAgents } from '../src/index.ts'
 import type { CreateMessageParams, CreateMessageResponse, LLMProvider, SDKMessage, ToolDefinition } from '../src/index.ts'
 
 class StubProvider implements LLMProvider {
@@ -23,9 +23,9 @@ function textResponse(text: string): CreateMessageResponse {
   }
 }
 
-function toolUseResponse(input: unknown): CreateMessageResponse {
+function toolUseResponse(input: unknown, name = 'capture'): CreateMessageResponse {
   return {
-    content: [{ type: 'tool_use', id: 'tool-1', name: 'capture', input }],
+    content: [{ type: 'tool_use', id: 'tool-1', name, input }],
     stopReason: 'tool_use',
     usage: { input_tokens: 1, output_tokens: 1 },
   }
@@ -149,6 +149,58 @@ test('canUseTool updatedInput reaches the tool call', async () => {
     await collectEvents(agent)
     assert.deepEqual(receivedInput, { value: 'updated' })
   } finally {
+    await agent.close()
+  }
+})
+
+test('subagents inherit parent permission policy and mode', async () => {
+  clearAgents()
+  const provider = new StubProvider([
+    toolUseResponse({ prompt: 'try grep', description: 'check grep', subagent_type: 'permission-check' }, 'Agent'),
+    toolUseResponse({ pattern: 'x', path: '.' }, 'Grep'),
+    textResponse('subagent saw denial'),
+    textResponse('parent done'),
+  ])
+  let deniedSubagentTool = false
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [AgentTool],
+    agents: {
+      'permission-check': {
+        description: 'Checks inherited permissions',
+        prompt: 'Use the Grep tool.',
+        tools: ['Grep'],
+      },
+    },
+    permissionMode: 'acceptEdits',
+    canUseTool: async (tool) => {
+      if (tool.name === 'Grep') {
+        deniedSubagentTool = true
+        return { behavior: 'deny', message: 'subagent blocked' }
+      }
+      return { behavior: 'allow' }
+    },
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent)
+    const initEvents = events.filter((event) => event.type === 'system' && event.subtype === 'init')
+    const agentResult = events.find((event) => event.type === 'tool_result' && event.result.tool_name === 'Agent')
+    const subagentCall = provider.calls.find((call) => call.tools?.some((tool) => tool.name === 'Grep'))
+    const subagentFollowupCall = provider.calls.find((call) => Array.isArray(call.messages.at(-1)?.content))
+
+    assert.equal(initEvents.length, 1)
+    assert.equal(initEvents[0]?.permission_mode, 'acceptEdits')
+    assert.ok(subagentCall)
+    assert.equal(subagentCall.tools?.some((tool) => tool.name === 'Grep'), true)
+    assert.equal(deniedSubagentTool, true)
+    assert.deepEqual(subagentFollowupCall?.messages.at(-1)?.content, [
+      { type: 'tool_result', tool_use_id: 'tool-1', content: 'subagent blocked', is_error: true },
+    ])
+    assert.match(agentResult?.result.output ?? '', /subagent saw denial/)
+  } finally {
+    clearAgents()
     await agent.close()
   }
 })

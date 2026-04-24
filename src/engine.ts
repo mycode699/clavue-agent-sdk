@@ -132,12 +132,20 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
       : base
   }
 
-  const parts: string[] = []
+  const parts: string[] = [
+    config.policy.permissionMode === 'trustedAutomation'
+      ? 'You are running in trusted automation mode inside the host application.'
+      : `You are running with permission mode ${config.policy.permissionMode} inside the host application.`,
+    'Use the available tools to complete the user\'s task. Inspect the project, make focused changes, and verify concrete results before claiming completion.',
+  ]
+
+  if (config.policy.permissionMode === 'trustedAutomation') {
+    parts.push('Prefer direct execution over asking for confirmation. Ask the user only when requirements are genuinely ambiguous or an action is destructive, hard to reverse, or affects shared external state.')
+  } else {
+    parts.push('Tool access is governed by the host application\'s available tool set, canUseTool policy, and hooks.')
+  }
 
   parts.push(
-    'You are running in trusted automation mode inside the host application.',
-    'Use the available tools autonomously to complete the user\'s task. Inspect the project, make focused changes, and verify concrete results before claiming completion.',
-    'Prefer direct execution over asking for confirmation. Ask the user only when requirements are genuinely ambiguous or an action is destructive, hard to reverse, or affects shared external state.',
     'Keep changes surgical and goal-driven: understand the existing code first, reuse existing patterns, avoid speculative abstractions, and do not expand scope beyond the request.',
   )
 
@@ -285,7 +293,7 @@ export class QueryEngine {
       model: this.config.model,
       cwd: this.config.cwd,
       mcp_servers: [],
-      permission_mode: this.config.permissionMode,
+      permission_mode: this.config.policy.permissionMode,
     } as SDKMessage
 
     // Agentic loop
@@ -519,6 +527,7 @@ export class QueryEngine {
       provider: this.provider,
       model: this.config.model,
       apiType: this.provider.apiType,
+      policy: this.config.policy,
     }
 
     const MAX_CONCURRENCY = parseInt(
@@ -526,11 +535,12 @@ export class QueryEngine {
     )
 
     // Partition into read-only (concurrent) and mutation (serial)
+    const toolsByName = new Map(this.config.tools.map((tool) => [tool.name, tool]))
     const readOnly: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
     const mutations: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
 
     for (const block of toolUseBlocks) {
-      const tool = this.config.tools.find((t) => t.name === block.name)
+      const tool = toolsByName.get(block.name)
       if (tool?.isReadOnly?.()) {
         readOnly.push({ block, tool })
       } else {
@@ -590,29 +600,27 @@ export class QueryEngine {
     }
 
     // Check permissions
-    if (this.config.canUseTool) {
-      try {
-        const permission = await this.config.canUseTool(tool, block.input)
-        if (permission.behavior === 'deny') {
-          return {
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: permission.message || `Permission denied for tool "${block.name}"`,
-            is_error: true,
-            tool_name: block.name,
-          }
-        }
-        if (permission.updatedInput !== undefined) {
-          block = { ...block, input: permission.updatedInput }
-        }
-      } catch (err: any) {
+    try {
+      const permission = await this.config.policy.canUseTool(tool, block.input)
+      if (permission.behavior === 'deny') {
         return {
           type: 'tool_result',
           tool_use_id: block.id,
-          content: `Permission check error: ${err.message}`,
+          content: permission.message || `Permission denied for tool "${block.name}"`,
           is_error: true,
           tool_name: block.name,
         }
+      }
+      if (permission.updatedInput !== undefined) {
+        block = { ...block, input: permission.updatedInput }
+      }
+    } catch (err: any) {
+      return {
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content: `Permission check error: ${err.message}`,
+        is_error: true,
+        tool_name: block.name,
       }
     }
 
