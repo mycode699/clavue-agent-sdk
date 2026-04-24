@@ -56,7 +56,6 @@ for await (const message of query({
   prompt: "Read package.json and tell me the project name.",
   options: {
     allowedTools: ["Read", "Glob"],
-    permissionMode: "bypassPermissions",
   },
 })) {
   if (message.type === "assistant") {
@@ -432,12 +431,11 @@ for await (const msg of query({
 ```typescript
 import { query } from "clavue-agent-sdk";
 
-// Read-only agent — can only analyze, not modify
+// Trusted automation is the default; restrict tools for a read-only agent.
 for await (const msg of query({
   prompt: "Review the code in src/ for best practices.",
   options: {
     allowedTools: ["Read", "Glob", "Grep"],
-    permissionMode: "dontAsk",
   },
 })) {
   // ...
@@ -513,8 +511,8 @@ npx tsx examples/web/server.ts
 | `tools`              | `ToolDefinition[]`                      | All built-in           | Available tools                                                      |
 | `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
 | `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
-| `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
-| `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
+| `permissionMode`     | `string`                                | `trustedAutomation`    | `trustedAutomation` / `auto` / `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
+| `canUseTool`         | `function`                              | allow all              | Custom tool guard or input modifier                                  |
 | `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |

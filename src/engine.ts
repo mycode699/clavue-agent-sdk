@@ -135,8 +135,10 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
   const parts: string[] = []
 
   parts.push(
-    'You are an AI assistant with access to tools. Use the tools provided to help the user accomplish their tasks.',
-    'You should use tools when they would help you complete the task more accurately or efficiently.',
+    'You are running in trusted automation mode inside the host application.',
+    'Use the available tools autonomously to complete the user\'s task. Inspect the project, make focused changes, and verify concrete results before claiming completion.',
+    'Prefer direct execution over asking for confirmation. Ask the user only when requirements are genuinely ambiguous or an action is destructive, hard to reverse, or affects shared external state.',
+    'Keep changes surgical and goal-driven: understand the existing code first, reuse existing patterns, avoid speculative abstractions, and do not expand scope beyond the request.',
   )
 
   // List available tools with descriptions
@@ -283,7 +285,7 @@ export class QueryEngine {
       model: this.config.model,
       cwd: this.config.cwd,
       mcp_servers: [],
-      permission_mode: 'bypassPermissions',
+      permission_mode: this.config.permissionMode,
     } as SDKMessage
 
     // Agentic loop

@@ -264,14 +264,8 @@ export class Agent {
     }
 
     // Build canUseTool based on permission mode
-    const permMode = opts.permissionMode ?? 'bypassPermissions'
-    const canUseTool: CanUseToolFn = opts.canUseTool ?? (async (_tool, _input) => {
-      if (permMode === 'bypassPermissions' || permMode === 'dontAsk' || permMode === 'auto') {
-        return { behavior: 'allow' }
-      }
-      if (permMode === 'acceptEdits') {
-        return { behavior: 'allow' }
-      }
+    const permMode = opts.permissionMode ?? 'trustedAutomation'
+    const canUseTool: CanUseToolFn = opts.canUseTool ?? (async () => {
       return { behavior: 'allow' }
     })
 
@@ -313,6 +307,7 @@ export class Agent {
       thinking: opts.thinking,
       jsonSchema: opts.jsonSchema,
       canUseTool,
+      permissionMode: permMode,
       includePartialMessages: opts.includePartialMessages ?? false,
       abortSignal: this.abortCtrl.signal,
       agents: opts.agents,

@@ -122,7 +122,7 @@ export interface SDKSystemMessage {
   model: string
   cwd: string
   mcp_servers: Array<{ name: string; status: string }>
-  permission_mode: string
+  permission_mode: PermissionMode
 }
 
 /** Marks a compaction boundary in the conversation. */
@@ -211,6 +211,7 @@ export interface ToolResult {
 // --------------------------------------------------------------------------
 
 export type PermissionMode =
+  | 'trustedAutomation'
   | 'default'
   | 'acceptEdits'
   | 'bypassPermissions'
@@ -388,7 +389,7 @@ export interface AgentOptions {
   outputFormat?: OutputFormat
   /** Permission handler callback */
   canUseTool?: CanUseToolFn
-  /** Permission mode controlling tool approval behavior */
+  /** Permission mode controlling tool approval behavior. Defaults to trustedAutomation, which allows tools unless canUseTool denies them. */
   permissionMode?: PermissionMode
   /** Abort controller for cancellation */
   abortController?: AbortController
@@ -530,6 +531,7 @@ export interface QueryEngineConfig {
   thinking?: ThinkingConfig
   jsonSchema?: Record<string, unknown>
   canUseTool: CanUseToolFn
+  permissionMode: PermissionMode
   includePartialMessages: boolean
   abortSignal?: AbortSignal
   agents?: Record<string, AgentDefinition>

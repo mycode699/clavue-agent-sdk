@@ -121,6 +121,7 @@ export const AgentTool: ToolDefinition = {
       maxTurns: agentDef?.maxTurns || 10,
       maxTokens: 16384,
       canUseTool: async () => ({ behavior: 'allow' }),
+      permissionMode: 'trustedAutomation',
       includePartialMessages: false,
     })
 

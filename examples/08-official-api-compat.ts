@@ -16,7 +16,6 @@ async function main() {
     prompt: 'What files are in this directory? Be brief.',
     options: {
       allowedTools: ['Bash', 'Glob'],
-      permissionMode: 'bypassPermissions',
     },
   })) {
     const msg = message as any

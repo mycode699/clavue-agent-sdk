@@ -79,7 +79,6 @@ async function main() {
     options: {
       mcpServers: { utilities: utilityServer as any },
       allowedTools: ['mcp__utilities__*'],
-      permissionMode: 'bypassPermissions',
     },
   })) {
     const msg = message as any
