@@ -11,9 +11,12 @@ This file provides guidance to Clavue (claude.ai/code) when working with code in
 - `npx tsx --test tests/retro-verify.test.ts` — run retro verification gate tests.
 - `npx tsx --test tests/package-payload.test.ts` — verify published package payload and storage branding.
 - `npx tsx --test tests/openai-provider.test.ts` — run OpenAI-compatible provider tests.
+- `npx tsx --test tests/memory.test.ts` — run structured memory persistence/query tests.
+- `npx tsx --test tests/permissions.test.ts` — run permission-mode and tool-policy tests.
 - `npm run test:all` — execute the numbered example scripts in `examples/` as smoke tests.
 - `npx tsx examples/01-simple-query.ts` — run a single example directly.
 - `npm run web` — start the example web UI server at `examples/web/server.ts`.
+- `npm pack --dry-run --json` — inspect the exact package payload; this triggers `prepack` and therefore `npm run build`.
 
 There is currently no dedicated lint script in `package.json`.
 
@@ -26,14 +29,15 @@ There is currently no dedicated lint script in `package.json`.
 
 ## Architecture overview
 
-- `src/index.ts` is the public SDK surface. It re-exports the high-level agent API, provider layer, built-in tools, skill system, MCP helpers, session helpers, and the retro/eval pipeline.
-- `src/agent.ts` is the orchestration layer behind `createAgent()`, `query()`, and `run()`. It resolves credentials and API type, creates the provider, initializes bundled skills, builds the tool pool, connects MCP servers, registers custom subagents, and resumes persisted sessions before handing work to the engine.
-- `src/engine.ts` contains the core agent loop. It builds the default system prompt from available tools plus repo context, injects git status and project context files, calls the provider, executes tool calls, runs hooks, retries transient failures, and auto-compacts conversation history when context grows too large.
-- `src/utils/context.ts` is where prompt context injection is defined. It discovers `AGENT.md`, `CLAVUE.md`, `.clavue/CLAVUE.md`, `clavue.md`, and `~/.clavue/CLAVUE.md`, and combines them with the current date and git status for the engine’s default prompt.
+- `src/index.ts` is the public SDK surface. It re-exports the high-level agent API, provider layer, built-in tools, skill system, MCP helpers, session helpers, structured memory APIs, context utilities, and the retro/eval pipeline.
+- `src/cli.ts` is the optional package binary used by both `clavue-agent-sdk` and `clavue-agent`. It parses prompt/model/API/tool allow-deny flags, uses `run()` for `--json`, and streams `query()` events otherwise.
+- `src/agent.ts` is the orchestration layer behind `createAgent()`, `query()`, and `run()`. It resolves credentials and API type, creates the provider, initializes bundled skills, builds the tool pool, connects MCP servers, registers custom subagents, resumes persisted sessions, configures hooks, and hands work to the engine.
+- `src/engine.ts` contains the core agent loop. It builds the default system prompt from available tools plus repo context and optional memory injection, calls the provider, executes tool calls, runs hooks, retries transient failures, tracks usage/cost, and auto-compacts conversation history when context grows too large.
+- `src/utils/context.ts` defines prompt context injection. It discovers `AGENT.md`, `CLAVUE.md`, `.clavue/CLAVUE.md`, `clavue.md`, and `~/.clavue/CLAVUE.md`, then combines them with the current date and git status for the engine’s default prompt.
 - `src/providers/` isolates transport details from the engine. `src/providers/index.ts` selects Anthropic vs OpenAI-compatible providers; `src/providers/openai.ts` and `src/providers/anthropic.ts` translate the SDK’s normalized message/tool format into provider-specific requests.
-- `src/tools/index.ts` is the built-in tool registry and filtering layer. The engine works against the shared `ToolDefinition` interface from `src/types.ts`; tool implementations live in `src/tools/*.ts`.
-- `src/tool-helper.ts` and `src/sdk-mcp-server.ts` are the bridge from Zod-based SDK tool definitions to engine tools and in-process MCP servers. External MCP connections are handled separately in `src/mcp/client.ts`.
-- `src/session.ts` handles transcript persistence under `~/.clavue-agent-sdk/sessions`. This is separate from retro/eval persistence.
+- `src/tools/index.ts` is the built-in tool registry and filtering layer. The engine works against the shared `ToolDefinition` interface from `src/types.ts`; individual implementations live in `src/tools/*.ts`.
+- `src/tool-helper.ts` and `src/sdk-mcp-server.ts` bridge Zod-based SDK tool definitions into engine tools and in-process MCP servers. External MCP connections are handled separately in `src/mcp/client.ts`.
+- `src/session.ts` handles transcript persistence under `~/.clavue-agent-sdk/sessions`. `src/memory.ts` and `src/memory-policy.ts` handle structured memory storage/extraction; both are separate from retro/eval persistence.
 - `src/retro/` is a deterministic evaluation pipeline, separate from the live agent loop. The flow is: evaluators produce findings, findings are normalized and scored, workstreams are planned, verification gates are run, policy decides the next action, and `cycle.ts` / `loop.ts` assemble those pieces into repeatable retro runs saved by `ledger.ts`.
 - `src/skills/` is registry-based. Bundled skills are initialized from `src/agent.ts`, exposed through `src/skills/index.ts`, and invoked through the Skill tool.
 
