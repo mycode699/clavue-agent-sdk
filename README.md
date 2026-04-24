@@ -1,50 +1,56 @@
-# Open Agent SDK (TypeScript)
+# Clavue Agent SDK
 
-[![npm version](https://img.shields.io/npm/v/@codeany/open-agent-sdk)](https://www.npmjs.com/package/@codeany/open-agent-sdk)
+[![npm version](https://img.shields.io/npm/v/clavue-agent-sdk)](https://www.npmjs.com/package/clavue-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
+Clavue Agent SDK runs the full agent loop **in-process** — no subprocess and no local CLI dependency. It supports both **Anthropic** and **OpenAI-compatible** APIs, so you can embed the same agent runtime in cloud services, serverless jobs, Docker containers, and CI/CD workflows.
 
-Also available in **Go**: [open-agent-sdk-go](https://github.com/codeany-ai/open-agent-sdk-go)
+Clavue Agent SDK 在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时支持 **Anthropic** 与 **OpenAI-compatible** API，适合直接嵌入云服务、Serverless、Docker 与 CI/CD。
 
-## Get started
+Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
 
-```bash
-npm install @codeany/open-agent-sdk
-```
+## Quick start / 快速开始
 
-Set your API key:
+### 1. Install / 安装
 
 ```bash
-export CODEANY_API_KEY=your-api-key
+npm install clavue-agent-sdk
 ```
 
-### OpenAI-compatible models
+### 2. Configure / 配置
 
-Works with OpenAI, DeepSeek, Qwen, Mistral, or any OpenAI-compatible endpoint:
+Set the environment variables once, then start using the SDK immediately.
+
+先设置环境变量，然后就可以直接开始调用 SDK。
 
 ```bash
-export CODEANY_API_TYPE=openai-completions
-export CODEANY_API_KEY=sk-...
-export CODEANY_BASE_URL=https://api.openai.com/v1
-export CODEANY_MODEL=gpt-4o
+export CLAVUE_AGENT_API_KEY=your-api-key
+# Optional / 可选
+# export CLAVUE_AGENT_MODEL=claude-sonnet-4-6
 ```
 
-### Third-party Anthropic-compatible providers
+#### OpenAI-compatible setup / OpenAI 兼容模型配置
 
 ```bash
-export CODEANY_BASE_URL=https://openrouter.ai/api
-export CODEANY_API_KEY=sk-or-...
-export CODEANY_MODEL=anthropic/claude-sonnet-4
+export CLAVUE_AGENT_API_TYPE=openai-completions
+export CLAVUE_AGENT_API_KEY=sk-...
+export CLAVUE_AGENT_BASE_URL=https://api.openai.com/v1
+export CLAVUE_AGENT_MODEL=gpt-4o
 ```
 
-## Quick start
+#### Anthropic-compatible gateway setup / Anthropic 兼容网关配置
 
-### One-shot query (streaming)
+```bash
+export CLAVUE_AGENT_BASE_URL=https://openrouter.ai/api
+export CLAVUE_AGENT_API_KEY=sk-or-...
+export CLAVUE_AGENT_MODEL=anthropic/claude-sonnet-4
+```
+
+### 3. First request / 第一个请求
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "clavue-agent-sdk";
 
 for await (const message of query({
   prompt: "Read package.json and tell me the project name.",
@@ -61,10 +67,10 @@ for await (const message of query({
 }
 ```
 
-### Simple blocking prompt
+### 4. Reusable agent / 可复用 Agent
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "clavue-agent-sdk";
 
 const agent = createAgent({ model: "claude-sonnet-4-6" });
 const result = await agent.prompt("What files are in this project?");
@@ -75,10 +81,10 @@ console.log(
 );
 ```
 
-### OpenAI / GPT models
+### 5. OpenAI / GPT models
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "clavue-agent-sdk";
 
 const agent = createAgent({
   apiType: "openai-completions",
@@ -93,10 +99,25 @@ console.log(result.text);
 
 The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `deepseek`, `qwen`, `mistral`, etc. automatically use `openai-completions`.
 
+`apiType` 也可以根据模型名自动推断：包含 `gpt-`、`o1`、`o3`、`deepseek`、`qwen`、`mistral` 等关键字时，会自动选择 `openai-completions`。
+
+### 6. Web demo / Web 演示
+
+```bash
+npm run web
+# Open http://localhost:8081
+```
+
+Use this when you want a fast local sandbox for prompt-tool behavior and event streaming.
+
+如果你想快速验证 prompt、tool 调用和事件流，这个本地 Web 演示是最快的入口。
+
+## More examples / 更多示例
+
 ### Multi-turn conversation
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "clavue-agent-sdk";
 
 const agent = createAgent({ maxTurns: 5 });
 
@@ -115,7 +136,7 @@ console.log(`Session messages: ${agent.getMessages().length}`);
 
 ```typescript
 import { z } from "zod";
-import { query, tool, createSdkMcpServer } from "@codeany/open-agent-sdk";
+import { query, tool, createSdkMcpServer } from "clavue-agent-sdk";
 
 const getWeather = tool(
   "get_weather",
@@ -144,7 +165,7 @@ import {
   createAgent,
   getAllBaseTools,
   defineTool,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
 
 const calculator = defineTool({
   name: "Calculator",
@@ -175,7 +196,7 @@ import {
   createAgent,
   registerSkill,
   getAllSkills,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
 
 // Register a custom skill
 registerSkill({
@@ -202,13 +223,13 @@ console.log(result.text);
 
 ### Retro / eval core
 
-Run a deterministic engine-level evaluation loop and get structured findings, scores, and upgrade workstreams. `createDefaultRetroEvaluators()` currently returns a baseline no-op scaffold for the four core dimensions, so it is useful for wiring and policy testing but will not produce target-aware findings by itself:
+Run a deterministic engine-level evaluation loop and get structured findings, scores, and upgrade workstreams. `createDefaultRetroEvaluators()` inspects package/import/build/test/onboarding readiness across the four core dimensions:
 
 ```typescript
 import {
   createDefaultRetroEvaluators,
   runRetroEvaluation,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
 
 const evaluators = createDefaultRetroEvaluators();
 
@@ -217,8 +238,48 @@ const result = await runRetroEvaluation({
   evaluators,
 });
 
-console.log(result.scores.overall.score); // 100 with the default scaffold
-console.log(result.proposed_workstreams); // [] until you supply real evaluators
+console.log(result.scores.overall.score);
+console.log(result.proposed_workstreams);
+```
+
+Run the full retro cycle in one call:
+
+```typescript
+import {
+  createDefaultRetroEvaluators,
+  runRetroCycle,
+} from "clavue-agent-sdk";
+
+const cycle = await runRetroCycle({
+  target: { name: "my-project", cwd: process.cwd() },
+  evaluators: createDefaultRetroEvaluators(),
+  gates: [
+    { name: "build", command: "npm", args: ["run", "build"] },
+    { name: "test", command: "npm", args: ["test"] },
+  ],
+  runId: "run-current",
+  previousRunId: "run-previous",
+  policy: { maxAttempts: 3 },
+});
+
+console.log(cycle.run.summary);
+console.log(cycle.verification?.summary);
+console.log(cycle.action.kind);
+console.log(cycle.decision.disposition); // accepted | rejected | retry
+console.log(cycle.summary.statusLine);
+console.log(cycle.summary.text);
+```
+
+Or use the built-in defaults with just a target:
+
+```typescript
+import { runRetroCycle } from "clavue-agent-sdk";
+
+const cycle = await runRetroCycle({
+  target: { name: "my-project", cwd: process.cwd() },
+});
+
+console.log(cycle.verification?.gates.map((gate) => gate.name)); // ["build", "test"]
 ```
 
 Persist a run for later comparison:
@@ -226,18 +287,41 @@ Persist a run for later comparison:
 ```typescript
 import {
   compareRetroRuns,
+  loadRetroCycle,
   loadRetroRun,
+  saveRetroCycle,
   saveRetroRun,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
 
 await saveRetroRun("run-2026-04-14", result);
+await saveRetroCycle("cycle-2026-04-14", cycle);
 const previous = await loadRetroRun("run-2026-04-13");
+const previousCycle = await loadRetroCycle("cycle-2026-04-13");
 
 if (previous) {
   const drift = compareRetroRuns(previous, result);
   console.log(drift.scoreDeltas.overall.delta);
   console.log(drift.newFindings);
 }
+
+console.log(previousCycle?.decision.disposition);
+```
+
+Run fixed quality gates before or after a retro pass:
+
+```typescript
+import { runRetroVerification } from "clavue-agent-sdk";
+
+const verification = await runRetroVerification({
+  target: { name: "my-project", cwd: process.cwd() },
+  gates: [
+    { name: "build", command: "npm", args: ["run", "build"] },
+    { name: "test", command: "npm", args: ["test"] },
+  ],
+});
+
+console.log(verification.passed);
+console.log(verification.gates);
 ```
 
 Decide the next machine action from retro state:
@@ -248,8 +332,13 @@ import {
   decideRetroAction,
   loadRetroRun,
   runRetroEvaluation,
+  runRetroVerification,
   saveRetroRun,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
+
+const verification = await runRetroVerification({
+  target: { name: "my-project", cwd: process.cwd() },
+});
 
 const current = await runRetroEvaluation({
   target: { name: "my-project", cwd: process.cwd() },
@@ -260,6 +349,7 @@ const previous = await loadRetroRun("run-previous");
 const comparison = previous ? compareRetroRuns(previous, current) : undefined;
 const action = decideRetroAction({
   run: current,
+  verification,
   previousRun: previous ?? undefined,
   comparison,
   attemptCount: 0,
@@ -267,13 +357,14 @@ const action = decideRetroAction({
 });
 
 await saveRetroRun("run-current", current);
+console.log(verification.summary);
 console.log(action.kind);
 ```
 
 ### Hooks (lifecycle events)
 
 ```typescript
-import { createAgent, createHookRegistry } from "@codeany/open-agent-sdk";
+import { createAgent, createHookRegistry } from "clavue-agent-sdk";
 
 const hooks = createHookRegistry({
   PreToolUse: [
@@ -299,7 +390,7 @@ const hooks = createHookRegistry({
 ### MCP server integration
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "clavue-agent-sdk";
 
 const agent = createAgent({
   mcpServers: {
@@ -318,7 +409,7 @@ await agent.close();
 ### Subagents
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "clavue-agent-sdk";
 
 for await (const msg of query({
   prompt: "Use the code-reviewer agent to review src/index.ts",
@@ -339,7 +430,7 @@ for await (const msg of query({
 ### Permissions
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "clavue-agent-sdk";
 
 // Read-only agent — can only analyze, not modify
 for await (const msg of query({
@@ -377,11 +468,15 @@ npx tsx examples/web/server.ts
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
 | `runRetroEvaluation(input)`           | Run deterministic retro/eval orchestration and return typed results |
-| `createDefaultRetroEvaluators()`      | Create baseline no-op scaffold evaluators for the core dimensions |
+| `createDefaultRetroEvaluators()`      | Inspect package/import/build/test/onboarding readiness across the core dimensions |
 | `compareRetroRuns(previous, current)` | Compare two retro runs for score deltas and finding drift      |
 | `decideRetroAction(input)`            | Decide the next machine action from current retro state        |
+| `runRetroVerification(input)`         | Run fixed quality gates and return pass/fail command results   |
+| `runRetroCycle(input)`                | Run evaluation, verification, policy, comparison, and optional persistence in one call |
 | `saveRetroRun(runId, result, opts)`   | Persist a retro run result to the run ledger                   |
 | `loadRetroRun(runId, opts)`           | Load a persisted retro run result from the run ledger          |
+| `saveRetroCycle(cycleId, result, opts)` | Persist a full retro cycle result including decision and summary |
+| `loadRetroCycle(cycleId, opts)`         | Load a persisted retro cycle result from the run ledger        |
 | `normalizeFindings(findings)`         | Normalize retro findings into a stable schema                  |
 | `scoreFindings(findings)`             | Compute per-dimension and overall retro scores                 |
 | `planUpgrades(findings)`              | Turn retro findings into prioritized workstreams               |
@@ -410,7 +505,7 @@ npx tsx examples/web/server.ts
 | -------------------- | --------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
 | `apiType`            | `string`                                | auto-detected          | `'anthropic-messages'` or `'openai-completions'`                     |
 | `model`              | `string`                                | `claude-sonnet-4-6`    | LLM model ID                                                         |
-| `apiKey`             | `string`                                | `CODEANY_API_KEY`      | API key                                                              |
+| `apiKey`             | `string`                                | `CLAVUE_AGENT_API_KEY`      | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
 | `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
@@ -441,11 +536,11 @@ npx tsx examples/web/server.ts
 
 | Variable             | Description                                              |
 | -------------------- | -------------------------------------------------------- |
-| `CODEANY_API_KEY`    | API key (required)                                       |
-| `CODEANY_API_TYPE`   | `anthropic-messages` (default) or `openai-completions`   |
-| `CODEANY_MODEL`      | Default model override                                   |
-| `CODEANY_BASE_URL`   | Custom API endpoint                                      |
-| `CODEANY_AUTH_TOKEN` | Alternative auth token                                   |
+| `CLAVUE_AGENT_API_KEY`    | API key (required)                                       |
+| `CLAVUE_AGENT_API_TYPE`   | `anthropic-messages` (default) or `openai-completions`   |
+| `CLAVUE_AGENT_MODEL`      | Default model override                                   |
+| `CLAVUE_AGENT_BASE_URL`   | Custom API endpoint                                      |
+| `CLAVUE_AGENT_AUTH_TOKEN` | Alternative auth token                                   |
 
 ## Built-in tools
 
@@ -494,7 +589,7 @@ Register custom skills with `registerSkill()`.
 ┌──────────────────────────────────────────────────────┐
 │                   Your Application                    │
 │                                                       │
-│   import { createAgent } from '@codeany/open-agent-sdk' │
+│   import { createAgent } from 'clavue-agent-sdk' │
 └────────────────────────┬─────────────────────────────┘
                          │
               ┌──────────▼──────────┐
@@ -567,11 +662,11 @@ npx tsx examples/web/server.ts
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=codeany-ai%2Fopen-agent-sdk-typescript&type=timeline&legend=top-left">
+<a href="https://www.star-history.com/?repos=mycode699%2Fclavue-agent-sdk&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=codeany-ai/open-agent-sdk-typescript&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=codeany-ai/open-agent-sdk-typescript&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=codeany-ai/open-agent-sdk-typescript&type=timeline&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=mycode699/clavue-agent-sdk&type=timeline&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=mycode699/clavue-agent-sdk&type=timeline&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=mycode699/clavue-agent-sdk&type=timeline&legend=top-left" />
  </picture>
 </a>
 

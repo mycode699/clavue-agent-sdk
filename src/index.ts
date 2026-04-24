@@ -1,7 +1,7 @@
 /**
- * @codeany/open-agent-sdk
+ * clavue-agent-sdk
  *
- * Open-source Agent SDK by CodeAny (https://codeany.ai).
+ * Open-source Agent SDK by mycode699 (https://mycode699.ai).
  * Runs the full agent loop in-process without spawning subprocesses.
  *
  * Features:
@@ -25,7 +25,7 @@
 // High-level Agent API
 // --------------------------------------------------------------------------
 
-export { Agent, createAgent, query } from './agent.js'
+export { Agent, createAgent, query, run } from './agent.js'
 
 // --------------------------------------------------------------------------
 // Tool Helper (Zod-based tool creation, compatible with official SDK)
@@ -58,7 +58,12 @@ export {
   createDefaultRetroEvaluators,
   compareRetroRuns,
   decideRetroAction,
+  runRetroVerification,
+  runRetroCycle,
+  runRetroLoop,
+  loadRetroCycle,
   loadRetroRun,
+  saveRetroCycle,
   saveRetroRun,
   RETRO_DIMENSIONS,
 } from './retro/index.js'
@@ -66,19 +71,38 @@ export type {
   RetroActionKind,
   RetroActionPlan,
   RetroConfidence,
+  RetroCycleDecision,
+  RetroCycleDisposition,
+  RetroCycleInput,
+  RetroCycleSummary,
+  RetroCycleResult,
+  RetroCycleTrace,
   RetroDimension,
   RetroDisposition,
   RetroEvidence,
   RetroEvaluator,
   RetroEvaluatorResult,
+  RetroEvaluatorRunMetadata,
   RetroFinding,
   RetroLedgerOptions,
+  RetroLoopAttemptContext,
+  RetroLoopAttemptHook,
+  RetroLoopAttemptHookResult,
+  RetroLoopAttemptResult,
+  RetroLoopInput,
+  RetroLoopResult,
+  RetroLoopSummary,
+  RetroQualityGate,
+  RetroQualityGateResult,
   RetroNormalizedFinding,
   RetroPolicy,
   RetroPolicyInput,
   RetroRecommendation,
   RetroRunComparison,
+  RetroVerificationInput,
+  RetroVerificationResult,
   RetroRunComparisonSummary,
+  RetroSourceRun,
   RetroScoreDelta,
   RetroRunInput,
   RetroRunMetadata,
@@ -251,6 +275,35 @@ export {
   deleteSession,
 } from './session.js'
 export type { SessionMetadata, SessionData } from './session.js'
+
+// --------------------------------------------------------------------------
+// Structured Memory
+// --------------------------------------------------------------------------
+
+export {
+  saveMemory,
+  loadMemory,
+  listMemories,
+  queryMemories,
+  deleteMemory,
+  getMemoryStoreInfo,
+} from './memory.js'
+export {
+  extractSessionMemoryCandidates,
+  persistSessionMemoryCandidates,
+} from './memory-policy.js'
+export type {
+  MemoryConfidence,
+  MemoryEntry,
+  MemoryQuery,
+  MemoryScope,
+  MemoryStoreOptions,
+  MemoryType,
+} from './memory.js'
+export type {
+  ExtractedMemoryCandidate,
+  SessionMemoryExtractionOptions,
+} from './memory-policy.js'
 
 // --------------------------------------------------------------------------
 // Context Utilities
@@ -439,6 +492,8 @@ export type {
   // Agent types
   AgentOptions,
   AgentDefinition,
+  AgentRunStatus,
+  AgentRunResult,
   QueryResult,
   ThinkingConfig,
   TokenUsage,
@@ -457,6 +512,7 @@ export type {
 
   // Output format
   OutputFormat,
+  MemoryConfig,
 
   // Setting sources
   SettingSource,

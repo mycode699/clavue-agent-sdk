@@ -45,6 +45,7 @@ import {
 import { getSystemContext, getUserContext } from './utils/context.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
+import { queryMemories, type MemoryEntry } from './memory.js'
 
 // ============================================================================
 // Tool format conversion
@@ -68,6 +69,55 @@ interface ToolUseBlock {
   id: string
   name: string
   input: any
+}
+
+function formatInjectedMemories(memories: MemoryEntry[]): string {
+  const lines: string[] = []
+
+  for (const memory of memories) {
+    const metadata = [memory.type, memory.scope, memory.confidence]
+      .filter(Boolean)
+      .join(' / ')
+    lines.push(`- ${memory.title}${metadata ? ` (${metadata})` : ''}`)
+    lines.push(`  ${memory.content}`)
+    if (memory.tags && memory.tags.length > 0) {
+      lines.push(`  tags: ${memory.tags.join(', ')}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
+async function getInjectedMemories(config: QueryEngineConfig): Promise<MemoryEntry[]> {
+  if (!config.memory?.enabled || config.memory.autoInject === false) {
+    return []
+  }
+
+  const repoPath = config.memory.repoPath || config.cwd
+  const text = typeof config.initialPrompt === 'string' ? config.initialPrompt : undefined
+  const limit = config.memory.maxInjectedEntries ?? 5
+  const store = { dir: config.memory.dir }
+
+  const targeted = await queryMemories(
+    {
+      repoPath,
+      text,
+      limit,
+    },
+    store,
+  )
+
+  if (targeted.length > 0) {
+    return targeted
+  }
+
+  return queryMemories(
+    {
+      repoPath,
+      limit,
+    },
+    store,
+  )
 }
 
 // ============================================================================
@@ -123,6 +173,12 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
     }
   } catch {
     // Context is best-effort
+  }
+
+  const injectedMemories = await getInjectedMemories(config)
+  if (injectedMemories.length > 0) {
+    parts.push('\n# Relevant Memory\n')
+    parts.push(formatInjectedMemories(injectedMemories))
   }
 
   // Working directory
@@ -215,6 +271,7 @@ export class QueryEngine {
     const tools = this.config.tools.map(toProviderTool)
 
     // Build system prompt
+    this.config.initialPrompt = typeof prompt === 'string' ? prompt : undefined
     const systemPrompt = await buildSystemPrompt(this.config)
 
     // Emit init system message

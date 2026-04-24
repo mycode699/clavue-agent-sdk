@@ -36,7 +36,7 @@ export interface SessionData {
  */
 function getSessionsDir(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
-  return join(home, '.open-agent-sdk', 'sessions')
+  return join(home, '.clavue-agent-sdk', 'sessions')
 }
 
 /**

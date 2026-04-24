@@ -23,7 +23,7 @@ let agent: Agent | null = null
 function getOrCreateAgent(): Agent {
   if (!agent) {
     agent = createAgent({
-      model: process.env.CODEANY_MODEL || 'claude-sonnet-4-6',
+      model: process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6',
       maxTurns: 20,
     })
   }
@@ -152,6 +152,6 @@ const server = createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`\n  Open Agent SDK — Web Chat`)
+  console.log(`\n  Clavue Agent SDK — Web Chat`)
   console.log(`  http://localhost:${PORT}\n`)
 })

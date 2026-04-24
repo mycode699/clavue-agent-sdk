@@ -50,7 +50,7 @@ test('decideRetroAction returns stop when there are no findings', async () => {
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [async () => ({ findings: [] })],
     runAt: '2026-04-15T00:00:00.000Z',
   })
@@ -66,7 +66,7 @@ test('decideRetroAction returns stop when there are no findings', async () => {
 Run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npx tsx --test tests/retro-run.test.ts
+cd "/Users/lu/openagent/clavue-agent-sdk" && npx tsx --test tests/retro-run.test.ts
 ```
 
 Expected: FAIL because `decideRetroAction` does not exist yet.
@@ -184,7 +184,7 @@ Add `decideRetroAction` to the retro export block and add the four new types to 
 Run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npx tsx --test tests/retro-run.test.ts
+cd "/Users/lu/openagent/clavue-agent-sdk" && npx tsx --test tests/retro-run.test.ts
 ```
 
 Expected: PASS for the stop-path test.
@@ -200,7 +200,7 @@ test('decideRetroAction returns attempt_fix for high severity fix findings', asy
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -233,7 +233,7 @@ test('decideRetroAction returns escalate when retry budget is exhausted', async 
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -269,13 +269,13 @@ test('decideRetroAction returns attempt_fix when overall score regresses', async
   const { compareRetroRuns, decideRetroAction } = await import('../src/index.ts')
 
   const previous = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [async () => ({ findings: [] })],
     runAt: '2026-04-14T00:00:00.000Z',
   })
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -308,7 +308,7 @@ test('decideRetroAction returns retest when findings exist without comparison co
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -341,7 +341,7 @@ test('decideRetroAction returns defer for defer-only findings', async () => {
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -374,7 +374,7 @@ test('decideRetroAction returns stop for preserve-only findings', async () => {
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -407,7 +407,7 @@ test('decideRetroAction falls back to a safe allowed action', async () => {
   const { decideRetroAction } = await import('../src/index.ts')
 
   const run = await runRetroEvaluation({
-    target: { name: 'open-agent-sdk-typescript' },
+    target: { name: 'clavue-agent-sdk' },
     evaluators: [
       async () => ({
         findings: [
@@ -438,7 +438,7 @@ test('decideRetroAction falls back to a safe allowed action', async () => {
 Run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npx tsx --test tests/retro-run.test.ts
+cd "/Users/lu/openagent/clavue-agent-sdk" && npx tsx --test tests/retro-run.test.ts
 ```
 
 Expected: FAIL on new assertions because the policy implementation is still minimal.
@@ -495,7 +495,7 @@ If `RetroRunComparison` is now defined in `types.ts`, remove duplicate interface
 Run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npx tsx --test tests/retro-run.test.ts
+cd "/Users/lu/openagent/clavue-agent-sdk" && npx tsx --test tests/retro-run.test.ts
 ```
 
 Expected: PASS.
@@ -513,7 +513,7 @@ import {
   loadRetroRun,
   runRetroEvaluation,
   saveRetroRun,
-} from "@codeany/open-agent-sdk";
+} from "clavue-agent-sdk";
 
 const current = await runRetroEvaluation({
   target: { name: "my-project", cwd: process.cwd() },
@@ -548,7 +548,7 @@ Add:
 Run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npx tsx --test tests/retro-run.test.ts tests/openai-provider.test.ts
+cd "/Users/lu/openagent/clavue-agent-sdk" && npx tsx --test tests/retro-run.test.ts tests/openai-provider.test.ts
 ```
 
 Expected: PASS.
@@ -556,7 +556,7 @@ Expected: PASS.
 Then run:
 
 ```bash
-cd "/Users/lu/openagent/open-agent-sdk-typescript" && npm run build
+cd "/Users/lu/openagent/clavue-agent-sdk" && npm run build
 ```
 
 Expected: PASS.
@@ -568,7 +568,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git -C "/Users/lu/openagent/open-agent-sdk-typescript" status --short && printf '\n---\n' && git -C "/Users/lu/openagent/open-agent-sdk-typescript" diff --stat
+git -C "/Users/lu/openagent/clavue-agent-sdk" status --short && printf '\n---\n' && git -C "/Users/lu/openagent/clavue-agent-sdk" diff --stat
 ```
 
 Confirm the changed files are limited to:

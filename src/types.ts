@@ -322,6 +322,19 @@ export interface OutputFormat {
 }
 
 // --------------------------------------------------------------------------
+// Memory Types
+// --------------------------------------------------------------------------
+
+export interface MemoryConfig {
+  enabled?: boolean
+  dir?: string
+  autoInject?: boolean
+  autoSaveSessionSummary?: boolean
+  maxInjectedEntries?: number
+  repoPath?: string
+}
+
+// --------------------------------------------------------------------------
 // Setting Sources
 // --------------------------------------------------------------------------
 
@@ -346,10 +359,10 @@ export interface AgentOptions {
   model?: string
   /**
    * API type: 'anthropic-messages' or 'openai-completions'.
-   * Falls back to CODEANY_API_TYPE env var. Default: 'anthropic-messages'.
+   * Falls back to CLAVUE_AGENT_API_TYPE env var. Default: 'anthropic-messages'.
    */
   apiType?: import('./providers/types.js').ApiType
-  /** API key. Falls back to CODEANY_API_KEY env var. */
+  /** API key. Falls back to CLAVUE_AGENT_API_KEY env var. */
   apiKey?: string
   /** API base URL override */
   baseURL?: string
@@ -385,6 +398,8 @@ export interface AgentOptions {
   includePartialMessages?: boolean
   /** Environment variables */
   env?: Record<string, string | undefined>
+  /** Structured memory configuration */
+  memory?: MemoryConfig
   /** Tool names to pre-approve without prompting */
   allowedTools?: string[]
   /** Tool names to deny */
@@ -445,6 +460,43 @@ export interface AgentOptions {
   }>>
 }
 
+export type AgentRunStatus = 'completed' | 'errored'
+
+export interface AgentRunResult {
+  /** Unique ID for this run artifact */
+  id: string
+  /** Session ID the run belongs to */
+  session_id: string
+  /** High-level terminal status */
+  status: AgentRunStatus
+  /** Final result subtype from the engine */
+  subtype: string
+  /** Final text output from the assistant */
+  text: string
+  /** Token usage */
+  usage: TokenUsage
+  /** Number of agentic turns */
+  num_turns: number
+  /** Wall-clock duration in milliseconds */
+  duration_ms: number
+  /** Aggregate provider API time in milliseconds */
+  duration_api_ms: number
+  /** Total estimated cost in USD */
+  total_cost_usd: number
+  /** Provider stop reason when available */
+  stop_reason: string | null
+  /** ISO timestamp when the run started */
+  started_at: string
+  /** ISO timestamp when the run completed */
+  completed_at: string
+  /** All conversation messages captured for this run */
+  messages: Message[]
+  /** Streaming events emitted during the run */
+  events: SDKMessage[]
+  /** Engine errors when available */
+  errors?: string[]
+}
+
 export interface QueryResult {
   /** Final text output from the assistant */
   text: string
@@ -470,6 +522,8 @@ export interface QueryEngineConfig {
   tools: ToolDefinition[]
   systemPrompt?: string
   appendSystemPrompt?: string
+  /** Initial prompt for memory retrieval */
+  initialPrompt?: string
   maxTurns: number
   maxBudgetUsd?: number
   maxTokens: number
@@ -483,4 +537,6 @@ export interface QueryEngineConfig {
   hookRegistry?: import('./hooks.js').HookRegistry
   /** Session ID for hook context */
   sessionId?: string
+  /** Structured memory configuration */
+  memory?: MemoryConfig
 }

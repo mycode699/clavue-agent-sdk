@@ -2,10 +2,10 @@
  * Agent - High-level API
  *
  * Provides createAgent() and query() interfaces compatible with
- * open-agent-sdk.
+ * clavue-agent-sdk.
  *
  * Usage:
- *   import { createAgent } from 'open-agent-sdk'
+ *   import { createAgent } from 'clavue-agent-sdk'
  *   const agent = createAgent({ model: 'claude-sonnet-4-6' })
  *   for await (const event of agent.query('Hello')) { ... }
  *
@@ -20,12 +20,14 @@
 
 import type {
   AgentOptions,
+  AgentRunResult,
   QueryResult,
   SDKMessage,
   ToolDefinition,
   CanUseToolFn,
   Message,
   PermissionMode,
+  TokenUsage,
 } from './types.js'
 import { QueryEngine } from './engine.js'
 import { getAllBaseTools, filterTools } from './tools/index.js'
@@ -36,6 +38,8 @@ import {
   saveSession,
   loadSession,
 } from './session.js'
+import { saveMemory } from './memory.js'
+import { persistSessionMemoryCandidates } from './memory-policy.js'
 import { createHookRegistry, type HookRegistry } from './hooks.js'
 import { initBundledSkills } from './skills/index.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
@@ -67,7 +71,11 @@ export class Agent {
 
     // Merge credentials from options.env map, direct options, and process.env
     this.apiCredentials = this.pickCredentials()
-    this.modelId = this.cfg.model ?? this.readEnv('CODEANY_MODEL') ?? 'claude-sonnet-4-6'
+    this.modelId =
+      this.cfg.model ??
+      this.cfg.env?.CLAVUE_AGENT_MODEL ??
+      this.readEnv('CLAVUE_AGENT_MODEL') ??
+      'claude-sonnet-4-6'
     this.sid = this.cfg.sessionId ?? crypto.randomUUID()
 
     // Resolve API type
@@ -120,8 +128,8 @@ export class Agent {
 
     // Env var
     const envType =
-      this.cfg.env?.CODEANY_API_TYPE ??
-      this.readEnv('CODEANY_API_TYPE')
+      this.cfg.env?.CLAVUE_AGENT_API_TYPE ??
+      this.readEnv('CLAVUE_AGENT_API_TYPE')
     if (envType === 'openai-completions' || envType === 'anthropic-messages') {
       return envType
     }
@@ -146,20 +154,20 @@ export class Agent {
     return 'anthropic-messages'
   }
 
-  /** Pick API key and base URL from options or CODEANY_* env vars. */
+  /** Pick API key and base URL from options or CLAVUE_AGENT_* env vars. */
   private pickCredentials(): { key?: string; baseUrl?: string } {
     const envMap = this.cfg.env
     return {
       key:
         this.cfg.apiKey ??
-        envMap?.CODEANY_API_KEY ??
-        envMap?.CODEANY_AUTH_TOKEN ??
-        this.readEnv('CODEANY_API_KEY') ??
-        this.readEnv('CODEANY_AUTH_TOKEN'),
+        envMap?.CLAVUE_AGENT_API_KEY ??
+        envMap?.CLAVUE_AGENT_AUTH_TOKEN ??
+        this.readEnv('CLAVUE_AGENT_API_KEY') ??
+        this.readEnv('CLAVUE_AGENT_AUTH_TOKEN'),
       baseUrl:
         this.cfg.baseURL ??
-        envMap?.CODEANY_BASE_URL ??
-        this.readEnv('CODEANY_BASE_URL'),
+        envMap?.CLAVUE_AGENT_BASE_URL ??
+        this.readEnv('CLAVUE_AGENT_BASE_URL'),
     }
   }
 
@@ -310,6 +318,7 @@ export class Agent {
       agents: opts.agents,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
+      memory: opts.memory,
     })
     this.currentEngine = engine
 
@@ -349,40 +358,90 @@ export class Agent {
   }
 
   /**
+   * Execute a prompt and return a structured run artifact.
+   */
+  async run(
+    text: string,
+    overrides?: Partial<AgentOptions>,
+  ): Promise<AgentRunResult> {
+    const runId = crypto.randomUUID()
+    const startedAt = new Date().toISOString()
+    const t0 = performance.now()
+    const events: SDKMessage[] = []
+    let finalText = ''
+    let finalSubtype = 'success'
+    let stopReason: string | null = null
+    let totalCostUsd = 0
+    let durationApiMs = 0
+    let numTurns = 0
+    let usage: TokenUsage = { input_tokens: 0, output_tokens: 0 }
+    let errors: string[] | undefined
+
+    for await (const ev of this.query(text, overrides)) {
+      events.push(ev)
+
+      switch (ev.type) {
+        case 'assistant': {
+          const fragments = (ev.message.content as any[])
+            .filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+          if (fragments.length) {
+            finalText = fragments.join('')
+          }
+          break
+        }
+        case 'result': {
+          finalSubtype = ev.subtype
+          stopReason = ev.stop_reason ?? null
+          totalCostUsd = ev.total_cost_usd ?? ev.cost ?? 0
+          durationApiMs = ev.duration_api_ms ?? 0
+          numTurns = ev.num_turns ?? 0
+          usage = ev.usage ?? usage
+          errors = ev.errors
+          break
+        }
+      }
+    }
+
+    const completedAt = new Date().toISOString()
+    const durationMs = Math.round(performance.now() - t0)
+
+    return {
+      id: runId,
+      session_id: this.sid,
+      status: finalSubtype === 'success' ? 'completed' : 'errored',
+      subtype: finalSubtype,
+      text: finalText,
+      usage,
+      num_turns: numTurns,
+      duration_ms: durationMs,
+      duration_api_ms: durationApiMs,
+      total_cost_usd: totalCostUsd,
+      stop_reason: stopReason,
+      started_at: startedAt,
+      completed_at: completedAt,
+      messages: [...this.messageLog],
+      events,
+      errors,
+    }
+  }
+
+  /**
    * Convenience method: send a prompt and collect the final answer as a single object.
-   * Internally iterates through the streaming query and aggregates the outcome.
+   * Internally reuses the structured run artifact.
    */
   async prompt(
     text: string,
     overrides?: Partial<AgentOptions>,
   ): Promise<QueryResult> {
-    const t0 = performance.now()
-    const collected = { text: '', turns: 0, tokens: { in: 0, out: 0 } }
-
-    for await (const ev of this.query(text, overrides)) {
-      switch (ev.type) {
-        case 'assistant': {
-          // Extract the last assistant text (multi-turn: only final answer matters)
-          const fragments = (ev.message.content as any[])
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-          if (fragments.length) collected.text = fragments.join('')
-          break
-        }
-        case 'result':
-          collected.turns = ev.num_turns ?? 0
-          collected.tokens.in = ev.usage?.input_tokens ?? 0
-          collected.tokens.out = ev.usage?.output_tokens ?? 0
-          break
-      }
-    }
+    const run = await this.run(text, overrides)
 
     return {
-      text: collected.text,
-      usage: { input_tokens: collected.tokens.in, output_tokens: collected.tokens.out },
-      num_turns: collected.turns,
-      duration_ms: Math.round(performance.now() - t0),
-      messages: [...this.messageLog],
+      text: run.text,
+      usage: run.usage,
+      num_turns: run.num_turns,
+      duration_ms: run.duration_ms,
+      messages: run.messages,
     }
   }
 
@@ -466,16 +525,66 @@ export class Agent {
    * Optionally persist session to disk.
    */
   async close(): Promise<void> {
+    const cwd = this.cfg.cwd || process.cwd()
+
     // Persist session if enabled
     if (this.cfg.persistSession !== false && this.history.length > 0) {
       try {
         await saveSession(this.sid, this.history, {
-          cwd: this.cfg.cwd || process.cwd(),
+          cwd,
           model: this.modelId,
           summary: undefined,
         })
       } catch {
         // Session persistence is best-effort
+      }
+    }
+
+    if (this.cfg.memory?.enabled && this.cfg.memory.autoSaveSessionSummary !== false && this.messageLog.length > 0) {
+      try {
+        const lastUserMessage = [...this.messageLog]
+          .reverse()
+          .find((message) => message.type === 'user')
+        const lastAssistantMessage = [...this.messageLog]
+          .reverse()
+          .find((message) => message.type === 'assistant')
+
+        const userText = typeof lastUserMessage?.message.content === 'string'
+          ? lastUserMessage.message.content
+          : ''
+        const assistantText = lastAssistantMessage
+          ? lastAssistantMessage.message.content
+              .filter((block: any) => block.type === 'text')
+              .map((block: any) => block.text)
+              .join('\n')
+          : ''
+        const repoPath = this.cfg.memory.repoPath || cwd
+        const storeOptions = { dir: this.cfg.memory.dir }
+
+        await persistSessionMemoryCandidates(this.messageLog, {
+          repoPath,
+          sessionId: this.sid,
+        }, storeOptions)
+
+        if (userText || assistantText) {
+          await saveMemory(
+            {
+              id: `session-${this.sid}`,
+              type: 'decision',
+              scope: 'session',
+              title: `Session summary for ${this.sid}`,
+              content: `Last user request: ${userText || '(none)'}\n\nLast assistant response: ${assistantText || '(none)'}`,
+              repoPath,
+              sessionId: this.sid,
+              confidence: 'medium',
+              source: 'auto-saved session summary',
+              tags: ['session', 'summary'],
+            },
+            storeOptions,
+          )
+        }
+      } catch {
+        // Memory persistence is best-effort
       }
     }
 
@@ -510,6 +619,21 @@ export async function* query(params: {
   const ephemeral = createAgent(params.options)
   try {
     yield* ephemeral.query(params.prompt)
+  } finally {
+    await ephemeral.close()
+  }
+}
+
+/**
+ * Execute a single agent run and return a structured run artifact.
+ */
+export async function run(params: {
+  prompt: string
+  options?: AgentOptions
+}): Promise<AgentRunResult> {
+  const ephemeral = createAgent(params.options)
+  try {
+    return await ephemeral.run(params.prompt)
   } finally {
     await ephemeral.close()
   }

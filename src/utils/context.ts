@@ -95,21 +95,21 @@ function detectMainBranch(cwd: string): string | null {
 }
 
 /**
- * Discover project context files (AGENT.md, CLAUDE.md) in the project.
+ * Discover project context files (AGENT.md, CLAVUE.md) in the project.
  */
 export async function discoverProjectContextFiles(cwd: string): Promise<string[]> {
   const candidates = [
     join(cwd, 'AGENT.md'),
-    join(cwd, 'CLAUDE.md'),
-    join(cwd, '.claude', 'CLAUDE.md'),
-    join(cwd, 'claude.md'),
+    join(cwd, 'CLAVUE.md'),
+    join(cwd, '.clavue', 'CLAVUE.md'),
+    join(cwd, 'clavue.md'),
   ]
 
   // Also check home directory
   const home = process.env.HOME || process.env.USERPROFILE || ''
   if (home) {
     candidates.push(
-      join(home, '.claude', 'CLAUDE.md'),
+      join(home, '.clavue', 'CLAVUE.md'),
     )
   }
 

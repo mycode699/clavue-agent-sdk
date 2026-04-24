@@ -1,10 +1,10 @@
 /**
  * tool() helper - Create tools using Zod schemas
  *
- * Compatible with open-agent-sdk's tool() function.
+ * Compatible with clavue-agent-sdk's tool() function.
  *
  * Usage:
- *   import { tool } from 'open-agent-sdk'
+ *   import { tool } from 'clavue-agent-sdk'
  *   import { z } from 'zod'
  *
  *   const weatherTool = tool(
@@ -57,7 +57,7 @@ export interface SdkMcpToolDefinition<T extends ZodRawShape = ZodRawShape> {
 /**
  * Create a tool using Zod schema.
  *
- * Compatible with open-agent-sdk's tool() function.
+ * Compatible with clavue-agent-sdk's tool() function.
  */
 export function tool<T extends ZodRawShape>(
   name: string,

@@ -1,22 +1,10 @@
-import { RETRO_DIMENSIONS, type RetroDimension, type RetroNormalizedFinding, type RetroRunResult } from './types.js'
-
-export interface RetroScoreDelta {
-  previous: number
-  current: number
-  delta: number
-}
-
-export interface RetroRunComparisonSummary {
-  previousRunAt: string
-  currentRunAt: string
-}
-
-export interface RetroRunComparison {
-  summary: RetroRunComparisonSummary
-  scoreDeltas: Record<RetroDimension | 'overall', RetroScoreDelta>
-  newFindings: RetroNormalizedFinding[]
-  resolvedFindings: RetroNormalizedFinding[]
-}
+import {
+  RETRO_DIMENSIONS,
+  type RetroDimension,
+  type RetroNormalizedFinding,
+  type RetroRunComparison,
+  type RetroRunResult,
+} from './types.js'
 
 function findingKey(finding: RetroNormalizedFinding): string {
   return `${finding.dimension}:${finding.title}`

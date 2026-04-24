@@ -25,6 +25,8 @@ function buildPlan(
       maxAttempts: input.policy?.maxAttempts ?? 3,
       minimumOverallScore: input.policy?.minimumOverallScore,
       escalateSeverity: input.policy?.escalateSeverity,
+      verificationPassed: input.verification?.passed,
+      failedVerificationGate: input.verification?.gates.find((gate) => !gate.passed)?.name,
     },
   }
 }
@@ -50,6 +52,20 @@ function applyAllowedActions(input: RetroPolicyInput, plan: RetroActionPlan): Re
 }
 
 export function decideRetroAction(input: RetroPolicyInput): RetroActionPlan {
+  const failedVerificationGate = input.verification?.gates.find((gate) => !gate.passed)
+
+  if (input.verification && !input.verification.passed) {
+    return applyAllowedActions(
+      input,
+      buildPlan(
+        input,
+        'retest',
+        `Verification failed at gate: ${failedVerificationGate?.name ?? 'unknown'}.`,
+        [],
+      ),
+    )
+  }
+
   if (input.run.findings.length === 0) {
     return applyAllowedActions(input, buildPlan(input, 'stop', 'No findings recorded.', []))
   }

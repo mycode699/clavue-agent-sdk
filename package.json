@@ -1,19 +1,19 @@
 {
-  "name": "@codeany/open-agent-sdk",
+  "name": "clavue-agent-sdk",
   "author": {
-    "name": "CodeAny",
-    "url": "https://codeany.ai"
+    "name": "mycode699",
+    "url": "https://github.com/mycode699"
   },
-  "homepage": "https://github.com/codeany-ai/open-agent-sdk-typescript",
+  "homepage": "https://github.com/mycode699/clavue-agent-sdk",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/codeany-ai/open-agent-sdk-typescript.git"
+    "url": "git+https://github.com/mycode699/clavue-agent-sdk.git"
   },
   "bugs": {
-    "url": "https://github.com/codeany-ai/open-agent-sdk-typescript/issues"
+    "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.2.2",
-  "description": "Open-source Agent SDK. Runs the full agent loop in-process — no local CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
+  "version": "0.2.3",
+  "description": "Clavue Agent SDK. Runs the full agent loop in-process — no local CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -49,8 +49,7 @@
     "typescript": "^5.7.0"
   },
   "keywords": [
-    "open-agent-sdk",
-    "codeany",
+    "clavue-agent-sdk",
     "agent",
     "sdk",
     "ai",

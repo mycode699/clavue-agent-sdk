@@ -1,29 +1,38 @@
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join, resolve, sep } from 'path'
-import type { RetroRunResult } from './types.js'
-
-export interface RetroLedgerOptions {
-  dir?: string
-}
+import type { RetroCycleResult, RetroLedgerOptions, RetroRunResult } from './types.js'
 
 function getDefaultLedgerDir(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
-  return join(home, '.open-agent-sdk', 'retro-runs')
+  return join(home, '.clavue-agent-sdk', 'retro-runs')
 }
 
 function getLedgerDir(options?: RetroLedgerOptions): string {
   return options?.dir ?? getDefaultLedgerDir()
 }
 
-function getRunPath(runId: string, options?: RetroLedgerOptions): string {
+function getLedgerPath(
+  id: string,
+  suffix: string,
+  idLabel: 'runId' | 'cycleId',
+  options?: RetroLedgerOptions,
+): string {
   const ledgerDir = resolve(getLedgerDir(options))
-  const runPath = resolve(ledgerDir, `${runId}.json`)
+  const ledgerPath = resolve(ledgerDir, `${id}${suffix}`)
 
-  if (runPath !== ledgerDir && !runPath.startsWith(`${ledgerDir}${sep}`)) {
-    throw new Error('Invalid runId: path must stay within the ledger directory.')
+  if (ledgerPath !== ledgerDir && !ledgerPath.startsWith(`${ledgerDir}${sep}`)) {
+    throw new Error(`Invalid ${idLabel}: path must stay within the ledger directory.`)
   }
 
-  return runPath
+  return ledgerPath
+}
+
+function getRunPath(runId: string, options?: RetroLedgerOptions): string {
+  return getLedgerPath(runId, '.json', 'runId', options)
+}
+
+function getCyclePath(cycleId: string, options?: RetroLedgerOptions): string {
+  return getLedgerPath(cycleId, '.cycle.json', 'cycleId', options)
 }
 
 export async function saveRetroRun(
@@ -44,6 +53,33 @@ export async function loadRetroRun(
   try {
     const content = await readFile(runPath, 'utf-8')
     return JSON.parse(content) as RetroRunResult
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return null
+    }
+
+    throw error
+  }
+}
+
+export async function saveRetroCycle(
+  cycleId: string,
+  result: RetroCycleResult,
+  options?: RetroLedgerOptions,
+): Promise<void> {
+  await mkdir(getLedgerDir(options), { recursive: true })
+  await writeFile(getCyclePath(cycleId, options), JSON.stringify(result, null, 2), 'utf-8')
+}
+
+export async function loadRetroCycle(
+  cycleId: string,
+  options?: RetroLedgerOptions,
+): Promise<RetroCycleResult | null> {
+  const cyclePath = getCyclePath(cycleId, options)
+
+  try {
+    const content = await readFile(cyclePath, 'utf-8')
+    return JSON.parse(content) as RetroCycleResult
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return null

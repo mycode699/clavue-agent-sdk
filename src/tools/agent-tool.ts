@@ -102,12 +102,12 @@ export const AgentTool: ToolDefinition = {
       'You are a helpful assistant. Complete the given task using the available tools.'
 
     // Inherit provider and model from parent agent context, fall back to env vars
-    const subModel = input.model || context.model || process.env.CODEANY_MODEL || 'claude-sonnet-4-6'
+    const subModel = input.model || context.model || process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6'
     const provider = context.provider ?? createProvider(
-      (context.apiType || process.env.CODEANY_API_TYPE as ApiType) || 'anthropic-messages',
+      (context.apiType || process.env.CLAVUE_AGENT_API_TYPE as ApiType) || 'anthropic-messages',
       {
-        apiKey: process.env.CODEANY_API_KEY,
-        baseURL: process.env.CODEANY_BASE_URL,
+        apiKey: process.env.CLAVUE_AGENT_API_KEY,
+        baseURL: process.env.CLAVUE_AGENT_BASE_URL,
       },
     )
 

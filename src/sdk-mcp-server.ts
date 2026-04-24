@@ -2,10 +2,10 @@
  * In-Process MCP Server
  *
  * createSdkMcpServer() creates an in-process MCP server from tool() definitions.
- * Compatible with open-agent-sdk's createSdkMcpServer().
+ * Compatible with clavue-agent-sdk's createSdkMcpServer().
  *
  * Usage:
- *   import { tool, createSdkMcpServer } from 'open-agent-sdk'
+ *   import { tool, createSdkMcpServer } from 'clavue-agent-sdk'
  *   import { z } from 'zod'
  *
  *   const weatherTool = tool('get_weather', 'Get weather', { city: z.string() },

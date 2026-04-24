@@ -12,14 +12,14 @@ async function main() {
   console.log('--- Example 3: Multi-Turn Conversation ---\n')
 
   const agent = createAgent({
-    model: process.env.CODEANY_MODEL || 'claude-sonnet-4-6',
+    model: process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6',
     maxTurns: 5,
   })
 
   // Turn 1: Create a file
   console.log('> Turn 1: Create a file')
   const r1 = await agent.prompt(
-    'Use Bash to run: echo "Hello Open Agent SDK" > /tmp/oas-test.txt. Confirm briefly.',
+    'Use Bash to run: echo "Hello Clavue Agent SDK" > /tmp/oas-test.txt. Confirm briefly.',
   )
   console.log(`  ${r1.text}\n`)
 

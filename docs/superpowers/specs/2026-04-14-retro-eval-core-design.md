@@ -1,7 +1,7 @@
 # Retro/Eval Core Design
 
 Date: 2026-04-14
-Topic: engine-only retro/eval loop for @codeany/open-agent-sdk
+Topic: engine-only retro/eval loop for clavue-agent-sdk
 Status: approved in chat
 
 ## Goal

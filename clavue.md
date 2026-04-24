@@ -1,0 +1,56 @@
+# clavue.md
+
+This file provides guidance to Clavue (claude.ai/code) when working with code in this repository.
+
+## Development commands
+
+- `npm run build` — compile TypeScript to `dist/` with `tsc`.
+- `npm run dev` — run TypeScript in watch mode.
+- `npm test` — run the checked-in test suite with `npx tsx --test tests/*.test.ts`.
+- `npx tsx --test tests/retro-run.test.ts` — run the end-to-end retro/eval pipeline tests.
+- `npx tsx --test tests/retro-verify.test.ts` — run retro verification gate tests.
+- `npx tsx --test tests/package-payload.test.ts` — verify published package payload and storage branding.
+- `npx tsx --test tests/openai-provider.test.ts` — run OpenAI-compatible provider tests.
+- `npm run test:all` — execute the numbered example scripts in `examples/` as smoke tests.
+- `npx tsx examples/01-simple-query.ts` — run a single example directly.
+- `npm run web` — start the example web UI server at `examples/web/server.ts`.
+
+There is currently no dedicated lint script in `package.json`.
+
+## Runtime and package facts
+
+- The package is ESM-only (`"type": "module"`) and publishes `dist/` via the `files` field.
+- Node.js support starts at `>=18.0.0`.
+- `npm pack` / publish paths run `prepack`, which calls `npm run build`.
+- Runtime configuration is primarily through `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, and `CLAVUE_AGENT_AUTH_TOKEN`.
+
+## Architecture overview
+
+- `src/index.ts` is the public SDK surface. It re-exports the high-level agent API, provider layer, built-in tools, skill system, MCP helpers, session helpers, and the retro/eval pipeline.
+- `src/agent.ts` is the orchestration layer behind `createAgent()`, `query()`, and `run()`. It resolves credentials and API type, creates the provider, initializes bundled skills, builds the tool pool, connects MCP servers, registers custom subagents, and resumes persisted sessions before handing work to the engine.
+- `src/engine.ts` contains the core agent loop. It builds the default system prompt from available tools plus repo context, injects git status and project context files, calls the provider, executes tool calls, runs hooks, retries transient failures, and auto-compacts conversation history when context grows too large.
+- `src/utils/context.ts` is where prompt context injection is defined. It discovers `AGENT.md`, `CLAVUE.md`, `.clavue/CLAVUE.md`, `clavue.md`, and `~/.clavue/CLAVUE.md`, and combines them with the current date and git status for the engine’s default prompt.
+- `src/providers/` isolates transport details from the engine. `src/providers/index.ts` selects Anthropic vs OpenAI-compatible providers; `src/providers/openai.ts` and `src/providers/anthropic.ts` translate the SDK’s normalized message/tool format into provider-specific requests.
+- `src/tools/index.ts` is the built-in tool registry and filtering layer. The engine works against the shared `ToolDefinition` interface from `src/types.ts`; tool implementations live in `src/tools/*.ts`.
+- `src/tool-helper.ts` and `src/sdk-mcp-server.ts` are the bridge from Zod-based SDK tool definitions to engine tools and in-process MCP servers. External MCP connections are handled separately in `src/mcp/client.ts`.
+- `src/session.ts` handles transcript persistence under `~/.clavue-agent-sdk/sessions`. This is separate from retro/eval persistence.
+- `src/retro/` is a deterministic evaluation pipeline, separate from the live agent loop. The flow is: evaluators produce findings, findings are normalized and scored, workstreams are planned, verification gates are run, policy decides the next action, and `cycle.ts` / `loop.ts` assemble those pieces into repeatable retro runs saved by `ledger.ts`.
+- `src/skills/` is registry-based. Bundled skills are initialized from `src/agent.ts`, exposed through `src/skills/index.ts`, and invoked through the Skill tool.
+
+## Examples and verification anchors
+
+- The numbered scripts in `examples/` are the best reference for intended SDK usage. Prefer them over README prose when you need canonical behavior.
+- `examples/03-multi-turn.ts` is the quickest way to understand reusable agent sessions.
+- `examples/06-mcp-server.ts`, `examples/09-subagents.ts`, `examples/11-custom-mcp-tools.ts`, `examples/12-skills.ts`, `examples/13-hooks.ts`, and `examples/14-openai-compat.ts` are the fastest way to understand the major extension points.
+- `examples/web/server.ts` is the local sandbox for streaming UI behavior.
+- `tests/retro-run.test.ts` is the best entry point for understanding the retro/eval pipeline end to end.
+- `tests/retro-verify.test.ts` shows how fixed verification gates are executed and summarized.
+- `tests/openai-provider.test.ts` is the focused check for OpenAI-compatible transport behavior.
+- `tests/package-payload.test.ts` is the check for packaging expectations and persisted storage paths.
+
+## Repo-specific notes
+
+- This package is an in-process agent SDK, not a CLI wrapper. The full agent loop is meant to run inside the host process.
+- Top-level API selection is provider-agnostic. Model naming plus `CLAVUE_AGENT_*` environment variables decide whether the SDK uses Anthropic Messages or OpenAI-compatible APIs.
+- If you are updating user-facing behavior, check both the corresponding numbered example and the exported surface in `src/index.ts`; the examples show intended usage, while `src/index.ts` shows what is actually public.
+- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files are present in this repository right now.

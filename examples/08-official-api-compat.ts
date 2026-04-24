@@ -2,7 +2,7 @@
  * Example 8: Official SDK-Compatible API
  *
  * Demonstrates the query() function with the same API pattern
- * as open-agent-sdk. Drop-in compatible.
+ * as clavue-agent-sdk. Drop-in compatible.
  *
  * Run: npx tsx examples/08-official-api-compat.ts
  */
