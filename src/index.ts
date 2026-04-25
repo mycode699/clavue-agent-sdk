@@ -50,6 +50,8 @@ export type { McpSdkServerConfig } from './sdk-mcp-server.js'
 // --------------------------------------------------------------------------
 
 export { QueryEngine } from './engine.js'
+export { extractRunImprovementCandidates, runSelfImprovement } from './improvement.js'
+export type { ImprovementCandidate, RunSelfImprovementOptions } from './improvement.js'
 export {
   runRetroEvaluation,
   normalizeFindings,
@@ -494,7 +496,12 @@ export type {
   AgentDefinition,
   AgentRunStatus,
   AgentRunResult,
+  AgentSelfImprovementResult,
   QueryResult,
+  SelfImprovementConfig,
+  SelfImprovementMemoryConfig,
+  SelfImprovementRetroConfig,
+  SelfImprovementRetroLoopConfig,
   ThinkingConfig,
   TokenUsage,
 

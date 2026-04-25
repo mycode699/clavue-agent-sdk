@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { pathToFileURL } from 'node:url'
+
 import { query, run } from './agent.js'
 import type { AgentOptions } from './types.js'
 import { parseCommaSeparatedList } from './utils/parsing.js'
@@ -20,6 +22,7 @@ Options:
   --max-turns <number>      Maximum agentic turns (default: 10)
   --allow <tools>           Comma-separated allow-list, e.g. Read,Glob,Grep
   --deny <tools>            Comma-separated deny-list, e.g. Bash,Write,Edit
+  --self-improvement        Save bounded improvement memories after the run
   --json                    Print the final run artifact as JSON
   -h, --help                Show this help
 
@@ -28,6 +31,7 @@ Environment:
   CLAVUE_AGENT_API_TYPE     anthropic-messages or openai-completions
   CLAVUE_AGENT_MODEL        Default model
   CLAVUE_AGENT_BASE_URL     Custom API endpoint
+  CLAVUE_AGENT_SELF_IMPROVEMENT  Set to 1/true/yes to enable run learning
 `)
 }
 
@@ -46,8 +50,29 @@ function readApiType(value: string): AgentOptions['apiType'] {
   throw new Error('--api-type must be anthropic-messages or openai-completions')
 }
 
-function parseArgs(argv: string[]): { prompt: string; options: AgentOptions; json: boolean; help: boolean } {
-  const options: AgentOptions = {}
+function envFlagEnabled(value: string | undefined): boolean {
+  const normalized = value?.toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+function applySelfImprovementDefaults(options: AgentOptions): void {
+  if (!options.selfImprovement) return
+
+  options.memory = {
+    ...options.memory,
+    enabled: true,
+    autoInject: options.memory?.autoInject ?? true,
+    repoPath: options.memory?.repoPath || options.cwd || process.cwd(),
+  }
+}
+
+export function parseArgs(
+  argv: string[],
+  env: Record<string, string | undefined> = process.env,
+): { prompt: string; options: AgentOptions; json: boolean; help: boolean } {
+  const options: AgentOptions = {
+    selfImprovement: envFlagEnabled(env.CLAVUE_AGENT_SELF_IMPROVEMENT) || undefined,
+  }
   const promptParts: string[] = []
   let json = false
   let help = false
@@ -103,6 +128,9 @@ function parseArgs(argv: string[]): { prompt: string; options: AgentOptions; jso
         options.disallowedTools = parseCommaSeparatedList(readValue(argv, i, arg))
         i++
         break
+      case '--self-improvement':
+        options.selfImprovement = true
+        break
       case '--json':
         json = true
         break
@@ -114,6 +142,8 @@ function parseArgs(argv: string[]): { prompt: string; options: AgentOptions; jso
         break
     }
   }
+
+  applySelfImprovementDefaults(options)
 
   return {
     prompt: promptParts.join(' ').trim(),
@@ -132,9 +162,18 @@ async function main(): Promise<void> {
     return
   }
 
-  if (parsed.json) {
+  if (parsed.json || parsed.options.selfImprovement) {
     const result = await run({ prompt: parsed.prompt, options: parsed.options })
-    console.log(JSON.stringify(result, null, 2))
+    if (parsed.json) {
+      console.log(JSON.stringify(result, null, 2))
+    } else {
+      if (result.text) console.log(result.text)
+      const savedCount = result.self_improvement?.savedMemories.length ?? 0
+      console.error(`[self-improvement] saved ${savedCount} improvement memor${savedCount === 1 ? 'y' : 'ies'}`)
+      if (result.self_improvement?.errors?.length) {
+        console.error(`[self-improvement] ${result.self_improvement.errors.join('; ')}`)
+      }
+    }
     process.exitCode = result.status === 'completed' ? 0 : 1
     return
   }
@@ -156,7 +195,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}

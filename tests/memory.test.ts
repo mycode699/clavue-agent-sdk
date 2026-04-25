@@ -130,6 +130,43 @@ test('queryMemories ranks repo and text matches ahead of unrelated memories', as
   }
 })
 
+test('queryMemories includes partial text matches so operational lessons can be recalled', async () => {
+  const dir = await createMemoryDir()
+  const {
+    saveMemory,
+    queryMemories,
+  } = await import('../src/index.ts')
+
+  try {
+    await saveMemory(
+      {
+        id: 'improvement-1',
+        type: 'improvement',
+        scope: 'repo',
+        title: 'Tool failure: Bash',
+        content: 'Tool Bash returned a timeout while running package verification.',
+        tags: ['self-improvement', 'tool-failure'],
+        repoPath: '/tmp/repo-a',
+        confidence: 'medium',
+      },
+      { dir },
+    )
+
+    const results = await queryMemories(
+      {
+        repoPath: '/tmp/repo-a',
+        text: 'future task should remember bash timeout verification',
+        limit: 5,
+      },
+      { dir },
+    )
+
+    assert.equal(results[0]?.id, 'improvement-1')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('extractSessionMemoryCandidates identifies durable feedback and decisions from user messages', async () => {
   const {
     extractSessionMemoryCandidates,

@@ -71,10 +71,29 @@ interface ToolUseBlock {
   input: any
 }
 
+function getMemoryPriority(memory: MemoryEntry): number {
+  switch (memory.type) {
+    case 'feedback':
+      return 0
+    case 'decision':
+      return 1
+    case 'improvement':
+      return 2
+    case 'project':
+      return 3
+    case 'reference':
+      return 4
+    case 'user':
+      return 5
+    default:
+      return 6
+  }
+}
+
 function formatInjectedMemories(memories: MemoryEntry[]): string {
   const lines: string[] = []
 
-  for (const memory of memories) {
+  for (const memory of [...memories].sort((a, b) => getMemoryPriority(a) - getMemoryPriority(b))) {
     const metadata = [memory.type, memory.scope, memory.confidence]
       .filter(Boolean)
       .join(' / ')

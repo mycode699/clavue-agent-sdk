@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 
-export type MemoryType = 'user' | 'project' | 'reference' | 'feedback' | 'decision'
+export type MemoryType = 'user' | 'project' | 'reference' | 'feedback' | 'decision' | 'improvement'
 export type MemoryScope = 'global' | 'repo' | 'session'
 export type MemoryConfidence = 'low' | 'medium' | 'high'
 
@@ -120,7 +120,7 @@ function matchesMemory(entry: MemoryEntry, query: MemoryQuery): boolean {
       .map((term) => term.trim())
       .filter(Boolean)
 
-    if (!terms.every((term) => haystack.includes(term))) return false
+    if (!terms.some((term) => haystack.includes(term))) return false
   }
 
   return true

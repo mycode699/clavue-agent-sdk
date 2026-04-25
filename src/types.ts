@@ -349,6 +349,43 @@ export interface MemoryConfig {
   repoPath?: string
 }
 
+export interface SelfImprovementMemoryConfig {
+  enabled?: boolean
+  dir?: string
+  repoPath?: string
+  maxEntriesPerRun?: number
+  captureSuccessfulRuns?: boolean
+}
+
+export interface SelfImprovementRetroLoopConfig {
+  enabled?: boolean
+  maxAttempts?: number
+  retryPrompt?: string
+}
+
+export interface SelfImprovementRetroConfig {
+  enabled?: boolean
+  targetName?: string
+  cwd?: string
+  gates?: import('./retro/types.js').RetroQualityGate[]
+  policy?: import('./retro/types.js').RetroPolicy
+  ledger?: import('./retro/types.js').RetroLedgerOptions
+  loop?: SelfImprovementRetroLoopConfig
+}
+
+export interface SelfImprovementConfig {
+  enabled?: boolean
+  memory?: SelfImprovementMemoryConfig
+  retro?: SelfImprovementRetroConfig
+}
+
+export interface AgentSelfImprovementResult {
+  savedMemories: import('./memory.js').MemoryEntry[]
+  retroCycle?: import('./retro/types.js').RetroCycleResult
+  retroLoop?: import('./retro/types.js').RetroLoopResult
+  errors?: string[]
+}
+
 // --------------------------------------------------------------------------
 // Setting Sources
 // --------------------------------------------------------------------------
@@ -415,6 +452,8 @@ export interface AgentOptions {
   env?: Record<string, string | undefined>
   /** Structured memory configuration */
   memory?: MemoryConfig
+  /** Automated run learning and retro/eval feedback loop. */
+  selfImprovement?: boolean | SelfImprovementConfig
   /** Tool names to pre-approve without prompting */
   allowedTools?: string[]
   /** Tool names to deny */
@@ -510,6 +549,8 @@ export interface AgentRunResult {
   events: SDKMessage[]
   /** Engine errors when available */
   errors?: string[]
+  /** Auto-learning artifacts captured after the run when selfImprovement is enabled. */
+  self_improvement?: AgentSelfImprovementResult
 }
 
 export interface QueryResult {

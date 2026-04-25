@@ -39,6 +39,7 @@ import {
 } from './session.js'
 import { saveMemory } from './memory.js'
 import { persistSessionMemoryCandidates } from './memory-policy.js'
+import { runSelfImprovement } from './improvement.js'
 import { createHookRegistry, type HookRegistry } from './hooks.js'
 import { initBundledSkills } from './skills/index.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
@@ -48,6 +49,13 @@ import { createDefaultToolPolicy } from './types.js'
 // --------------------------------------------------------------------------
 // Agent class
 // --------------------------------------------------------------------------
+
+function resolveSelfImprovementConfig(
+  value: AgentOptions['selfImprovement'],
+): import('./types.js').SelfImprovementConfig | null {
+  if (!value) return null
+  return value === true ? { enabled: true } : value
+}
 
 export class Agent {
   private cfg: AgentOptions
@@ -399,8 +407,7 @@ export class Agent {
 
     const completedAt = new Date().toISOString()
     const durationMs = Math.round(performance.now() - t0)
-
-    return {
+    const result: AgentRunResult = {
       id: runId,
       session_id: this.sid,
       status: finalSubtype === 'success' ? 'completed' : 'errored',
@@ -418,6 +425,27 @@ export class Agent {
       events,
       errors,
     }
+
+    const selfImprovement = resolveSelfImprovementConfig(overrides?.selfImprovement ?? this.cfg.selfImprovement)
+    if (selfImprovement && selfImprovement.enabled !== false) {
+      const runOverrides = overrides ?? {}
+      result.self_improvement = await runSelfImprovement(result, selfImprovement, {
+        cwd: overrides?.cwd || this.cfg.cwd || process.cwd(),
+        sessionId: this.sid,
+        memory: overrides?.memory ?? this.cfg.memory,
+        onAttemptRetry: selfImprovement.retro?.loop?.enabled
+          ? async () => this.run(
+              selfImprovement.retro?.loop?.retryPrompt || text,
+              {
+                ...runOverrides,
+                selfImprovement: false,
+              },
+            )
+          : undefined,
+      })
+    }
+
+    return result
   }
 
   /**

@@ -31,11 +31,25 @@ npx clavue-agent-sdk \
   --model gpt-5.4 \
   --base-url https://api.openai.com/v1 \
   "Explain the repository structure"
+
+# Opt-in run learning / 可选开启 run 自学习
+npx clavue-agent-sdk \
+  --self-improvement \
+  --allow Read,Glob,Grep \
+  "Review package.json for release readiness risks"
+
+# Or enable it from CI/env / 也可以通过 CI/env 开启
+CLAVUE_AGENT_SELF_IMPROVEMENT=true \
+  npx clavue-agent-sdk --allow Read,Glob,Grep "Review package.json"
 ```
 
-CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--deny`, `--json`.
+CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--deny`, `--self-improvement`, `--json`.
 
-命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--deny`、`--json`。
+Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_SELF_IMPROVEMENT`.
+
+命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--deny`、`--self-improvement`、`--json`。
+
+环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`。
 
 ### 1. Install as a library / 作为库安装
 
@@ -97,9 +111,9 @@ if (result.status !== "completed") {
 console.log(result.text);
 ```
 
-`run()` returns `AgentRunResult`: `status`, `subtype`, final `text`, `events`, `messages`, `usage`, `num_turns`, `duration_ms`, `duration_api_ms`, `total_cost_usd`, timestamps, and optional `errors`.
+`run()` returns `AgentRunResult`: `status`, `subtype`, final `text`, `events`, `messages`, `usage`, `num_turns`, `duration_ms`, `duration_api_ms`, `total_cost_usd`, timestamps, optional `errors`, and optional `self_improvement` artifacts when enabled.
 
-`run()` 返回 `AgentRunResult`：包含 `status`、`subtype`、最终 `text`、`events`、`messages`、`usage`、`num_turns`、耗时、费用、时间戳和可选 `errors`。
+`run()` 返回 `AgentRunResult`：包含 `status`、`subtype`、最终 `text`、`events`、`messages`、`usage`、`num_turns`、耗时、费用、时间戳、可选 `errors`，以及启用时返回的可选 `self_improvement` 结果。
 
 ### 4. Streaming events / 流式事件
 
@@ -289,6 +303,78 @@ const agent = createAgent();
 const result = await agent.prompt('Use the "explain" skill to explain git rebase');
 console.log(result.text);
 ```
+
+### Self-improvement memory
+
+Enable `selfImprovement` when you want each structured run to capture reusable operational lessons for future runs. It is opt-in and stores bounded `improvement` memories after `Agent.run()` / top-level `run()` completes.
+
+```typescript
+import { createAgent, queryMemories } from "clavue-agent-sdk";
+
+const agent = createAgent({
+  cwd: process.cwd(),
+  memory: {
+    enabled: true,
+    autoInject: true,
+    repoPath: process.cwd(),
+  },
+  selfImprovement: {
+    memory: {
+      repoPath: process.cwd(),
+      maxEntriesPerRun: 4,
+    },
+  },
+});
+
+try {
+  const run = await agent.run("Verify the package release is ready.");
+  console.log(run.self_improvement?.savedMemories.length ?? 0);
+
+  const lessons = await queryMemories({
+    repoPath: process.cwd(),
+    type: "improvement",
+    text: "package release verification",
+    limit: 5,
+  });
+  console.log(lessons.map((lesson) => lesson.title));
+} finally {
+  await agent.close();
+}
+```
+
+By default this captures failed tool-result signals and terminal run failures. Successful run patterns are only saved when `selfImprovement.memory.captureSuccessfulRuns` is explicitly enabled. Captured text is trimmed, common API keys and bearer tokens are redacted, and future runs must still verify current repo state before applying a remembered lesson.
+
+默认只捕获工具失败信号和 run 终态失败；只有显式设置 `captureSuccessfulRuns` 时才会记录成功模式。记录内容会裁剪并脱敏常见 API key / bearer token，未来 run 使用这些经验前仍需要验证当前仓库状态。
+
+You can combine run learning with the deterministic retro/eval cycle, and optionally allow a bounded retry loop guarded by verification gates:
+
+```typescript
+const run = await agent.run("Improve this SDK safely.", {
+  selfImprovement: {
+    memory: { repoPath: process.cwd() },
+    retro: {
+      enabled: true,
+      targetName: "clavue-agent-sdk",
+      gates: [
+        { name: "build", command: "npm", args: ["run", "build"] },
+        { name: "test", command: "npm", args: ["test"] },
+      ],
+      loop: {
+        enabled: true,
+        maxAttempts: 3,
+        retryPrompt: "Fix the highest-priority verified issue, then stop.",
+      },
+    },
+  },
+});
+
+console.log(run.self_improvement?.retroLoop?.summary.completedAttempts);
+console.log(run.self_improvement?.retroCycle?.summary.statusLine);
+```
+
+Nested retry runs automatically disable nested `selfImprovement` capture to keep the loop bounded. `retroCycle` always points at the final cycle for compatibility; `retroLoop` contains every cycle and retry lineage when loop mode is enabled.
+
+Exported helpers: `extractRunImprovementCandidates(run, config, options)` for dry-run extraction and `runSelfImprovement(run, config, options)` for direct persistence/retro orchestration.
 
 ### Retro / eval core
 
@@ -554,6 +640,8 @@ npx tsx examples/web/server.ts
 | `getAllBaseTools()`                   | Get all 35+ built-in tools                                     |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
+| `runSelfImprovement(run, config, opts)` | Persist bounded improvement memories and optionally run retro/eval feedback |
+| `extractRunImprovementCandidates(run, config, opts)` | Inspect which improvement memories a run would generate |
 | `runRetroEvaluation(input)`           | Run deterministic retro/eval orchestration and return typed results |
 | `createDefaultRetroEvaluators()`      | Inspect package/import/build/test/onboarding readiness across the core dimensions |
 | `compareRetroRuns(previous, current)` | Compare two retro runs for score deltas and finding drift      |
@@ -577,6 +665,7 @@ npx tsx examples/web/server.ts
 | Method                          | Description                                           |
 | ------------------------------- | ----------------------------------------------------- |
 | `agent.query(prompt)`           | Streaming query, returns `AsyncGenerator<SDKMessage>` |
+| `agent.run(text, overrides)`    | Blocking run, returns full `AgentRunResult` including `self_improvement` when enabled |
 | `agent.prompt(text)`            | Blocking query, returns `Promise<QueryResult>`        |
 | `agent.getMessages()`           | Get conversation history                              |
 | `agent.clear()`                 | Reset session                                         |
@@ -609,6 +698,8 @@ npx tsx examples/web/server.ts
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
 | `agents`             | `Record<string, AgentDefinition>`       | —                      | Subagent definitions                                                 |
 | `hooks`              | `Record<string, HookCallbackMatcher[]>` | —                      | Lifecycle hooks                                                      |
+| `memory`             | `MemoryConfig`                          | —                      | Structured memory injection and session-summary persistence          |
+| `selfImprovement`    | `boolean \| SelfImprovementConfig`       | `false`                | Opt-in run learning via improvement memories and optional retro cycle |
 | `resume`             | `string`                                | —                      | Resume session by ID                                                 |
 | `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
 | `persistSession`     | `boolean`                               | `true`                 | Persist session to disk                                              |
@@ -713,7 +804,17 @@ Register custom skills with `registerSkill()`.
 | **Token estimation**  | Rough token counting with pricing for Claude, GPT, DeepSeek models |
 | **File cache**        | LRU cache (100 entries, 25 MB) for file reads                      |
 | **Session storage**   | Persist / resume / fork sessions on disk                           |
+| **Structured memory** | Queryable user/project/reference/feedback/decision/improvement entries |
+| **Self-improvement**  | Opt-in run learning from failures plus optional retro verification  |
 | **Context injection** | Git status + AGENT.md automatically injected into system prompt    |
+
+## Automation roadmap
+
+- **Telemetry and evals:** turn run artifacts into scoreable, replayable traces without exposing secrets.
+- **Policy learning:** promote repeated safe corrections into durable tool and permission policies.
+- **Tool success modeling:** track which tools, arguments, and gates succeed for similar repository states.
+- **Autonomous retry loops:** feed failures into bounded repair attempts guarded by verification gates.
+- **Cross-project memory governance:** keep global lessons useful while requiring repo-state verification before reuse.
 
 ## Examples
 
@@ -733,6 +834,7 @@ Register custom skills with `registerSkill()`.
 | 12  | `examples/12-skills.ts`              | Skill system usage                     |
 | 13  | `examples/13-hooks.ts`               | Lifecycle hooks                        |
 | 14  | `examples/14-openai-compat.ts`       | OpenAI / DeepSeek models               |
+| 15  | `examples/15-self-improvement.ts`    | Opt-in run learning and improvement memories |
 | web | `examples/web/`                       | Web chat UI for testing                |
 
 Run any example:
