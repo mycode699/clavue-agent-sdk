@@ -5,7 +5,7 @@
  * tasks, teams, messaging, worktree, planning, scheduling, and more.
  */
 
-import type { ToolDefinition } from '../types.js'
+import type { ToolDefinition, ToolsetName } from '../types.js'
 
 // File I/O
 import { BashTool } from './bash.js'
@@ -138,6 +138,28 @@ const ALL_TOOLS: ToolDefinition[] = [
  */
 export function getAllBaseTools(): ToolDefinition[] {
   return [...ALL_TOOLS]
+}
+
+const TOOLSETS: Record<ToolsetName, string[]> = {
+  'repo-readonly': ['Read', 'Glob', 'Grep'],
+  'repo-edit': ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'],
+  research: ['WebFetch', 'WebSearch'],
+  planning: ['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoWrite'],
+  tasks: ['TaskCreate', 'TaskList', 'TaskUpdate', 'TaskGet', 'TaskStop', 'TaskOutput'],
+  automation: ['CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger'],
+  agents: ['Agent', 'SendMessage', 'TeamCreate', 'TeamDelete'],
+  mcp: ['ListMcpResources', 'ReadMcpResource'],
+  skills: ['Skill'],
+}
+
+export function getToolsetTools(toolsets?: ToolsetName[]): string[] {
+  if (!toolsets?.length) return []
+
+  const names = new Set<string>()
+  for (const toolset of toolsets) {
+    for (const name of TOOLSETS[toolset]) names.add(name)
+  }
+  return [...names]
 }
 
 /**

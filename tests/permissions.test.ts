@@ -110,6 +110,44 @@ test('allowedTools filtering controls init tools', async () => {
   }
 })
 
+test('toolsets expand to named built-in tool groups', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    toolsets: ['repo-readonly'],
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('ok')])
+
+  try {
+    const events = await collectEvents(agent)
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init')
+
+    assert.ok(init)
+    assert.deepEqual(init.tools, ['Read', 'Glob', 'Grep'])
+  } finally {
+    await agent.close()
+  }
+})
+
+test('toolsets combine with allowedTools and respect disallowedTools', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    toolsets: ['repo-readonly'],
+    allowedTools: ['WebFetch'],
+    disallowedTools: ['Grep'],
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('ok')])
+
+  try {
+    const events = await collectEvents(agent)
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init')
+
+    assert.ok(init)
+    assert.deepEqual(init.tools, ['Read', 'Glob', 'WebFetch'])
+  } finally {
+    await agent.close()
+  }
+})
+
 test('canUseTool denial returns an error tool result', async () => {
   const agent = new Agent({
     model: 'gpt-5.4',

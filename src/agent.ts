@@ -29,7 +29,7 @@ import type {
   TokenUsage,
 } from './types.js'
 import { QueryEngine } from './engine.js'
-import { getAllBaseTools, filterTools } from './tools/index.js'
+import { getAllBaseTools, filterTools, getToolsetTools } from './tools/index.js'
 import { connectMCPServer, type MCPConnection } from './mcp/client.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { registerAgents } from './tools/agent-tool.js'
@@ -197,7 +197,16 @@ export class Agent {
       pool = raw as ToolDefinition[]
     }
 
-    return filterTools(pool, this.cfg.allowedTools, this.cfg.disallowedTools)
+    return this.filterConfiguredTools(pool, this.cfg)
+  }
+
+  private filterConfiguredTools(tools: ToolDefinition[], options: Pick<AgentOptions, 'toolsets' | 'allowedTools' | 'disallowedTools'>): ToolDefinition[] {
+    const toolsetTools = getToolsetTools(options.toolsets)
+    const allowedTools = toolsetTools.length > 0
+      ? [...new Set([...toolsetTools, ...(options.allowedTools ?? [])])]
+      : options.allowedTools
+
+    return filterTools(tools, allowedTools, options.disallowedTools)
   }
 
   /**
@@ -279,8 +288,8 @@ export class Agent {
 
     // Resolve tools with overrides
     let tools = this.toolPool
-    if (overrides?.allowedTools || overrides?.disallowedTools) {
-      tools = filterTools(tools, overrides.allowedTools, overrides.disallowedTools)
+    if (overrides?.toolsets || overrides?.allowedTools || overrides?.disallowedTools) {
+      tools = this.filterConfiguredTools(tools, overrides)
     }
     if (overrides?.tools) {
       const ot = overrides.tools

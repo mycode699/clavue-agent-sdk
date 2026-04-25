@@ -24,6 +24,23 @@ test('CLI env self-improvement applies memory defaults like the flag', async () 
   assert.equal(fromEnv.options.memory?.repoPath, cwd)
 })
 
+test('CLI parses named toolsets', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  const parsed = parseArgs(['--toolset', 'repo-readonly,research', 'review release'], {})
+
+  assert.deepEqual(parsed.options.toolsets, ['repo-readonly', 'research'])
+})
+
+test('CLI rejects unknown toolsets', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  assert.throws(
+    () => parseArgs(['--toolset', 'unknown', 'review release'], {}),
+    /Unknown toolset: unknown/,
+  )
+})
+
 test('extractRunImprovementCandidates captures failed tool signals without secrets', async () => {
   const { extractRunImprovementCandidates } = await import('../src/index.ts')
   type AgentRunResult = import('../src/index.ts').AgentRunResult

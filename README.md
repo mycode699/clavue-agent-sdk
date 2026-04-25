@@ -23,7 +23,10 @@ export CLAVUE_AGENT_API_KEY=your-api-key
 npx clavue-agent-sdk "Read package.json and summarize this project"
 
 # Safer read-only review / 更安全的只读审查
-npx clavue-agent-sdk "Review src for obvious bugs" --allow Read,Glob,Grep
+npx clavue-agent-sdk "Review src for obvious bugs" --toolset repo-readonly
+
+# Combine named toolsets / 组合命名工具集
+npx clavue-agent-sdk "Research and review this repo" --toolset repo-readonly,research
 
 # OpenAI-compatible model / OpenAI 兼容模型
 npx clavue-agent-sdk \
@@ -43,11 +46,11 @@ CLAVUE_AGENT_SELF_IMPROVEMENT=true \
   npx clavue-agent-sdk --allow Read,Glob,Grep "Review package.json"
 ```
 
-CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--deny`, `--self-improvement`, `--json`.
+CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--toolset`, `--deny`, `--self-improvement`, `--json`.
 
 Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_SELF_IMPROVEMENT`.
 
-命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--deny`、`--self-improvement`、`--json`。
+命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--toolset`、`--deny`、`--self-improvement`、`--json`。
 
 环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`。
 
@@ -687,6 +690,7 @@ npx tsx examples/web/server.ts
 | `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
 | `appendSystemPrompt` | `string`                                | —                      | Append to default system prompt                                      |
 | `tools`              | `ToolDefinition[]`                      | All built-in           | Available tools                                                      |
+| `toolsets`           | `ToolsetName[]`                         | —                      | Named built-in tool groups                                           |
 | `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
 | `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
 | `permissionMode`     | `string`                                | `trustedAutomation`    | `trustedAutomation` / `auto` / `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
@@ -709,6 +713,38 @@ npx tsx examples/web/server.ts
 | `settingSources`     | `SettingSource[]`                       | —                      | Load AGENT.md, project settings                                      |
 | `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
+
+### Named toolsets
+
+Use `toolsets` in the SDK or `--toolset` in the CLI to enable named groups of built-in tools without listing every tool name.
+
+在 SDK 中使用 `toolsets`，或在 CLI 中使用 `--toolset`，可以启用命名的内置工具组，而不必逐个列出工具名。
+
+```typescript
+const result = await run({
+  prompt: "Review this repository and check current docs.",
+  options: {
+    toolsets: ["repo-readonly", "research"],
+    disallowedTools: ["WebSearch"],
+  },
+});
+```
+
+| Toolset         | Tools                                                                 |
+| --------------- | --------------------------------------------------------------------- |
+| `repo-readonly` | `Read`, `Glob`, `Grep`                                                |
+| `repo-edit`     | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `NotebookEdit`               |
+| `research`      | `WebFetch`, `WebSearch`                                               |
+| `planning`      | `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`, `TodoWrite`       |
+| `tasks`         | `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskGet`, `TaskStop`, `TaskOutput` |
+| `automation`    | `CronCreate`, `CronDelete`, `CronList`, `RemoteTrigger`               |
+| `agents`        | `Agent`, `SendMessage`, `TeamCreate`, `TeamDelete`                    |
+| `mcp`           | `ListMcpResources`, `ReadMcpResource`                                 |
+| `skills`        | `Skill`                                                               |
+
+`toolsets` are merged with `allowedTools`; `disallowedTools` is applied last and can remove tools from either source. For example, `toolsets: ["repo-readonly"]` plus `allowedTools: ["WebFetch"]` enables `Read`, `Glob`, `Grep`, and `WebFetch`; adding `disallowedTools: ["Grep"]` removes `Grep`.
+
+`toolsets` 会与 `allowedTools` 合并；`disallowedTools` 最后应用，可以从任一来源移除工具。例如，`toolsets: ["repo-readonly"]` 加 `allowedTools: ["WebFetch"]` 会启用 `Read`、`Glob`、`Grep` 和 `WebFetch`；再加 `disallowedTools: ["Grep"]` 会移除 `Grep`。
 
 ### Environment variables
 
@@ -876,9 +912,9 @@ npx clavue-agent "Summarize this repo"
 
 ### Deploy inside another service / 在其他服务中部署
 
-For a server, worker, CI job, Docker image, or serverless function, install `clavue-agent-sdk`, provide `CLAVUE_AGENT_API_KEY`, restrict tools with `allowedTools` when the agent only needs read-only access, and call `run()` for single-shot jobs or `createAgent()` for long-lived sessions.
+For a server, worker, CI job, Docker image, or serverless function, install `clavue-agent-sdk`, provide `CLAVUE_AGENT_API_KEY`, restrict tools with `toolsets` or `allowedTools` when the agent only needs limited access, and call `run()` for single-shot jobs or `createAgent()` for long-lived sessions.
 
-对于服务端、worker、CI、Docker 或 Serverless：安装 `clavue-agent-sdk`，提供 `CLAVUE_AGENT_API_KEY`；如果 agent 只需要只读能力，用 `allowedTools` 限制工具；一次性任务用 `run()`，长会话用 `createAgent()`。
+对于服务端、worker、CI、Docker 或 Serverless：安装 `clavue-agent-sdk`，提供 `CLAVUE_AGENT_API_KEY`；如果 agent 只需要有限能力，用 `toolsets` 或 `allowedTools` 限制工具；一次性任务用 `run()`，长会话用 `createAgent()`。
 
 ```typescript
 import { run } from "clavue-agent-sdk";
@@ -888,7 +924,7 @@ export async function handleRepositorySummary(repoPath: string) {
     prompt: "Summarize this repository for onboarding.",
     options: {
       cwd: repoPath,
-      allowedTools: ["Read", "Glob", "Grep"],
+      toolsets: ["repo-readonly"],
       maxTurns: 5,
     },
   });

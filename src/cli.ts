@@ -2,7 +2,7 @@
 import { pathToFileURL } from 'node:url'
 
 import { query, run } from './agent.js'
-import type { AgentOptions } from './types.js'
+import type { AgentOptions, ToolsetName } from './types.js'
 import { parseCommaSeparatedList } from './utils/parsing.js'
 
 function printHelp(): void {
@@ -21,6 +21,7 @@ Options:
   --cwd <path>              Working directory (defaults to current directory)
   --max-turns <number>      Maximum agentic turns (default: 10)
   --allow <tools>           Comma-separated allow-list, e.g. Read,Glob,Grep
+  --toolset <names>         Comma-separated toolsets, e.g. repo-readonly,research
   --deny <tools>            Comma-separated deny-list, e.g. Bash,Write,Edit
   --self-improvement        Save bounded improvement memories after the run
   --json                    Print the final run artifact as JSON
@@ -53,6 +54,28 @@ function readApiType(value: string): AgentOptions['apiType'] {
 function envFlagEnabled(value: string | undefined): boolean {
   const normalized = value?.toLowerCase()
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+const TOOLSET_NAMES = new Set<ToolsetName>([
+  'repo-readonly',
+  'repo-edit',
+  'research',
+  'planning',
+  'tasks',
+  'automation',
+  'agents',
+  'mcp',
+  'skills',
+])
+
+function readToolsets(value: string): ToolsetName[] {
+  const toolsets = parseCommaSeparatedList(value)
+  for (const toolset of toolsets) {
+    if (!TOOLSET_NAMES.has(toolset as ToolsetName)) {
+      throw new Error(`Unknown toolset: ${toolset}`)
+    }
+  }
+  return toolsets as ToolsetName[]
 }
 
 function applySelfImprovementDefaults(options: AgentOptions): void {
@@ -122,6 +145,10 @@ export function parseArgs(
       }
       case '--allow':
         options.allowedTools = parseCommaSeparatedList(readValue(argv, i, arg))
+        i++
+        break
+      case '--toolset':
+        options.toolsets = readToolsets(readValue(argv, i, arg))
         i++
         break
       case '--deny':

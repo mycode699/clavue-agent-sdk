@@ -498,6 +498,7 @@ export type {
   AgentRunResult,
   AgentSelfImprovementResult,
   QueryResult,
+  ToolsetName,
   SelfImprovementConfig,
   SelfImprovementMemoryConfig,
   SelfImprovementRetroConfig,

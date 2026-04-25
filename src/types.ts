@@ -406,6 +406,17 @@ export interface ModelInfo {
   supportsFastMode?: boolean
 }
 
+export type ToolsetName =
+  | 'repo-readonly'
+  | 'repo-edit'
+  | 'research'
+  | 'planning'
+  | 'tasks'
+  | 'automation'
+  | 'agents'
+  | 'mcp'
+  | 'skills'
+
 export interface AgentOptions {
   /** LLM model ID */
   model?: string
@@ -454,6 +465,8 @@ export interface AgentOptions {
   memory?: MemoryConfig
   /** Automated run learning and retro/eval feedback loop. */
   selfImprovement?: boolean | SelfImprovementConfig
+  /** Named built-in capability profiles that expand into allowed tool names */
+  toolsets?: ToolsetName[]
   /** Tool names to pre-approve without prompting */
   allowedTools?: string[]
   /** Tool names to deny */
