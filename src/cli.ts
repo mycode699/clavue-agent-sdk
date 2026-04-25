@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 
 import { query, run } from './agent.js'
 import type { AgentOptions, ToolsetName } from './types.js'
+import { isToolsetName } from './tools/index.js'
 import { parseCommaSeparatedList } from './utils/parsing.js'
 
 function printHelp(): void {
@@ -56,26 +57,15 @@ function envFlagEnabled(value: string | undefined): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
-const TOOLSET_NAMES = new Set<ToolsetName>([
-  'repo-readonly',
-  'repo-edit',
-  'research',
-  'planning',
-  'tasks',
-  'automation',
-  'agents',
-  'mcp',
-  'skills',
-])
-
 function readToolsets(value: string): ToolsetName[] {
-  const toolsets = parseCommaSeparatedList(value)
-  for (const toolset of toolsets) {
-    if (!TOOLSET_NAMES.has(toolset as ToolsetName)) {
+  const toolsets: ToolsetName[] = []
+  for (const toolset of parseCommaSeparatedList(value)) {
+    if (!isToolsetName(toolset)) {
       throw new Error(`Unknown toolset: ${toolset}`)
     }
+    toolsets.push(toolset)
   }
-  return toolsets as ToolsetName[]
+  return toolsets
 }
 
 function applySelfImprovementDefaults(options: AgentOptions): void {

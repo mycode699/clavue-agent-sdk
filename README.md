@@ -716,18 +716,26 @@ npx tsx examples/web/server.ts
 
 ### Named toolsets
 
-Use `toolsets` in the SDK or `--toolset` in the CLI to enable named groups of built-in tools without listing every tool name.
+Use `toolsets` in the SDK or `--toolset` in the CLI to enable named groups of built-in tools without listing every tool name. The SDK also exports `TOOLSET_NAMES`, `isToolsetName()`, and `getToolsetTools()` for validation and UI generation.
 
-在 SDK 中使用 `toolsets`，或在 CLI 中使用 `--toolset`，可以启用命名的内置工具组，而不必逐个列出工具名。
+在 SDK 中使用 `toolsets`，或在 CLI 中使用 `--toolset`，可以启用命名的内置工具组，而不必逐个列出工具名。SDK 也导出 `TOOLSET_NAMES`、`isToolsetName()` 和 `getToolsetTools()`，方便做校验或生成 UI。
 
 ```typescript
+import { TOOLSET_NAMES, getToolsetTools, isToolsetName, run } from "clavue-agent-sdk";
+
+const selected = "repo-readonly";
+if (!isToolsetName(selected)) throw new Error("Unknown toolset");
+
 const result = await run({
   prompt: "Review this repository and check current docs.",
   options: {
-    toolsets: ["repo-readonly", "research"],
+    toolsets: [selected, "research"],
     disallowedTools: ["WebSearch"],
   },
 });
+
+console.log(TOOLSET_NAMES);
+console.log(getToolsetTools([selected]));
 ```
 
 | Toolset         | Tools                                                                 |
@@ -865,7 +873,7 @@ Register custom skills with `registerSkill()`.
 | 07  | `examples/07-custom-tools.ts`         | Custom tools with `defineTool()`       |
 | 08  | `examples/08-official-api-compat.ts`  | `query()` API pattern                  |
 | 09  | `examples/09-subagents.ts`            | Subagent delegation                    |
-| 10  | `examples/10-permissions.ts`          | Read-only agent with tool restrictions |
+| 10  | `examples/10-permissions.ts`          | Read-only agent with named toolsets    |
 | 11  | `examples/11-custom-mcp-tools.ts`     | `tool()` + `createSdkMcpServer()`      |
 | 12  | `examples/12-skills.ts`              | Skill system usage                     |
 | 13  | `examples/13-hooks.ts`               | Lifecycle hooks                        |

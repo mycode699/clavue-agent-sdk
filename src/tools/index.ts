@@ -140,6 +140,18 @@ export function getAllBaseTools(): ToolDefinition[] {
   return [...ALL_TOOLS]
 }
 
+export const TOOLSET_NAMES: readonly ToolsetName[] = [
+  'repo-readonly',
+  'repo-edit',
+  'research',
+  'planning',
+  'tasks',
+  'automation',
+  'agents',
+  'mcp',
+  'skills',
+]
+
 const TOOLSETS: Record<ToolsetName, string[]> = {
   'repo-readonly': ['Read', 'Glob', 'Grep'],
   'repo-edit': ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'],
@@ -150,6 +162,10 @@ const TOOLSETS: Record<ToolsetName, string[]> = {
   agents: ['Agent', 'SendMessage', 'TeamCreate', 'TeamDelete'],
   mcp: ['ListMcpResources', 'ReadMcpResource'],
   skills: ['Skill'],
+}
+
+export function isToolsetName(value: string): value is ToolsetName {
+  return (TOOLSET_NAMES as readonly string[]).includes(value)
 }
 
 export function getToolsetTools(toolsets?: ToolsetName[]): string[] {

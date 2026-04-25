@@ -111,6 +111,13 @@ test('allowedTools filtering controls init tools', async () => {
 })
 
 test('toolsets expand to named built-in tool groups', async () => {
+  const { TOOLSET_NAMES, getToolsetTools, isToolsetName } = await import('../src/index.ts')
+
+  assert.ok(TOOLSET_NAMES.includes('repo-readonly'))
+  assert.equal(isToolsetName('repo-readonly'), true)
+  assert.equal(isToolsetName('unknown'), false)
+  assert.deepEqual(getToolsetTools(['repo-readonly']), ['Read', 'Glob', 'Grep'])
+
   const agent = new Agent({
     model: 'gpt-5.4',
     toolsets: ['repo-readonly'],

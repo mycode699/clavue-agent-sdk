@@ -144,6 +144,9 @@ export type {
 export {
   // Registry
   getAllBaseTools,
+  getToolsetTools,
+  isToolsetName,
+  TOOLSET_NAMES,
   filterTools,
   assembleToolPool,
 

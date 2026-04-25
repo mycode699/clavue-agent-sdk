@@ -26,7 +26,7 @@ async function main() {
         maxEntriesPerRun: 4,
       },
     },
-    allowedTools: ['Read', 'Glob', 'Grep'],
+    toolsets: ['repo-readonly'],
     maxTurns: 5,
   })
 

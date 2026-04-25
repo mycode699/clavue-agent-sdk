@@ -2,7 +2,7 @@
  * Example 10: Permissions and Allowed Tools
  *
  * Shows how to restrict which tools the agent can use.
- * Creates a read-only agent that can analyze but not modify code.
+ * Creates a read-only agent with a named toolset so it can analyze but not modify code.
  *
  * Run: npx tsx examples/10-permissions.ts
  */
@@ -11,11 +11,13 @@ import { query } from '../src/index.js'
 async function main() {
   console.log('--- Example 10: Read-Only Agent ---\n')
 
-  // Read-only agent: can only use Read, Glob, Grep
+  // repo-readonly expands to Read, Glob, and Grep.
+  // disallowedTools still applies last, so you can remove specific tools from a toolset.
   for await (const message of query({
     prompt: 'Review the code in src/agent.ts for best practices. Be concise.',
     options: {
-      allowedTools: ['Read', 'Glob', 'Grep'],
+      toolsets: ['repo-readonly'],
+      disallowedTools: ['Bash', 'Write', 'Edit'],
     },
   })) {
     const msg = message as any
