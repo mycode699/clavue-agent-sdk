@@ -20,6 +20,7 @@
 import { z, type ZodRawShape, type ZodObject } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { ToolDefinition, ToolResult, ToolContext } from './types.js'
+import { formatImageBlockForText } from './utils/messages.js'
 
 /**
  * Tool annotations (MCP standard).
@@ -102,7 +103,7 @@ export function sdkToolToToolDefinition(sdkTool: SdkMcpToolDefinition<any>): Too
         const text = result.content
           .map((block) => {
             if (block.type === 'text') return block.text
-            if (block.type === 'image') return `[Image: ${block.mimeType}]`
+            if (block.type === 'image') return formatImageBlockForText(block)
             if (block.type === 'resource') return block.resource.text || `[Resource: ${block.resource.uri}]`
             return JSON.stringify(block)
           })

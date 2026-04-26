@@ -3,6 +3,8 @@
  *
  * Shows how to restrict which tools the agent can use.
  * Creates a read-only agent with a named toolset so it can analyze but not modify code.
+ * Read-only tools only run in parallel when they also declare concurrency safety;
+ * set AGENT_SDK_MAX_TOOL_CONCURRENCY to cap safe parallel batches.
  *
  * Run: npx tsx examples/10-permissions.ts
  */

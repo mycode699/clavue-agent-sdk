@@ -36,11 +36,17 @@ export interface NormalizedMessageParam {
   content: string | NormalizedContentBlock[]
 }
 
+export type NormalizedImageSource =
+  | { type: 'url'; url: string; detail?: string; [key: string]: any }
+  | { type: 'base64'; media_type: string; data: string; [key: string]: any }
+  | { type: 'data_url'; url: string; media_type?: string; data?: string; [key: string]: any }
+  | Record<string, any>
+
 export type NormalizedContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
-  | { type: 'image'; source: any }
+  | { type: 'image'; source: NormalizedImageSource }
   | { type: 'thinking'; thinking: string }
 
 export interface NormalizedTool {
@@ -71,6 +77,7 @@ export interface CreateMessageResponse {
 export type NormalizedResponseBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }
+  | { type: 'image'; source: NormalizedImageSource }
 
 // --------------------------------------------------------------------------
 // Provider Interface

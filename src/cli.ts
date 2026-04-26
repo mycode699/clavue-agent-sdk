@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 
 import { query, run } from './agent.js'
 import type { AgentOptions, ToolsetName } from './types.js'
+import { formatImageBlockForText } from './utils/messages.js'
 import { isToolsetName } from './tools/index.js'
 import { parseCommaSeparatedList } from './utils/parsing.js'
 
@@ -203,6 +204,9 @@ async function main(): Promise<void> {
         } else if (block.type === 'text') {
           process.stdout.write(block.text)
           if (!block.text.endsWith('\n')) process.stdout.write('\n')
+        } else if (block.type === 'image') {
+          process.stdout.write(formatImageBlockForText(block))
+          process.stdout.write('\n')
         }
       }
     } else if (event.type === 'result' && event.is_error) {

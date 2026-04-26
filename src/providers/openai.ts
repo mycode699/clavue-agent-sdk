@@ -21,9 +21,41 @@ import type {
 // OpenAI-specific types (minimal, just what we need)
 // --------------------------------------------------------------------------
 
+interface OpenAIImageUrlPart {
+  type: 'image_url'
+  image_url: {
+    url: string
+    detail?: string
+  }
+}
+
+interface OpenAITextPart {
+  type: 'text'
+  text: string
+}
+
+interface OpenAIResponsesInputTextPart {
+  type: 'input_text'
+  text: string
+}
+
+interface OpenAIResponsesInputImagePart {
+  type: 'input_image'
+  image_url: string
+  detail?: string
+}
+
+type OpenAIResponsesContentPart = OpenAIResponsesInputTextPart | OpenAIResponsesInputImagePart
+
+interface OpenAIResponsesMessage {
+  role: 'system' | 'user' | 'assistant'
+  content?: string | OpenAIResponsesContentPart[] | null
+  tool_calls?: OpenAIToolCall[]
+}
+
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null
+  content?: string | Array<OpenAITextPart | OpenAIImageUrlPart> | null
   tool_calls?: OpenAIToolCall[]
   tool_call_id?: string
 }
@@ -72,6 +104,8 @@ interface OpenAIResponseItem {
   name?: string
   call_id?: string
   arguments?: string
+  result?: string
+  revised_prompt?: string
 }
 
 interface OpenAIResponsesFunctionCallOutput {
@@ -85,6 +119,14 @@ interface OpenAIResponsesResponse {
   output?: OpenAIResponseItem[]
   output_text?: string
   status?: string
+  incomplete_details?: {
+    reason?: string
+  }
+  error?: {
+    message?: string
+    type?: string
+    code?: string
+  }
   usage?: {
     input_tokens?: number
     output_tokens?: number
@@ -238,22 +280,24 @@ export class OpenAIProvider implements LLMProvider {
       return
     }
 
-    // Content blocks may contain text and/or tool_result blocks
-    const textParts: string[] = []
+    const contentParts: Array<OpenAITextPart | OpenAIImageUrlPart> = []
     const toolResults: Array<{ tool_use_id: string; content: string }> = []
 
     for (const block of msg.content) {
       if (block.type === 'text') {
-        textParts.push(block.text)
+        contentParts.push({ type: 'text', text: block.text })
+      } else if (block.type === 'image') {
+        contentParts.push(this.convertChatImagePart(block.source))
       } else if (block.type === 'tool_result') {
         toolResults.push({
           tool_use_id: block.tool_use_id,
-          content: block.content,
+          content: typeof block.content === 'string'
+            ? block.content
+            : JSON.stringify(block.content),
         })
       }
     }
 
-    // Tool results become separate tool messages
     for (const tr of toolResults) {
       result.push({
         role: 'tool',
@@ -262,15 +306,70 @@ export class OpenAIProvider implements LLMProvider {
       })
     }
 
-    // Text parts become a user message
-    if (textParts.length > 0) {
-      result.push({ role: 'user', content: textParts.join('\n') })
+    if (contentParts.length > 0) {
+      result.push({
+        role: 'user',
+        content: this.collapseTextOnlyChatParts(contentParts),
+      })
     }
+  }
+
+  private convertImageSourceToUrl(source: any): { url: string; detail?: string } {
+    if (typeof source === 'string') {
+      return { url: source }
+    }
+
+    if (source?.type === 'url' && typeof source.url === 'string') {
+      return { url: source.url, detail: source.detail }
+    }
+
+    if (source?.type === 'base64' && typeof source.data === 'string') {
+      const mediaType = source.media_type || source.mediaType || 'image/png'
+      return { url: `data:${mediaType};base64,${source.data}`, detail: source.detail }
+    }
+
+    if (source?.type === 'data_url' && typeof source.url === 'string') {
+      return { url: source.url, detail: source.detail }
+    }
+
+    if (typeof source?.url === 'string') {
+      return { url: source.url, detail: source.detail }
+    }
+
+    if (typeof source?.data === 'string') {
+      const mediaType = source.media_type || source.mediaType || 'image/png'
+      const data = source.data.startsWith('data:')
+        ? source.data
+        : `data:${mediaType};base64,${source.data}`
+      return { url: data, detail: source.detail }
+    }
+
+    return { url: String(source ?? '') }
+  }
+
+  private convertChatImagePart(source: any): OpenAIImageUrlPart {
+    const image = this.convertImageSourceToUrl(source)
+    return {
+      type: 'image_url',
+      image_url: image.detail
+        ? { url: image.url, detail: image.detail }
+        : { url: image.url },
+    }
+  }
+
+  private collapseTextOnlyChatParts(
+    parts: Array<OpenAITextPart | OpenAIImageUrlPart>,
+  ): string | Array<OpenAITextPart | OpenAIImageUrlPart> {
+    if (parts.every((part) => part.type === 'text')) {
+      return parts.map((part) => part.text).join('\n')
+    }
+
+    return parts
   }
 
   private convertAssistantMessage(
     msg: NormalizedMessageParam,
-    result: Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput>,
+    result: Array<OpenAIChatMessage | OpenAIResponsesMessage | OpenAIResponsesFunctionCallOutput>,
   ): void {
     if (typeof msg.content === 'string') {
       result.push({ role: 'assistant', content: msg.content })
@@ -328,8 +427,8 @@ export class OpenAIProvider implements LLMProvider {
   private convertResponsesInput(
     system: string,
     messages: NormalizedMessageParam[],
-  ): Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput> {
-    const result: Array<OpenAIChatMessage | OpenAIResponsesFunctionCallOutput> = []
+  ): Array<OpenAIResponsesMessage | OpenAIResponsesFunctionCallOutput> {
+    const result: Array<OpenAIResponsesMessage | OpenAIResponsesFunctionCallOutput> = []
 
     if (system) {
       result.push({ role: 'system', content: system })
@@ -342,11 +441,13 @@ export class OpenAIProvider implements LLMProvider {
           continue
         }
 
-        const textParts: string[] = []
+        const contentParts: Array<OpenAIResponsesInputTextPart | OpenAIResponsesInputImagePart> = []
 
         for (const block of msg.content) {
           if (block.type === 'text') {
-            textParts.push(block.text)
+            contentParts.push({ type: 'input_text', text: block.text })
+          } else if (block.type === 'image') {
+            contentParts.push(this.convertResponsesImagePart(block.source))
           } else if (block.type === 'tool_result') {
             result.push({
               type: 'function_call_output',
@@ -358,8 +459,11 @@ export class OpenAIProvider implements LLMProvider {
           }
         }
 
-        if (textParts.length > 0) {
-          result.push({ role: 'user', content: textParts.join('\n') })
+        if (contentParts.length > 0) {
+          result.push({
+            role: 'user',
+            content: this.collapseTextOnlyResponsesParts(contentParts),
+          })
         }
 
         continue
@@ -369,6 +473,23 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     return result
+  }
+
+  private convertResponsesImagePart(source: any): OpenAIResponsesInputImagePart {
+    const image = this.convertImageSourceToUrl(source)
+    return image.detail
+      ? { type: 'input_image', image_url: image.url, detail: image.detail }
+      : { type: 'input_image', image_url: image.url }
+  }
+
+  private collapseTextOnlyResponsesParts(
+    parts: Array<OpenAIResponsesInputTextPart | OpenAIResponsesInputImagePart>,
+  ): string | Array<OpenAIResponsesInputTextPart | OpenAIResponsesInputImagePart> {
+    if (parts.every((part) => part.type === 'input_text')) {
+      return parts.map((part) => part.text).join('\n')
+    }
+
+    return parts
   }
 
   private convertResponsesTools(tools: NormalizedTool[]): Record<string, any>[] {
@@ -399,6 +520,7 @@ export class OpenAIProvider implements LLMProvider {
     // Add text content
     if (choice.message.content) {
       content.push({ type: 'text', text: choice.message.content })
+      content.push(...this.extractMarkdownImageBlocks(choice.message.content))
     }
 
     // Add tool calls
@@ -441,6 +563,10 @@ export class OpenAIProvider implements LLMProvider {
   private convertResponsesResponse(
     data: OpenAIResponsesResponse,
   ): CreateMessageResponse {
+    if (data.status === 'failed' || data.status === 'cancelled') {
+      throw new Error(data.error?.message || `OpenAI Responses API returned ${data.status}`)
+    }
+
     const content: NormalizedResponseBlock[] = []
 
     for (const item of data.output || []) {
@@ -448,8 +574,22 @@ export class OpenAIProvider implements LLMProvider {
         for (const block of item.content || []) {
           if (block.type === 'output_text' && block.text) {
             content.push({ type: 'text', text: block.text })
+            content.push(...this.extractMarkdownImageBlocks(block.text))
           }
         }
+      }
+
+      if (item.type === 'image_generation_call' && item.result) {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: item.result,
+            ...(item.id ? { id: item.id } : {}),
+            ...(item.revised_prompt ? { revised_prompt: item.revised_prompt } : {}),
+          },
+        })
       }
 
       if (item.type === 'function_call' && item.call_id && item.name) {
@@ -471,6 +611,7 @@ export class OpenAIProvider implements LLMProvider {
 
     if (content.length === 0 && data.output_text) {
       content.push({ type: 'text', text: data.output_text })
+      content.push(...this.extractMarkdownImageBlocks(data.output_text))
     }
 
     if (content.length === 0) {
@@ -479,12 +620,54 @@ export class OpenAIProvider implements LLMProvider {
 
     return {
       content,
-      stopReason: content.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
+      stopReason: this.mapResponsesStopReason(data, content),
       usage: {
         input_tokens: data.usage?.input_tokens || 0,
         output_tokens: data.usage?.output_tokens || 0,
       },
     }
+  }
+
+  private extractMarkdownImageBlocks(text: string): NormalizedResponseBlock[] {
+    const blocks: NormalizedResponseBlock[] = []
+    const imageMarkdown = /!\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g
+    const seen = new Set<string>()
+    let match: RegExpExecArray | null
+
+    while ((match = imageMarkdown.exec(text)) !== null) {
+      const url = match[1]
+      if (!url || seen.has(url)) continue
+      seen.add(url)
+      blocks.push({
+        type: 'image',
+        source: {
+          type: 'url',
+          url,
+          format: 'markdown_image',
+        },
+      })
+    }
+
+    return blocks
+  }
+
+  private mapResponsesStopReason(
+    data: OpenAIResponsesResponse,
+    content: NormalizedResponseBlock[],
+  ): 'end_turn' | 'max_tokens' | 'tool_use' | string {
+    if (content.some((block) => block.type === 'tool_use')) {
+      return 'tool_use'
+    }
+
+    if (data.status === 'incomplete') {
+      const reason = data.incomplete_details?.reason
+      if (reason === 'max_output_tokens' || reason === 'max_tokens') {
+        return 'max_tokens'
+      }
+      return reason || 'incomplete'
+    }
+
+    return 'end_turn'
   }
 
   private mapFinishReason(

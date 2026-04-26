@@ -8,6 +8,50 @@
 import type { Message, UserMessage, AssistantMessage, TokenUsage } from '../types.js'
 
 /**
+ * Describe an image source without embedding bulky data.
+ */
+export function describeImageSource(source: any): string {
+  if (typeof source === 'string') {
+    return source.startsWith('data:') ? describeDataUrl(source) : source
+  }
+
+  if (!source || typeof source !== 'object') return 'image'
+
+  const url = typeof source.url === 'string' ? source.url : undefined
+  const mediaType = source.media_type || source.mediaType
+
+  if (url?.startsWith('data:')) return describeDataUrl(url)
+  if (url) return url
+
+  if (source.type === 'base64' || typeof source.data === 'string') {
+    return mediaType ? `${mediaType} base64` : 'base64 image'
+  }
+
+  if (source.type === 'data_url') {
+    return mediaType ? `${mediaType} data URL` : 'data URL image'
+  }
+
+  if (typeof source.id === 'string') return source.id
+  if (typeof mediaType === 'string') return mediaType
+  if (typeof source.type === 'string') return source.type
+  return 'image'
+}
+
+function describeDataUrl(value: string): string {
+  const match = /^data:([^;,]+)[;,]/.exec(value)
+  return match?.[1] ? `${match[1]} data URL` : 'data URL image'
+}
+
+/**
+ * Format an image block as a compact textual placeholder.
+ */
+export function formatImageBlockForText(block: any): string {
+  if (block?.source) return `[Image: ${describeImageSource(block.source)}]`
+  if (block?.mimeType) return `[Image: ${block.mimeType}]`
+  return '[Image: image]'
+}
+
+/**
  * Create a user message.
  */
 export function createUserMessage(
@@ -170,8 +214,12 @@ export function extractTextFromContent(
   if (typeof content === 'string') return content
 
   return content
-    .filter((b: any) => b.type === 'text')
-    .map((b: any) => b.text)
+    .map((b: any) => {
+      if (b.type === 'text') return b.text
+      if (b.type === 'image') return formatImageBlockForText(b)
+      return ''
+    })
+    .filter(Boolean)
     .join('')
 }
 

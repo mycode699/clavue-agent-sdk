@@ -15,6 +15,10 @@ export interface RetryConfig {
   retryableStatusCodes: number[]
 }
 
+export interface RetryDelayOptions {
+  retryAfterMs?: number
+}
+
 /**
  * Default retry configuration.
  */
@@ -29,12 +33,32 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
  * Check if an error is retryable.
  */
 export function isRetryableError(err: any, config: RetryConfig = DEFAULT_RETRY_CONFIG): boolean {
+  if (err?.name === 'AbortError') {
+    return false
+  }
+
   if (err?.status && config.retryableStatusCodes.includes(err.status)) {
     return true
   }
 
-  // Network errors
-  if (err?.code === 'ECONNRESET' || err?.code === 'ETIMEDOUT' || err?.code === 'ECONNREFUSED') {
+  const networkCodes = new Set([
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'ECONNABORTED',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+    'UND_ERR_SOCKET',
+  ])
+  const code = err?.code || err?.cause?.code
+  if (networkCodes.has(code)) {
+    return true
+  }
+
+  if (err instanceof TypeError && /fetch|network|socket/i.test(err.message)) {
     return true
   }
 
@@ -49,11 +73,61 @@ export function isRetryableError(err: any, config: RetryConfig = DEFAULT_RETRY_C
 /**
  * Calculate delay for exponential backoff.
  */
-export function getRetryDelay(attempt: number, config: RetryConfig = DEFAULT_RETRY_CONFIG): number {
+export function getRetryDelay(
+  attempt: number,
+  config: RetryConfig = DEFAULT_RETRY_CONFIG,
+  options: RetryDelayOptions = {},
+): number {
+  if (options.retryAfterMs !== undefined) {
+    return Math.min(Math.max(options.retryAfterMs, 0), config.maxDelayMs)
+  }
+
   const delay = config.baseDelayMs * Math.pow(2, attempt)
   // Add jitter (±25%)
   const jitter = delay * 0.25 * (Math.random() * 2 - 1)
   return Math.min(delay + jitter, config.maxDelayMs)
+}
+
+function readRetryAfterMs(err: any): number | undefined {
+  const retryAfter =
+    err?.headers?.['retry-after'] ??
+    err?.headers?.['Retry-After'] ??
+    (typeof err?.headers?.get === 'function' ? err.headers.get('retry-after') : undefined)
+  if (!retryAfter) return undefined
+
+  const seconds = Number(retryAfter)
+  if (Number.isFinite(seconds)) {
+    return seconds * 1000
+  }
+
+  const retryAt = Date.parse(String(retryAfter))
+  if (Number.isFinite(retryAt)) {
+    return Math.max(0, retryAt - Date.now())
+  }
+
+  return undefined
+}
+
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  if (abortSignal.aborted) {
+    return Promise.reject(new Error('Aborted'))
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(new Error('Aborted'))
+    }
+    abortSignal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 /**
@@ -85,8 +159,8 @@ export async function withRetry<T>(
       }
 
       // Wait before retry
-      const delay = getRetryDelay(attempt, config)
-      await new Promise((resolve) => setTimeout(resolve, delay))
+      const delay = getRetryDelay(attempt, config, { retryAfterMs: readRetryAfterMs(err) })
+      await sleep(delay, abortSignal)
     }
   }
 

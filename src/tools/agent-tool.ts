@@ -7,6 +7,7 @@
 
 import type { ToolDefinition, ToolContext, ToolResult, AgentDefinition } from '../types.js'
 import { createDefaultToolPolicy } from '../types.js'
+import { formatImageBlockForText } from '../utils/messages.js'
 import { QueryEngine } from '../engine.js'
 import { getAllBaseTools, filterTools } from './index.js'
 import { createProvider, type ApiType } from '../providers/index.js'
@@ -130,13 +131,19 @@ export const AgentTool: ToolDefinition = {
     try {
       for await (const event of engine.submitMessage(input.prompt)) {
         if (event.type === 'assistant') {
+          const fragments: string[] = []
           for (const block of event.message.content) {
-            if ('text' in block && block.text.trim()) {
-              lastAssistantText = block.text
+            if (block.type === 'text' && block.text.trim()) {
+              fragments.push(block.text)
+            } else if (block.type === 'image') {
+              fragments.push(formatImageBlockForText(block))
             }
             if ('name' in block && typeof block.name === 'string') {
               toolCalls.push(block.name)
             }
+          }
+          if (fragments.length > 0) {
+            lastAssistantText = fragments.join('\n')
           }
         } else if (event.type === 'result' && event.result?.trim()) {
           finalResult = event.result

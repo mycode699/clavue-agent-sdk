@@ -31,9 +31,22 @@ function toolUseResponse(input: unknown, name = 'capture'): CreateMessageRespons
   }
 }
 
-function captureTool(onInput?: (input: unknown) => void): ToolDefinition {
+function multiToolUseResponse(inputs: unknown[], name = 'capture'): CreateMessageResponse {
   return {
-    name: 'capture',
+    content: inputs.map((input, index) => ({
+      type: 'tool_use' as const,
+      id: `tool-${index + 1}`,
+      name,
+      input,
+    })),
+    stopReason: 'tool_use',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  }
+}
+
+function captureTool(onInput?: (input: unknown) => void | Promise<void>, options: Partial<ToolDefinition> = {}): ToolDefinition {
+  return {
+    name: options.name || 'capture',
     description: 'Capture input for permission tests',
     inputSchema: {
       type: 'object',
@@ -43,13 +56,14 @@ function captureTool(onInput?: (input: unknown) => void): ToolDefinition {
       required: ['value'],
     },
     call: async (input) => {
-      onInput?.(input)
+      await onInput?.(input)
       return {
         type: 'tool_result',
         tool_use_id: '',
         content: JSON.stringify(input),
       }
     },
+    ...options,
   }
 }
 
@@ -193,6 +207,88 @@ test('canUseTool updatedInput reaches the tool call', async () => {
   try {
     await collectEvents(agent)
     assert.deepEqual(receivedInput, { value: 'updated' })
+  } finally {
+    await agent.close()
+  }
+})
+
+test('invalid max tool concurrency falls back to a safe value', async () => {
+  const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+  process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = '0'
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [captureTool(undefined, { isReadOnly: () => true, isConcurrencySafe: () => true })],
+  })
+  ;(agent as any).provider = new StubProvider([
+    multiToolUseResponse([{ value: 'one' }, { value: 'two' }]),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await Promise.race([
+      collectEvents(agent),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timed out')), 500)),
+    ])
+    assert.equal(events.at(-1)?.type, 'result')
+  } finally {
+    if (originalConcurrency === undefined) {
+      delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+    } else {
+      process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = originalConcurrency
+    }
+    await agent.close()
+  }
+})
+
+test('non-numeric max tool concurrency falls back to a safe value', async () => {
+  const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+  process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = 'not-a-number'
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [captureTool(undefined, { isReadOnly: () => true, isConcurrencySafe: () => true })],
+  })
+  ;(agent as any).provider = new StubProvider([
+    multiToolUseResponse([{ value: 'one' }, { value: 'two' }]),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await Promise.race([
+      collectEvents(agent),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timed out')), 500)),
+    ])
+    assert.equal(events.at(-1)?.type, 'result')
+  } finally {
+    if (originalConcurrency === undefined) {
+      delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+    } else {
+      process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = originalConcurrency
+    }
+    await agent.close()
+  }
+})
+
+test('read-only tools that are not concurrency-safe execute serially', async () => {
+  let activeCalls = 0
+  let maxActiveCalls = 0
+  const tool = captureTool(async () => {
+    activeCalls += 1
+    maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    activeCalls -= 1
+  }, { isReadOnly: () => true, isConcurrencySafe: () => false })
+
+  const agent = new Agent({ model: 'gpt-5.4', tools: [tool] })
+  ;(agent as any).provider = new StubProvider([
+    multiToolUseResponse([{ value: 'one' }, { value: 'two' }, { value: 'three' }]),
+    textResponse('done'),
+  ])
+
+  try {
+    await collectEvents(agent)
+    assert.equal(maxActiveCalls, 1)
   } finally {
     await agent.close()
   }

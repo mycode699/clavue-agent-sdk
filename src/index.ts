@@ -333,6 +333,8 @@ export {
   normalizeMessagesForAPI,
   stripImagesFromMessages,
   extractTextFromContent,
+  describeImageSource,
+  formatImageBlockForText,
   createCompactBoundaryMessage,
   truncateText,
 } from './utils/messages.js'
@@ -513,6 +515,7 @@ export type {
   QueryEngineConfig,
 
   // Content block types
+  ImageSource,
   ContentBlockParam,
   ContentBlock,
 

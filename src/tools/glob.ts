@@ -2,6 +2,7 @@
  * GlobTool - File pattern matching
  */
 
+import { spawn } from 'child_process'
 import { resolve } from 'path'
 import { defineTool } from './types.js'
 
@@ -49,13 +50,12 @@ export const GlobTool = defineTool({
       // Fall through to bash-based approach
     }
 
-    // Fallback: use bash find/glob
-    const { spawn } = await import('child_process')
+    // Fallback: pass the pattern through an environment variable instead of interpolating it into shell source.
     return new Promise<string>((resolvePromise) => {
-      // Use bash glob expansion or find
-      const cmd = `shopt -s globstar nullglob 2>/dev/null; cd ${JSON.stringify(searchDir)} && ls -1d ${pattern} 2>/dev/null | head -500`
-      const proc = spawn('bash', ['-c', cmd], {
+      const script = 'shopt -s globstar nullglob 2>/dev/null; compgen -G "$GLOB_PATTERN" | head -500'
+      const proc = spawn('bash', ['-c', script], {
         cwd: searchDir,
+        env: { ...process.env, GLOB_PATTERN: pattern },
         timeout: 30000,
       })
 

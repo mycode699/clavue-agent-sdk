@@ -7,6 +7,7 @@
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import { getSkill, getUserInvocableSkills } from '../skills/registry.js'
+import { formatImageBlockForText } from '../utils/messages.js'
 
 export const SkillTool: ToolDefinition = {
   name: 'Skill',
@@ -96,8 +97,7 @@ export const SkillTool: ToolDefinition = {
 
       // Convert content blocks to text
       const promptText = contentBlocks
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
+        .map((b) => b.type === 'text' ? b.text : formatImageBlockForText(b))
         .join('\n\n')
 
       // Build result with metadata

@@ -5,13 +5,22 @@
  * for parallel work without affecting the main working tree.
  */
 
-import { execSync } from 'child_process'
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { execFileSync } from 'child_process'
+import { join, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../types.js'
 
 // Track active worktrees
 const activeWorktrees = new Map<string, { path: string; branch: string; originalCwd: string }>()
+
+function runGit(args: string[], cwd: string): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: 'pipe' })
+}
+
+function isSafeBranchName(branch: string): boolean {
+  return /^(?!-)(?!.*\.\.)(?!.*[~^:?*\[\\])(?!.*(?:^|\/)\.)(?!.*\.lock$)[A-Za-z0-9._/-]+$/.test(branch) &&
+    !branch.endsWith('/') &&
+    !branch.endsWith('.')
+}
 
 export const EnterWorktreeTool: ToolDefinition = {
   name: 'EnterWorktree',
@@ -30,23 +39,25 @@ export const EnterWorktreeTool: ToolDefinition = {
   async call(input: any, context: { cwd: string }): Promise<ToolResult> {
     try {
       // Check if we're in a git repo
-      execSync('git rev-parse --git-dir', { cwd: context.cwd, encoding: 'utf-8' })
+      runGit(['rev-parse', '--git-dir'], context.cwd)
 
       const branch = input.branch || `worktree-${Date.now()}`
-      const worktreePath = input.path || join(context.cwd, '..', `.worktree-${branch}`)
+      if (!isSafeBranchName(branch)) {
+        throw new Error(`Invalid branch name: ${branch}`)
+      }
+      const worktreePath = input.path
+        ? resolve(context.cwd, input.path)
+        : join(context.cwd, '..', `.worktree-${branch.replaceAll('/', '-')}`)
 
       // Create the branch if it doesn't exist
       try {
-        execSync(`git branch ${branch}`, { cwd: context.cwd, encoding: 'utf-8', stdio: 'pipe' })
+        runGit(['branch', branch], context.cwd)
       } catch {
         // Branch might already exist
       }
 
       // Create worktree
-      execSync(`git worktree add ${JSON.stringify(worktreePath)} ${branch}`, {
-        cwd: context.cwd,
-        encoding: 'utf-8',
-      })
+      runGit(['worktree', 'add', worktreePath, branch], context.cwd)
 
       const id = crypto.randomUUID()
       activeWorktrees.set(id, {
@@ -105,17 +116,10 @@ export const ExitWorktreeTool: ToolDefinition = {
 
     try {
       if (action === 'remove') {
-        execSync(`git worktree remove ${JSON.stringify(worktree.path)} --force`, {
-          cwd: worktree.originalCwd,
-          encoding: 'utf-8',
-        })
+        runGit(['worktree', 'remove', worktree.path, '--force'], worktree.originalCwd)
         // Clean up branch
         try {
-          execSync(`git branch -D ${worktree.branch}`, {
-            cwd: worktree.originalCwd,
-            encoding: 'utf-8',
-            stdio: 'pipe',
-          })
+          runGit(['branch', '-D', worktree.branch], worktree.originalCwd)
         } catch {
           // Branch might have commits
         }

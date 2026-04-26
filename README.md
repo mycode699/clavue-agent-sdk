@@ -48,11 +48,11 @@ CLAVUE_AGENT_SELF_IMPROVEMENT=true \
 
 CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--toolset`, `--deny`, `--self-improvement`, `--json`.
 
-Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_SELF_IMPROVEMENT`.
+Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_SELF_IMPROVEMENT`, `AGENT_SDK_MAX_TOOL_CONCURRENCY`.
 
 命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--toolset`、`--deny`、`--self-improvement`、`--json`。
 
-环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`。
+环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`、`AGENT_SDK_MAX_TOOL_CONCURRENCY`。
 
 ### 1. Install as a library / 作为库安装
 
@@ -585,7 +585,7 @@ for await (const msg of query({
 }
 ```
 
-### Permissions
+### Permissions and tool execution safety
 
 ```typescript
 import { query } from "clavue-agent-sdk";
@@ -594,12 +594,35 @@ import { query } from "clavue-agent-sdk";
 for await (const msg of query({
   prompt: "Review the code in src/ for best practices.",
   options: {
-    allowedTools: ["Read", "Glob", "Grep"],
+    toolsets: ["repo-readonly"],
+    disallowedTools: ["WebSearch"],
+    canUseTool: async (tool, input) => {
+      if (tool.name === "Read") return { behavior: "allow" };
+      return { behavior: "allow", updatedInput: input };
+    },
   },
 })) {
   // ...
 }
 ```
+
+Tool access is controlled in layers: `toolsets` and `allowedTools` choose the available tool names, `disallowedTools` removes names last, `canUseTool` can deny or rewrite a specific tool input, and hooks can block lifecycle events. Subagents inherit the parent permission policy.
+
+工具访问按层控制：`toolsets` 和 `allowedTools` 选择可用工具名，`disallowedTools` 最后移除工具名，`canUseTool` 可以拒绝或改写单次工具输入，hooks 可以拦截生命周期事件。Subagent 会继承父 agent 的权限策略。
+
+The engine only parallelizes tool calls when a tool declares both `isReadOnly()` and `isConcurrencySafe()`. Mutating tools and read-only tools that are not concurrency-safe run serially. `AGENT_SDK_MAX_TOOL_CONCURRENCY` caps safe parallel batches; invalid, zero, or negative values fall back to `10` so runs do not hang.
+
+引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。`AGENT_SDK_MAX_TOOL_CONCURRENCY` 用于限制安全并行批次；无效、零或负数会回退到 `10`，避免运行卡住。
+
+### Provider retries and tolerance
+
+Provider calls automatically retry transient API and network failures with exponential backoff. Retryable conditions include rate limits, common 5xx/overload statuses, fetch/socket failures, and `Retry-After` headers; abort signals are honored during backoff.
+
+Provider 调用会对临时 API 和网络失败自动指数退避重试。可重试场景包括限流、常见 5xx/overload 状态、fetch/socket 失败以及 `Retry-After` 响应头；退避等待期间会响应 abort signal。
+
+For OpenAI-compatible GPT-5 models, the SDK uses the Responses API by default and falls back to Chat Completions when a gateway does not support `/responses`. Incomplete Responses output caused by output-token limits maps to `max_tokens` so the engine can continue; failed or cancelled Responses runs surface as errors instead of empty text.
+
+对于 OpenAI 兼容的 GPT-5 模型，SDK 默认使用 Responses API；如果网关不支持 `/responses`，会回退到 Chat Completions。因输出 token 限制导致的 incomplete Responses 会映射为 `max_tokens`，方便引擎继续；failed 或 cancelled 的 Responses 会以错误暴露，而不是返回空文本。
 
 ### Web UI
 
@@ -763,8 +786,13 @@ console.log(getToolsetTools([selected]));
 | `CLAVUE_AGENT_MODEL`      | Default model override                                   |
 | `CLAVUE_AGENT_BASE_URL`   | Custom API endpoint                                      |
 | `CLAVUE_AGENT_AUTH_TOKEN` | Alternative auth token                                   |
+| `AGENT_SDK_MAX_TOOL_CONCURRENCY` | Max concurrent batch size for tools that are both read-only and concurrency-safe; invalid values fall back to `10` |
 
 ## Built-in tools
+
+Filesystem tools resolve paths relative to `cwd` but may access absolute paths when the host exposes them. For least privilege, combine `cwd`, `toolsets`, `allowedTools`/`disallowedTools`, `canUseTool`, and `sandbox` settings at the application boundary.
+
+文件系统工具会相对 `cwd` 解析路径，但当宿主环境暴露绝对路径时也可能访问绝对路径。最小权限部署时，请在应用边界组合使用 `cwd`、`toolsets`、`allowedTools`/`disallowedTools`、`canUseTool` 与 `sandbox` 设置。
 
 | Tool                                       | Description                                  |
 | ------------------------------------------ | -------------------------------------------- |
@@ -839,12 +867,12 @@ Register custom skills with `registerSkill()`.
 | Component             | Description                                                        |
 | --------------------- | ------------------------------------------------------------------ |
 | **Provider layer**    | Abstracts Anthropic / OpenAI API differences                       |
-| **QueryEngine**       | Core agentic loop with auto-compact, retry, tool orchestration     |
+| **QueryEngine**       | Core agentic loop with auto-compact, retry, safe tool orchestration |
 | **Skill system**      | Reusable prompt templates with 5 bundled skills                    |
 | **Hook system**       | 20 lifecycle events integrated into the engine                     |
 | **Auto-compact**      | Summarizes conversation when context window fills up               |
 | **Micro-compact**     | Truncates oversized tool results                                   |
-| **Retry**             | Exponential backoff for rate limits and transient errors            |
+| **Retry**             | Exponential backoff for rate limits, transient errors, and Retry-After responses |
 | **Token estimation**  | Rough token counting with pricing for Claude, GPT, DeepSeek models |
 | **File cache**        | LRU cache (100 entries, 25 MB) for file reads                      |
 | **Session storage**   | Persist / resume / fork sessions on disk                           |

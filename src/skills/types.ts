@@ -5,7 +5,7 @@
  * They can be invoked by the model via the Skill tool or by users via /skillname.
  */
 
-import type { ToolContext } from '../types.js'
+import type { ImageSource, ToolContext } from '../types.js'
 import type { HookConfig } from '../hooks.js'
 
 /**
@@ -13,7 +13,7 @@ import type { HookConfig } from '../hooks.js'
  */
 export type SkillContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'image'; source: ImageSource }
 
 /**
  * Bundled skill definition.

@@ -3,14 +3,17 @@
  */
 
 // Content block types (provider-agnostic, compatible with Anthropic format)
+export type ImageSource = import('./providers/types.js').NormalizedImageSource
+
 export type ContentBlockParam =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: any }
+  | { type: 'image'; source: ImageSource }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; tool_use_id: string; content: string | any[]; is_error?: boolean }
 
 export type ContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'image'; source: ImageSource }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'thinking'; thinking: string }
 

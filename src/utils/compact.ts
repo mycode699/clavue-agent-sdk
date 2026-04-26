@@ -14,6 +14,7 @@ import {
   estimateMessagesTokens,
   getAutoCompactThreshold,
 } from './tokens.js'
+import { formatImageBlockForText } from './messages.js'
 
 /**
  * State for tracking auto-compaction across turns.
@@ -68,7 +69,7 @@ export async function compactConversation(
   state: AutoCompactState
 }> {
   try {
-    // Strip images before compacting to save tokens
+    // Replace bulky image data with compact placeholders before summarizing.
     const strippedMessages = stripImagesFromMessages(messages)
 
     // Build compaction prompt
@@ -133,8 +134,10 @@ function stripImagesFromMessages(
   return messages.map((msg: any) => {
     if (typeof msg.content === 'string') return msg
 
-    const filtered = (msg.content as any[]).filter((block: any) => {
-      return block.type !== 'image'
+    const filtered = (msg.content as any[]).map((block: any) => {
+      return block.type === 'image'
+        ? { type: 'text', text: formatImageBlockForText(block) }
+        : block
     })
 
     return { ...msg, content: filtered.length > 0 ? filtered : '[content removed for compaction]' }
@@ -157,6 +160,8 @@ function buildCompactionPrompt(messages: any[]): string {
       for (const block of msg.content as any[]) {
         if (block.type === 'text') {
           texts.push(block.text.slice(0, 3000))
+        } else if (block.type === 'image') {
+          texts.push(formatImageBlockForText(block))
         } else if (block.type === 'tool_use') {
           texts.push(`[Tool: ${block.name}]`)
         } else if (block.type === 'tool_result') {

@@ -45,6 +45,7 @@ import { initBundledSkills } from './skills/index.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 import { createDefaultToolPolicy } from './types.js'
+import { extractTextFromContent } from './utils/messages.js'
 
 // --------------------------------------------------------------------------
 // Agent class
@@ -393,11 +394,9 @@ export class Agent {
 
       switch (ev.type) {
         case 'assistant': {
-          const fragments = (ev.message.content as any[])
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-          if (fragments.length) {
-            finalText = fragments.join('')
+          const text = extractTextFromContent(ev.message.content as any[])
+          if (text) {
+            finalText = text
           }
           break
         }
@@ -584,10 +583,7 @@ export class Agent {
           ? lastUserMessage.message.content
           : ''
         const assistantText = lastAssistantMessage
-          ? lastAssistantMessage.message.content
-              .filter((block: any) => block.type === 'text')
-              .map((block: any) => block.text)
-              .join('\n')
+          ? extractTextFromContent(lastAssistantMessage.message.content)
           : ''
         const repoPath = this.cfg.memory.repoPath || cwd
         const storeOptions = { dir: this.cfg.memory.dir }

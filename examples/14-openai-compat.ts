@@ -3,6 +3,9 @@
  *
  * Shows how to use the SDK with OpenAI's API or any OpenAI-compatible
  * endpoint (e.g., DeepSeek, Qwen, vLLM, Ollama).
+ * GPT-5-family models use the Responses API first, fall back to Chat
+ * Completions when /responses is unsupported, and surface failed/cancelled
+ * Responses runs as errors.
  *
  * Environment variables:
  *   CLAVUE_AGENT_API_KEY=sk-...          # Your OpenAI API key
