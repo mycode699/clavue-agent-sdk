@@ -2,6 +2,7 @@
  * WebFetchTool - Fetch web content
  */
 
+import { timeoutSignal } from '../utils/abort.js'
 import { defineTool } from './types.js'
 
 export const WebFetchTool = defineTool({
@@ -23,7 +24,7 @@ export const WebFetchTool = defineTool({
   },
   isReadOnly: true,
   isConcurrencySafe: true,
-  async call(input, _context) {
+  async call(input, context) {
     const { url, headers } = input
 
     try {
@@ -32,7 +33,7 @@ export const WebFetchTool = defineTool({
           'User-Agent': 'Mozilla/5.0 (compatible; AgentSDK/1.0)',
           ...headers,
         },
-        signal: AbortSignal.timeout(30000),
+        signal: timeoutSignal(30000, context.abortSignal),
       })
 
       if (!response.ok) {

@@ -2,6 +2,7 @@
  * WebSearchTool - Web search (via web fetch of search engines)
  */
 
+import { timeoutSignal } from '../utils/abort.js'
 import { defineTool } from './types.js'
 
 export const WebSearchTool = defineTool({
@@ -23,7 +24,7 @@ export const WebSearchTool = defineTool({
   },
   isReadOnly: true,
   isConcurrencySafe: true,
-  async call(input, _context) {
+  async call(input, context) {
     const { query } = input
 
     try {
@@ -35,7 +36,7 @@ export const WebSearchTool = defineTool({
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; AgentSDK/1.0)',
         },
-        signal: AbortSignal.timeout(15000),
+        signal: timeoutSignal(15000, context.abortSignal),
       })
 
       if (!response.ok) {

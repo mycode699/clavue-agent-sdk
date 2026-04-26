@@ -3,8 +3,25 @@
  */
 
 import { spawn } from 'child_process'
+import { stat } from 'fs/promises'
 import { resolve } from 'path'
 import { defineTool } from './types.js'
+
+async function sortByModifiedTime(searchDir: string, matches: string[]): Promise<string[]> {
+  const entries = await Promise.all(
+    matches.map(async (match) => {
+      try {
+        const stats = await stat(resolve(searchDir, match))
+        return { match, mtimeMs: stats.mtimeMs }
+      } catch {
+        return { match, mtimeMs: 0 }
+      }
+    }),
+  )
+  return entries
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.match.localeCompare(b.match))
+    .map((entry) => entry.match)
+}
 
 export const GlobTool = defineTool({
   name: 'Glob',
@@ -44,7 +61,7 @@ export const GlobTool = defineTool({
         if (matches.length === 0) {
           return `No files matching pattern "${pattern}" in ${searchDir}`
         }
-        return matches.join('\n')
+        return (await sortByModifiedTime(searchDir, matches)).join('\n')
       }
     } catch {
       // Fall through to bash-based approach
@@ -52,7 +69,7 @@ export const GlobTool = defineTool({
 
     // Fallback: pass the pattern through an environment variable instead of interpolating it into shell source.
     return new Promise<string>((resolvePromise) => {
-      const script = 'shopt -s globstar nullglob 2>/dev/null; compgen -G "$GLOB_PATTERN" | head -500'
+      const script = 'shopt -s globstar nullglob 2>/dev/null; compgen -G "$GLOB_PATTERN"'
       const proc = spawn('bash', ['-c', script], {
         cwd: searchDir,
         env: { ...process.env, GLOB_PATTERN: pattern },
@@ -61,12 +78,13 @@ export const GlobTool = defineTool({
 
       const chunks: Buffer[] = []
       proc.stdout?.on('data', (d: Buffer) => chunks.push(d))
-      proc.on('close', () => {
+      proc.on('close', async () => {
         const result = Buffer.concat(chunks).toString('utf-8').trim()
         if (!result) {
           resolvePromise(`No files matching pattern "${pattern}" in ${searchDir}`)
         } else {
-          resolvePromise(result)
+          const matches = result.split('\n').filter(Boolean).slice(0, 500)
+          resolvePromise((await sortByModifiedTime(searchDir, matches)).join('\n'))
         }
       })
       proc.on('error', () => {

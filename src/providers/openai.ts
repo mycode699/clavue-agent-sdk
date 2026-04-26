@@ -134,6 +134,36 @@ interface OpenAIResponsesResponse {
   }
 }
 
+interface OpenAIError extends Error {
+  status?: number
+  headers?: Record<string, string>
+  body?: string
+  error?: unknown
+}
+
+function headersToRecord(headers: Headers): Record<string, string> {
+  return Object.fromEntries(headers.entries())
+}
+
+async function createOpenAIError(response: Response): Promise<OpenAIError> {
+  const body = await response.text().catch(() => '')
+  let parsed: unknown
+  try {
+    parsed = body ? JSON.parse(body) : undefined
+  } catch {
+    parsed = undefined
+  }
+
+  const err: OpenAIError = new Error(
+    `OpenAI API error: ${response.status} ${response.statusText}: ${body}`,
+  )
+  err.status = response.status
+  err.headers = headersToRecord(response.headers)
+  err.body = body
+  err.error = parsed
+  return err
+}
+
 // --------------------------------------------------------------------------
 // Provider
 // --------------------------------------------------------------------------
@@ -184,15 +214,11 @@ export class OpenAIProvider implements LLMProvider {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      signal: params.abortSignal,
     })
 
     if (!response.ok) {
-      const errBody = await response.text().catch(() => '')
-      const err: any = new Error(
-        `OpenAI API error: ${response.status} ${response.statusText}: ${errBody}`,
-      )
-      err.status = response.status
-      throw err
+      throw await createOpenAIError(response)
     }
 
     const data = (await response.json()) as OpenAIChatResponse
@@ -222,19 +248,15 @@ export class OpenAIProvider implements LLMProvider {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      signal: params.abortSignal,
     })
 
     if (!response.ok) {
-      if (this.shouldFallbackToChatCompletions(response.status)) {
+      if (!params.abortSignal?.aborted && this.shouldFallbackToChatCompletions(response.status)) {
         return this.createChatCompletionsMessage(params)
       }
 
-      const errBody = await response.text().catch(() => '')
-      const err: any = new Error(
-        `OpenAI API error: ${response.status} ${response.statusText}: ${errBody}`,
-      )
-      err.status = response.status
-      throw err
+      throw await createOpenAIError(response)
     }
 
     const data = (await response.json()) as OpenAIResponsesResponse

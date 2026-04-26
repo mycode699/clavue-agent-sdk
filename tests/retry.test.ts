@@ -83,8 +83,18 @@ test('withRetry observes abort signals during retry backoff', async () => {
       ...fastRetryConfig,
       maxDelayMs: 30_000,
     }, controller.signal),
-    /Aborted/,
+    (err: any) => err?.name === 'AbortError' && err?.message === 'Aborted',
   )
 
   assert.equal(calls, 1)
+})
+
+test('withRetry throws AbortError when already aborted', async () => {
+  const controller = new AbortController()
+  controller.abort()
+
+  await assert.rejects(
+    withRetry(async () => 'unreachable', fastRetryConfig, controller.signal),
+    (err: any) => err?.name === 'AbortError' && err?.message === 'Aborted',
+  )
 })

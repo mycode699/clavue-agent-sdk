@@ -32,6 +32,14 @@ export const FileReadTool = defineTool({
   async call(input, context) {
     const filePath = resolve(context.cwd, input.file_path)
 
+    if (input.offset !== undefined && (!Number.isInteger(input.offset) || input.offset < 0)) {
+      return { data: 'Error: offset must be a non-negative integer.', is_error: true }
+    }
+
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit <= 0)) {
+      return { data: 'Error: limit must be a positive integer.', is_error: true }
+    }
+
     try {
       const fileStat = await stat(filePath)
       if (fileStat.isDirectory()) {

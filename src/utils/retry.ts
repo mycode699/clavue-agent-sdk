@@ -5,6 +5,8 @@
  * and transient failures.
  */
 
+import { abortError } from './abort.js'
+
 /**
  * Retry configuration.
  */
@@ -114,7 +116,7 @@ function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
   }
 
   if (abortSignal.aborted) {
-    return Promise.reject(new Error('Aborted'))
+    return Promise.reject(abortError())
   }
 
   return new Promise((resolve, reject) => {
@@ -124,7 +126,7 @@ function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
     }, ms)
     const onAbort = () => {
       clearTimeout(timeout)
-      reject(new Error('Aborted'))
+      reject(abortError())
     }
     abortSignal.addEventListener('abort', onAbort, { once: true })
   })
@@ -142,7 +144,7 @@ export async function withRetry<T>(
 
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     if (abortSignal?.aborted) {
-      throw new Error('Aborted')
+      throw abortError()
     }
 
     try {

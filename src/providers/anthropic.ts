@@ -42,7 +42,9 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
-    const response = await this.client.messages.create(requestParams)
+    const response = await this.client.messages.create(requestParams, {
+      signal: params.abortSignal,
+    })
 
     return {
       content: response.content as CreateMessageResponse['content'],

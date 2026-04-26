@@ -6,7 +6,9 @@
  */
 
 import { execFileSync } from 'child_process'
-import { join, resolve } from 'path'
+import { randomUUID } from 'crypto'
+import { mkdirSync } from 'fs'
+import { isAbsolute, join, relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../types.js'
 
 // Track active worktrees
@@ -20,6 +22,11 @@ function isSafeBranchName(branch: string): boolean {
   return /^(?!-)(?!.*\.\.)(?!.*[~^:?*\[\\])(?!.*(?:^|\/)\.)(?!.*\.lock$)[A-Za-z0-9._/-]+$/.test(branch) &&
     !branch.endsWith('/') &&
     !branch.endsWith('.')
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 export const EnterWorktreeTool: ToolDefinition = {
@@ -40,14 +47,20 @@ export const EnterWorktreeTool: ToolDefinition = {
     try {
       // Check if we're in a git repo
       runGit(['rev-parse', '--git-dir'], context.cwd)
+      const repoRoot = runGit(['rev-parse', '--show-toplevel'], context.cwd).trim()
 
       const branch = input.branch || `worktree-${Date.now()}`
       if (!isSafeBranchName(branch)) {
         throw new Error(`Invalid branch name: ${branch}`)
       }
+      const worktreeBase = join(repoRoot, '.clavue', 'worktrees')
       const worktreePath = input.path
         ? resolve(context.cwd, input.path)
-        : join(context.cwd, '..', `.worktree-${branch.replaceAll('/', '-')}`)
+        : join(worktreeBase, branch.replaceAll('/', '-'))
+      if (!isPathInside(worktreeBase, worktreePath)) {
+        throw new Error(`Worktree path must be inside ${worktreeBase}`)
+      }
+      mkdirSync(worktreeBase, { recursive: true })
 
       // Create the branch if it doesn't exist
       try {
@@ -59,7 +72,7 @@ export const EnterWorktreeTool: ToolDefinition = {
       // Create worktree
       runGit(['worktree', 'add', worktreePath, branch], context.cwd)
 
-      const id = crypto.randomUUID()
+      const id = randomUUID()
       activeWorktrees.set(id, {
         path: worktreePath,
         branch,
@@ -116,12 +129,21 @@ export const ExitWorktreeTool: ToolDefinition = {
 
     try {
       if (action === 'remove') {
-        runGit(['worktree', 'remove', worktree.path, '--force'], worktree.originalCwd)
-        // Clean up branch
+        const status = runGit(['status', '--porcelain'], worktree.path).trim()
+        if (status) {
+          return {
+            type: 'tool_result',
+            tool_use_id: '',
+            content: `Refusing to remove worktree with uncommitted changes: ${worktree.path}`,
+            is_error: true,
+          }
+        }
+
+        runGit(['worktree', 'remove', worktree.path], worktree.originalCwd)
         try {
-          runGit(['branch', '-D', worktree.branch], worktree.originalCwd)
+          runGit(['branch', '-d', worktree.branch], worktree.originalCwd)
         } catch {
-          // Branch might have commits
+          // Keep branches that contain unmerged commits or are still referenced.
         }
       }
 

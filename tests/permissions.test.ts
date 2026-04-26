@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Agent, AgentTool, clearAgents } from '../src/index.ts'
+import { Agent, AgentTool, GlobTool, EnterWorktreeTool, clearAgents } from '../src/index.ts'
 import type { CreateMessageParams, CreateMessageResponse, LLMProvider, SDKMessage, ToolDefinition } from '../src/index.ts'
 
 class StubProvider implements LLMProvider {
@@ -270,6 +270,83 @@ test('non-numeric max tool concurrency falls back to a safe value', async () => 
   }
 })
 
+test('single-turn text completion succeeds when maxTurns is exhausted', async () => {
+  const agent = new Agent({ model: 'gpt-5.4', tools: [], maxTurns: 1 })
+  ;(agent as any).provider = new StubProvider([textResponse('ok')])
+
+  try {
+    const events = await collectEvents(agent)
+    const result = events.at(-1)
+
+    assert.equal(result?.type, 'result')
+    if (result?.type === 'result') {
+      assert.equal(result.subtype, 'success')
+      assert.equal(result.is_error, false)
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('max-token tool calls are executed before continuation recovery', async () => {
+  let called = false
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [captureTool(() => { called = true })],
+  })
+  ;(agent as any).provider = new StubProvider([
+    {
+      content: [{ type: 'tool_use', id: 'tool-1', name: 'capture', input: { value: 'one' } }],
+      stopReason: 'max_tokens',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const toolResult = events.find((event) => event.type === 'tool_result')
+
+    assert.equal(called, true)
+    assert.ok(toolResult)
+    assert.equal((agent as any).provider.calls[1]?.messages.at(-1)?.role, 'user')
+    assert.deepEqual((agent as any).provider.calls[1]?.messages.at(-1)?.content, [
+      { type: 'tool_result', tool_use_id: 'tool-1', content: '{"value":"one"}', is_error: undefined },
+    ])
+  } finally {
+    await agent.close()
+  }
+})
+
+test('tool execution preserves requested ordering around mutations', async () => {
+  const order: string[] = []
+  const mutationTool = captureTool(async () => {
+    order.push('mutation')
+  }, { name: 'mutation' })
+  const readTool = captureTool(async () => {
+    order.push('read')
+  }, { name: 'read', isReadOnly: () => true, isConcurrencySafe: () => true })
+  const agent = new Agent({ model: 'gpt-5.4', tools: [mutationTool, readTool] })
+  ;(agent as any).provider = new StubProvider([
+    {
+      content: [
+        { type: 'tool_use', id: 'tool-1', name: 'mutation', input: { value: 'one' } },
+        { type: 'tool_use', id: 'tool-2', name: 'read', input: { value: 'two' } },
+      ],
+      stopReason: 'tool_use',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+    textResponse('done'),
+  ])
+
+  try {
+    await collectEvents(agent)
+    assert.deepEqual(order, ['mutation', 'read'])
+  } finally {
+    await agent.close()
+  }
+})
+
 test('read-only tools that are not concurrency-safe execute serially', async () => {
   let activeCalls = 0
   let maxActiveCalls = 0
@@ -292,6 +369,32 @@ test('read-only tools that are not concurrency-safe execute serially', async () 
   } finally {
     await agent.close()
   }
+})
+
+test('GlobTool returns matches sorted by newest modification time', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const dir = await mkdtemp(join(tmpdir(), 'glob-sort-'))
+  await writeFile(join(dir, 'old.txt'), 'old')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await writeFile(join(dir, 'new.txt'), 'new')
+
+  const result = await GlobTool.call({ pattern: '*.txt' }, { cwd: dir })
+
+  assert.equal(result.is_error, false)
+  assert.deepEqual(String(result.content).split('\n'), ['new.txt', 'old.txt'])
+})
+
+test('EnterWorktree rejects paths outside managed worktree directory', async () => {
+  const result = await EnterWorktreeTool.call(
+    { branch: 'test-worktree-path', path: '../outside-worktree' },
+    { cwd: process.cwd() },
+  )
+
+  assert.equal(result.is_error, true)
+  assert.match(String(result.content), /must be inside/)
 })
 
 test('subagents inherit parent permission policy and mode', async () => {

@@ -327,6 +327,7 @@ export class QueryEngine {
     // Agentic loop
     let turnsRemaining = this.config.maxTurns
     let budgetExceeded = false
+    let completedNormally = false
     let maxOutputRecoveryAttempts = 0
     const MAX_OUTPUT_RECOVERY = 3
 
@@ -348,6 +349,7 @@ export class QueryEngine {
             this.config.model,
             this.messages as any[],
             this.compactState,
+            this.config.abortSignal,
           )
           this.messages = result.compactedMessages as NormalizedMessageParam[]
           this.compactState = result.state
@@ -385,6 +387,7 @@ export class QueryEngine {
                       budget_tokens: this.config.thinking.budgetTokens,
                     }
                   : undefined,
+              abortSignal: this.config.abortSignal,
             })
           },
           undefined,
@@ -399,6 +402,7 @@ export class QueryEngine {
               this.config.model,
               this.messages as any[],
               this.compactState,
+              this.config.abortSignal,
             )
             this.messages = result.compactedMessages as NormalizedMessageParam[]
             this.compactState = result.state
@@ -452,13 +456,19 @@ export class QueryEngine {
         },
       }
 
-      // Handle max_output_tokens recovery
+      // Check for tool use before max_output_tokens recovery so tool protocols
+      // always receive tool results immediately after assistant tool calls.
+      const toolUseBlocks = response.content.filter(
+        (block): block is ToolUseBlock => block.type === 'tool_use',
+      )
+
+      // Handle max_output_tokens recovery only for plain assistant output.
       if (
+        toolUseBlocks.length === 0 &&
         response.stopReason === 'max_tokens' &&
         maxOutputRecoveryAttempts < MAX_OUTPUT_RECOVERY
       ) {
         maxOutputRecoveryAttempts++
-        // Add continuation prompt
         this.messages.push({
           role: 'user',
           content: 'Please continue from where you left off.',
@@ -466,19 +476,15 @@ export class QueryEngine {
         continue
       }
 
-      // Check for tool use
-      const toolUseBlocks = response.content.filter(
-        (block): block is ToolUseBlock => block.type === 'tool_use',
-      )
-
       if (toolUseBlocks.length === 0) {
+        completedNormally = true
         break // No tool calls - agent is done
       }
 
       // Reset max_output recovery counter on successful tool use
       maxOutputRecoveryAttempts = 0
 
-      // Execute tools (concurrent read-only, serial mutations)
+      // Execute tools while preserving model-requested ordering around mutations.
       const toolResults = await this.executeTools(toolUseBlocks)
 
       // Yield tool results
@@ -510,7 +516,10 @@ export class QueryEngine {
         })),
       })
 
-      if (response.stopReason === 'end_turn') break
+      if (response.stopReason === 'end_turn') {
+        completedNormally = true
+        break
+      }
     }
 
     // Hook: Stop (end of agentic loop)
@@ -522,9 +531,9 @@ export class QueryEngine {
     // Yield enriched final result
     const endSubtype = budgetExceeded
       ? 'error_max_budget_usd'
-      : turnsRemaining <= 0
-        ? 'error_max_turns'
-        : 'success'
+      : completedNormally
+        ? 'success'
+        : 'error_max_turns'
 
     yield {
       type: 'result',
@@ -543,8 +552,8 @@ export class QueryEngine {
   /**
    * Execute tool calls with concurrency control.
    *
-   * Read-only tools run concurrently (up to 10 at a time).
-   * Mutation tools run sequentially.
+   * Consecutive read-only concurrency-safe tools run concurrently (up to 10 at a time).
+   * Mutation tools run sequentially and preserve model-requested ordering.
    */
   private async executeTools(
     toolUseBlocks: ToolUseBlock[],
@@ -559,39 +568,35 @@ export class QueryEngine {
     }
 
     const maxConcurrency = getMaxToolConcurrency()
-
-    // Partition into safe concurrent tools and serial tools.
     const toolsByName = new Map(this.config.tools.map((tool) => [tool.name, tool]))
-    const concurrent: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
-    const serial: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
+    const results: (ToolResult & { tool_name?: string })[] = []
+    let concurrentRun: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
+
+    const flushConcurrentRun = async () => {
+      for (let i = 0; i < concurrentRun.length; i += maxConcurrency) {
+        const batch = concurrentRun.slice(i, i + maxConcurrency)
+        const batchResults = await Promise.all(
+          batch.map((item) =>
+            this.executeSingleTool(item.block, item.tool, context),
+          ),
+        )
+        results.push(...batchResults)
+      }
+      concurrentRun = []
+    }
 
     for (const block of toolUseBlocks) {
       const tool = toolsByName.get(block.name)
       if (canRunConcurrently(tool)) {
-        concurrent.push({ block, tool })
-      } else {
-        serial.push({ block, tool })
+        concurrentRun.push({ block, tool })
+        continue
       }
+
+      await flushConcurrentRun()
+      results.push(await this.executeSingleTool(block, tool, context))
     }
 
-    const results: (ToolResult & { tool_name?: string })[] = []
-
-    // Execute safe tools concurrently (batched by maxConcurrency).
-    for (let i = 0; i < concurrent.length; i += maxConcurrency) {
-      const batch = concurrent.slice(i, i + maxConcurrency)
-      const batchResults = await Promise.all(
-        batch.map((item) =>
-          this.executeSingleTool(item.block, item.tool, context),
-        ),
-      )
-      results.push(...batchResults)
-    }
-
-    // Execute unsafe or mutating tools sequentially.
-    for (const item of serial) {
-      const result = await this.executeSingleTool(item.block, item.tool, context)
-      results.push(result)
-    }
+    await flushConcurrentRun()
 
     return results
   }

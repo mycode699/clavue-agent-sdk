@@ -81,7 +81,7 @@ export const GrepTool = defineTool({
 
     args.push('--', input.pattern, searchPath)
 
-    return new Promise<string>((resolvePromise) => {
+    return new Promise<string | { data: string; is_error?: boolean }>((resolvePromise) => {
       const proc = spawn(cmd, args, {
         cwd: context.cwd,
         timeout: 30000,
@@ -94,6 +94,12 @@ export const GrepTool = defineTool({
 
       proc.on('close', (code) => {
         let result = Buffer.concat(chunks).toString('utf-8').trim()
+        const stderr = Buffer.concat(errChunks).toString('utf-8').trim()
+
+        if (code === 2 || (code !== 0 && /regex|pattern|parse error/i.test(stderr))) {
+          resolvePromise({ data: stderr || `Invalid search pattern "${input.pattern}"`, is_error: true })
+          return
+        }
 
         if (!result && code !== 0) {
           // Try fallback to grep
@@ -111,10 +117,15 @@ export const GrepTool = defineTool({
           })
 
           const grepChunks: Buffer[] = []
+          const grepErrChunks: Buffer[] = []
           grepProc.stdout?.on('data', (d: Buffer) => grepChunks.push(d))
-          grepProc.on('close', () => {
+          grepProc.stderr?.on('data', (d: Buffer) => grepErrChunks.push(d))
+          grepProc.on('close', (grepCode) => {
             const grepResult = Buffer.concat(grepChunks).toString('utf-8').trim()
-            if (!grepResult) {
+            const grepStderr = Buffer.concat(grepErrChunks).toString('utf-8').trim()
+            if (grepCode === 2 || (grepCode !== 0 && /regex|pattern|parse error/i.test(grepStderr))) {
+              resolvePromise({ data: grepStderr || `Invalid search pattern "${input.pattern}"`, is_error: true })
+            } else if (!grepResult) {
               resolvePromise(`No matches found for pattern "${input.pattern}"`)
             } else {
               // Apply head limit
@@ -154,10 +165,17 @@ export const GrepTool = defineTool({
           timeout: 30000,
         })
         const grepChunks: Buffer[] = []
+        const grepErrChunks: Buffer[] = []
         grepProc.stdout?.on('data', (d: Buffer) => grepChunks.push(d))
-        grepProc.on('close', () => {
+        grepProc.stderr?.on('data', (d: Buffer) => grepErrChunks.push(d))
+        grepProc.on('close', (grepCode) => {
           const grepResult = Buffer.concat(grepChunks).toString('utf-8').trim()
-          resolvePromise(grepResult || `No matches found for pattern "${input.pattern}"`)
+          const grepStderr = Buffer.concat(grepErrChunks).toString('utf-8').trim()
+          if (grepCode === 2 || (grepCode !== 0 && /regex|pattern|parse error/i.test(grepStderr))) {
+            resolvePromise({ data: grepStderr || `Invalid search pattern "${input.pattern}"`, is_error: true })
+          } else {
+            resolvePromise(grepResult || `No matches found for pattern "${input.pattern}"`)
+          }
         })
         grepProc.on('error', () => {
           resolvePromise(`Error: neither rg nor grep available`)

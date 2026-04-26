@@ -63,6 +63,7 @@ export async function compactConversation(
   model: string,
   messages: any[],
   state: AutoCompactState,
+  abortSignal?: AbortSignal,
 ): Promise<{
   compactedMessages: NormalizedMessageParam[]
   summary: string
@@ -85,6 +86,7 @@ export async function compactConversation(
           content: compactionPrompt,
         },
       ],
+      abortSignal,
     })
 
     const summary = response.content

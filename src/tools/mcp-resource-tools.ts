@@ -50,11 +50,12 @@ export const ListMcpResourcesTool: ToolDefinition = {
 
       try {
         // Access the underlying client to list resources
-        const resources = (conn as any)._client?.listResources?.()
-        if (resources) {
+        const listing = await (conn as any)._client?.listResources?.()
+        const resources = Array.isArray(listing) ? listing : listing?.resources
+        if (resources?.length) {
           results.push(`Server: ${conn.name}`)
           for (const r of resources) {
-            results.push(`  - ${r.name}: ${r.description || r.uri || ''}`)
+            results.push(`  - ${r.name || r.uri}: ${r.description || r.uri || ''}`)
           }
         } else {
           results.push(`Server: ${conn.name} (${conn.tools.length} tools available)`)

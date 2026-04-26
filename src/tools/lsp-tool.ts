@@ -5,8 +5,14 @@
  * hover, document symbols, workspace symbols, etc.
  */
 
-import { execSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+import { readdir, readFile } from 'fs/promises'
+import { join, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../types.js'
+
+const execFileAsync = promisify(execFile)
+const sourceTypeArgs = ['--type-add', 'src:*.{ts,tsx,js,jsx,py,go,rs,java}', '-t', 'src']
 
 export const LSPTool: ToolDefinition = {
   name: 'LSP',
@@ -57,10 +63,8 @@ export const LSPTool: ToolDefinition = {
           if (!symbol) {
             return { type: 'tool_result', tool_use_id: '', content: 'Could not identify symbol at position' }
           }
-          const results = execSync(
-            `rg -n "(?:function|class|interface|type|const|let|var|export)\\s+${symbol}" --type-add 'src:*.{ts,tsx,js,jsx,py,go,rs,java}' -t src ${context.cwd} 2>/dev/null || grep -rn "(?:function|class|interface|type|const|let|var|export)\\s*${symbol}" ${context.cwd} --include='*.ts' --include='*.js' 2>/dev/null`,
-            { encoding: 'utf-8', timeout: 10000 },
-          ).trim()
+          const pattern = `(function|class|interface|type|const|let|var|export)[[:space:]]+${escapeRegex(symbol)}`
+          const results = await runSearch(['-n', pattern, ...sourceTypeArgs, context.cwd])
           return { type: 'tool_result', tool_use_id: '', content: results || `No definition found for "${symbol}"` }
         }
 
@@ -72,10 +76,7 @@ export const LSPTool: ToolDefinition = {
           if (!sym) {
             return { type: 'tool_result', tool_use_id: '', content: 'Could not identify symbol at position' }
           }
-          const refs = execSync(
-            `rg -n "${sym}" ${context.cwd} --type-add 'src:*.{ts,tsx,js,jsx,py,go,rs,java}' -t src 2>/dev/null | head -50`,
-            { encoding: 'utf-8', timeout: 10000 },
-          ).trim()
+          const refs = await runSearch(['-n', escapeRegex(sym), ...sourceTypeArgs, context.cwd], 50)
           return { type: 'tool_result', tool_use_id: '', content: refs || `No references found for "${sym}"` }
         }
 
@@ -91,10 +92,11 @@ export const LSPTool: ToolDefinition = {
           if (!file_path) {
             return { type: 'tool_result', tool_use_id: '', content: 'file_path required', is_error: true }
           }
-          const symbols = execSync(
-            `rg -n "^\\s*(export\\s+)?(function|class|interface|type|const|let|var|enum)\\s+" ${JSON.stringify(file_path)} 2>/dev/null || grep -n "^\\s*\\(export\\s\\+\\)\\?\\(function\\|class\\|interface\\|type\\|const\\|let\\|var\\|enum\\)\\s" ${JSON.stringify(file_path)} 2>/dev/null`,
-            { encoding: 'utf-8', cwd: context.cwd, timeout: 10000 },
-          ).trim()
+          const symbols = await runSearch(
+            ['-n', '^[[:space:]]*(export[[:space:]]+)?(function|class|interface|type|const|let|var|enum)[[:space:]]+', file_path],
+            undefined,
+            context.cwd,
+          )
           return { type: 'tool_result', tool_use_id: '', content: symbols || 'No symbols found' }
         }
 
@@ -102,10 +104,7 @@ export const LSPTool: ToolDefinition = {
           if (!query) {
             return { type: 'tool_result', tool_use_id: '', content: 'query required', is_error: true }
           }
-          const wsSymbols = execSync(
-            `rg -n "${query}" ${context.cwd} --type-add 'src:*.{ts,tsx,js,jsx,py,go,rs,java}' -t src 2>/dev/null | head -30`,
-            { encoding: 'utf-8', timeout: 10000 },
-          ).trim()
+          const wsSymbols = await runSearch(['-n', escapeRegex(query), ...sourceTypeArgs, context.cwd], 30)
           return { type: 'tool_result', tool_use_id: '', content: wsSymbols || `No symbols found for "${query}"` }
         }
 
@@ -127,6 +126,71 @@ export const LSPTool: ToolDefinition = {
   },
 }
 
+async function runSearch(args: string[], headLimit?: number, cwd?: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('rg', args, {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    })
+    const result = String(stdout).trim()
+    if (!headLimit) return result
+    return result.split('\n').slice(0, headLimit).join('\n')
+  } catch (err: any) {
+    if (err?.code === 1) return ''
+    if (err?.code === 'ENOENT') return runSearchFallback(args, headLimit, cwd)
+    throw err
+  }
+}
+
+async function runSearchFallback(args: string[], headLimit?: number, cwd?: string): Promise<string> {
+  const patternIndex = args.indexOf('-n') + 1
+  const pattern = patternIndex > 0 ? args[patternIndex] : args[0]
+  const searchPath = args.at(-1) || cwd || process.cwd()
+  const regex = new RegExp(pattern)
+  const files = await collectSourceFiles(resolve(cwd || process.cwd(), searchPath))
+  const matches: string[] = []
+
+  for (const file of files) {
+    const content = await readFile(file, 'utf-8')
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (regex.test(lines[i])) {
+        matches.push(`${file}:${i + 1}:${lines[i]}`)
+        if (headLimit && matches.length >= headLimit) return matches.join('\n')
+      }
+    }
+  }
+
+  return matches.join('\n')
+}
+
+async function collectSourceFiles(path: string): Promise<string[]> {
+  const entries = await readdir(path, { withFileTypes: true }).catch(async () => [])
+  if (!entries.length) return isSourceFile(path) ? [path] : []
+
+  const files: string[] = []
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue
+    const fullPath = join(path, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...await collectSourceFiles(fullPath))
+    } else if (entry.isFile() && isSourceFile(fullPath)) {
+      files.push(fullPath)
+    }
+  }
+  return files
+}
+
+function isSourceFile(path: string): boolean {
+  return /\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(path)
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * Get the symbol at a given position in a file.
  */
@@ -137,8 +201,6 @@ async function getSymbolAtPosition(
   cwd: string,
 ): Promise<string | null> {
   try {
-    const { readFile } = await import('fs/promises')
-    const { resolve } = await import('path')
     const content = await readFile(resolve(cwd, filePath), 'utf-8')
     const lines = content.split('\n')
 

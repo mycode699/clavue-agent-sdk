@@ -177,13 +177,14 @@ test('uses Responses API for provider-prefixed gpt-5.4 models', async () => {
 })
 
 test('keeps Chat Completions for non-gpt-5 openai models', async () => {
-  const calls: Array<{ url: string; body: any }> = []
+  const calls: Array<{ url: string; body: any; signal?: AbortSignal | null }> = []
+  const controller = new AbortController()
 
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ url, body })
+    calls.push({ url, body, signal: init?.signal ?? null })
 
     return new Response(
       JSON.stringify({
@@ -222,6 +223,7 @@ test('keeps Chat Completions for non-gpt-5 openai models', async () => {
       maxTokens: 256,
       system: 'You are helpful.',
       messages: [{ role: 'user', content: 'Hello' }],
+      abortSignal: controller.signal,
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -230,6 +232,113 @@ test('keeps Chat Completions for non-gpt-5 openai models', async () => {
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.url, 'https://example.test/v1/chat/completions')
   assert.equal(calls[0]?.body?.max_tokens, 256)
+  assert.equal(calls[0]?.signal, controller.signal)
+})
+
+test('passes abort signals to Responses fetch calls', async () => {
+  const calls: Array<{ url: string; signal?: AbortSignal | null }> = []
+  const controller = new AbortController()
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), signal: init?.signal ?? null })
+
+    return new Response(
+      JSON.stringify({
+        id: 'resp_123',
+        output_text: 'ok',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 256,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'Hello' }],
+      abortSignal: controller.signal,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.url, 'https://example.test/v1/responses')
+  assert.equal(calls[0]?.signal, controller.signal)
+})
+
+test('does not fall back from Responses to Chat Completions after cancellation', async () => {
+  const calls: string[] = []
+  const controller = new AbortController()
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    calls.push(String(input))
+    controller.abort()
+    return new Response(JSON.stringify({ error: { message: 'not found' } }), {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+        abortSignal: controller.signal,
+      }),
+      (err: any) => err?.status === 404,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, ['https://example.test/v1/responses'])
+})
+
+test('attaches response metadata to OpenAI HTTP errors', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ error: { message: 'rate limited', type: 'rate_limit_error' } }),
+    {
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: {
+        'Content-Type': 'application/json',
+        'Retry-After': '2',
+      },
+    },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-4o',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.status, 429)
+        assert.equal(err.headers['retry-after'], '2')
+        assert.equal(err.error.error.message, 'rate limited')
+        assert.match(err.body, /rate limited/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('maps incomplete Responses output to max_tokens stop reason', async () => {
