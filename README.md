@@ -54,6 +54,118 @@ Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_
 
 环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`、`AGENT_SDK_MAX_TOOL_CONCURRENCY`。
 
+## Best practices / 最佳使用实践
+
+### Pick the right integration mode / 选择合适的集成方式
+
+- Use `npx clavue-agent-sdk ...` for quick terminal automation, CI checks, and one-off repository analysis.
+- Use `run()` for backend jobs where you want one prompt in, one typed `AgentRunResult` out.
+- Use `query()` for streaming UIs, logs, dashboards, and integrations that need live assistant/tool events.
+- Use `createAgent()` for long-lived apps that need multi-turn state, sessions, hooks, MCP servers, custom subagents, or repeated prompts.
+
+- 快速终端自动化、CI 检查、一次性仓库分析：使用 `npx clavue-agent-sdk ...`。
+- 后端任务只需要“一次输入、一次结构化结果”：使用 `run()`。
+- 前端 UI、日志面板、实时事件流：使用 `query()`。
+- 长生命周期应用、多轮会话、hooks、MCP、自定义 subagent 或重复调用：使用 `createAgent()`。
+
+### Start narrow, then expand tools / 先收窄权限，再逐步扩展工具
+
+Prefer the smallest tool surface that can complete the task. Start with read-only tools for review and analysis, then add write or shell tools only when the workflow needs them.
+
+优先使用能完成任务的最小工具权限。审查和分析先从只读工具开始，只有在确实需要修改文件或执行命令时再增加写入或 shell 工具。
+
+```bash
+# Read-only repository review / 只读仓库审查
+npx clavue-agent-sdk "Review this repo for release risks" \
+  --toolset repo-readonly \
+  --max-turns 6
+
+# Focused code change with explicit tools / 明确授权工具的定向修改
+npx clavue-agent-sdk "Fix the failing package payload test" \
+  --allow Read,Glob,Grep,Edit,Bash \
+  --max-turns 10
+
+# CI-friendly JSON output / 适合 CI 的 JSON 输出
+npx clavue-agent-sdk "Check whether package.json is release-ready" \
+  --toolset repo-readonly \
+  --json
+```
+
+### Set `cwd`, model, and budgets explicitly / 显式设置 cwd、模型和预算
+
+For automation, set `cwd`, `model`, `maxTurns`, and tool permissions explicitly so runs are reproducible and bounded.
+
+自动化场景建议显式设置 `cwd`、`model`、`maxTurns` 和工具权限，让运行结果更可复现、成本和轮次更可控。
+
+```typescript
+import { run } from "clavue-agent-sdk";
+
+const result = await run({
+  prompt: "Review the package for publish-readiness and return concise findings.",
+  options: {
+    cwd: process.cwd(),
+    model: "claude-sonnet-4-6",
+    toolsets: ["repo-readonly"],
+    maxTurns: 6,
+  },
+});
+
+if (result.status !== "completed") {
+  throw new Error(result.errors?.join("\n") || result.subtype);
+}
+
+console.log(result.text);
+```
+
+### Use structured outputs in automation / 自动化中使用结构化结果
+
+In CI or services, prefer `run()` or CLI `--json` instead of scraping assistant text from stdout. Check `status`, `subtype`, `errors`, `usage`, and `total_cost_usd` before deciding whether a job passed.
+
+在 CI 或服务端集成里，优先使用 `run()` 或 CLI `--json`，不要依赖解析普通文本输出。根据 `status`、`subtype`、`errors`、`usage` 和 `total_cost_usd` 判断任务是否成功。
+
+### Keep prompts operational / 让 Prompt 面向执行
+
+Good prompts specify the goal, boundaries, expected output format, and verification command. Avoid broad prompts that mix unrelated work.
+
+好的 prompt 应包含目标、边界、期望输出格式和验证命令。避免把多个无关任务混在一个过大的 prompt 里。
+
+```text
+Good: Review src/providers/openai.ts for cancellation bugs. Do not edit files. Return findings with file:line references.
+Good: Update README quick-start examples only. Run npm run build after editing.
+Avoid: Make the project better.
+```
+
+### Recommended production pattern / 推荐生产集成模式
+
+1. Store credentials in environment variables, not source code.
+2. Pin `CLAVUE_AGENT_MODEL` or pass `model` in code for predictable behavior.
+3. Use `allowedTools` or `toolsets` for every automated workflow.
+4. Set `maxTurns` for bounded execution.
+5. Log the final `AgentRunResult` metadata: `status`, `subtype`, `num_turns`, `usage`, `duration_ms`, and `total_cost_usd`.
+6. Enable `selfImprovement` only for workflows where persisting run lessons is expected.
+7. Close reusable agents with `await agent.close()` so sessions, MCP connections, and memory hooks flush cleanly.
+
+1. 凭证放在环境变量中，不要写进源码。
+2. 通过 `CLAVUE_AGENT_MODEL` 或代码里的 `model` 固定模型，保证行为可预测。
+3. 每个自动化流程都设置 `allowedTools` 或 `toolsets`。
+4. 设置 `maxTurns`，避免无界运行。
+5. 记录 `AgentRunResult` 元数据：`status`、`subtype`、`num_turns`、`usage`、`duration_ms`、`total_cost_usd`。
+6. 只有在确实希望持久化运行经验时才开启 `selfImprovement`。
+7. 可复用 agent 使用完后调用 `await agent.close()`，确保 session、MCP 连接和 memory hooks 正常收尾。
+
+### Common recipes / 常用方法
+
+```bash
+# Explain a repository / 解释仓库结构
+npx clavue-agent-sdk "Explain this repository architecture" --toolset repo-readonly
+
+# Review a pull-request checkout / 审查当前 PR 工作区
+npx clavue-agent-sdk "Review the current diff for bugs and release risks" --toolset repo-readonly
+
+# Generate a machine-readable report / 生成机器可读报告
+npx clavue-agent-sdk "Return JSON listing package release blockers" --toolset repo-readonly --json
+```
+
 ### 1. Install as a library / 作为库安装
 
 ```bash
