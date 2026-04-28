@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
 const execFileAsync = promisify(execFile)
@@ -71,6 +71,27 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
     [...paths].every((path) => !path.startsWith('.tmp-retro-ledger/')),
     'expected temp retro ledger artifacts to be excluded',
   )
+})
+
+test('compiled CLI runs through an npm-style bin symlink', async () => {
+  await execFileAsync('npm', ['run', 'build'], { cwd: packageRoot })
+
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-agent-sdk-bin-'))
+  try {
+    const binDir = join(dir, 'node_modules', '.bin')
+    await mkdir(binDir, { recursive: true })
+    const linkPath = join(binDir, 'clavue-agent-sdk')
+    await symlink(resolve(packageRoot, 'dist', 'cli.js'), linkPath)
+
+    const { stdout } = await execFileAsync(process.execPath, [linkPath, '--help'], {
+      cwd: dir,
+    })
+
+    assert.match(stdout, /Clavue Agent SDK CLI/)
+    assert.match(stdout, /npx clavue-agent-sdk/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('agent reads CLAVUE_AGENT env settings', async () => {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from 'node:url'
+import { realpathSync } from 'node:fs'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { query, run } from './agent.js'
 import type { AgentOptions, ToolsetName } from './types.js'
@@ -216,7 +217,17 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+function isDirectCliExecution(): boolean {
+  if (!process.argv[1]) return false
+
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href
+  }
+}
+
+if (isDirectCliExecution()) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
