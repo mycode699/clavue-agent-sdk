@@ -9,10 +9,27 @@ import { execFileSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import { mkdirSync } from 'fs'
 import { isAbsolute, join, relative, resolve } from 'path'
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
 // Track active worktrees
-const activeWorktrees = new Map<string, { path: string; branch: string; originalCwd: string }>()
+interface ActiveWorktree {
+  path: string
+  branch: string
+  originalCwd: string
+}
+
+const activeWorktreeNamespaces = new Map<string, Map<string, ActiveWorktree>>()
+
+function getActiveWorktrees(context?: RuntimeNamespaceContext): Map<string, ActiveWorktree> {
+  const namespace = getRuntimeNamespace(context)
+  let worktrees = activeWorktreeNamespaces.get(namespace)
+  if (!worktrees) {
+    worktrees = new Map()
+    activeWorktreeNamespaces.set(namespace, worktrees)
+  }
+  return worktrees
+}
 
 function runGit(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: 'pipe' })
@@ -43,7 +60,7 @@ export const EnterWorktreeTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Create an isolated git worktree for parallel work.' },
-  async call(input: any, context: { cwd: string }): Promise<ToolResult> {
+  async call(input: any, context: ToolContext): Promise<ToolResult> {
     try {
       // Check if we're in a git repo
       runGit(['rev-parse', '--git-dir'], context.cwd)
@@ -73,7 +90,7 @@ export const EnterWorktreeTool: ToolDefinition = {
       runGit(['worktree', 'add', worktreePath, branch], context.cwd)
 
       const id = randomUUID()
-      activeWorktrees.set(id, {
+      getActiveWorktrees(context).set(id, {
         path: worktreePath,
         branch,
         originalCwd: context.cwd,
@@ -114,7 +131,8 @@ export const ExitWorktreeTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Exit a git worktree.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const activeWorktrees = getActiveWorktrees(context)
     const worktree = activeWorktrees.get(input.id)
     if (!worktree) {
       return {

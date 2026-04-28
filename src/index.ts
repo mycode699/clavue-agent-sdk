@@ -279,7 +279,7 @@ export {
   appendToSession,
   deleteSession,
 } from './session.js'
-export type { SessionMetadata, SessionData } from './session.js'
+export type { SessionMetadata, SessionData, SessionStoreOptions } from './session.js'
 
 // --------------------------------------------------------------------------
 // Structured Memory
@@ -426,6 +426,7 @@ export {
 export {
   registerAgents,
   clearAgents,
+  getRegisteredAgentDefinitions,
 } from './tools/agent-tool.js'
 
 export {
@@ -484,8 +485,11 @@ export type {
   ToolContext,
   ToolResult,
 
-  // Permission types
+  // Permission and trace types
   PermissionMode,
+  AgentRunToolTrace,
+  AgentRunTurnTrace,
+  AgentRunTrace,
   PermissionBehavior,
   CanUseToolFn,
   CanUseToolResult,
@@ -527,6 +531,7 @@ export type {
   // Output format
   OutputFormat,
   MemoryConfig,
+  SessionConfig,
 
   // Setting sources
   SettingSource,

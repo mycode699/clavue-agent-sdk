@@ -27,15 +27,18 @@ import type {
   Message,
   PermissionMode,
   TokenUsage,
+  AgentRunTrace,
 } from './types.js'
 import { QueryEngine } from './engine.js'
 import { getAllBaseTools, filterTools, getToolsetTools } from './tools/index.js'
 import { connectMCPServer, type MCPConnection } from './mcp/client.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { registerAgents } from './tools/agent-tool.js'
+import { setMcpConnections } from './tools/mcp-resource-tools.js'
 import {
   saveSession,
   loadSession,
+  type SessionStoreOptions,
 } from './session.js'
 import { saveMemory } from './memory.js'
 import { persistSessionMemoryCandidates } from './memory-policy.js'
@@ -85,7 +88,8 @@ export class Agent {
       this.cfg.env?.CLAVUE_AGENT_MODEL ??
       this.readEnv('CLAVUE_AGENT_MODEL') ??
       'claude-sonnet-4-6'
-    this.sid = this.cfg.sessionId ?? crypto.randomUUID()
+    this.sid = this.cfg.sessionId ?? this.cfg.resume ?? crypto.randomUUID()
+    this.cfg.runtimeNamespace ??= this.sid
 
     // Resolve API type
     this.apiType = this.resolveApiType()
@@ -185,6 +189,10 @@ export class Agent {
     return process.env[key] || undefined
   }
 
+  private sessionStoreOptions(options: AgentOptions = this.cfg): SessionStoreOptions | undefined {
+    return options.session?.dir ? { dir: options.session.dir } : undefined
+  }
+
   /** Assemble the available tool set based on options. */
   private buildToolPool(): ToolDefinition[] {
     const raw = this.cfg.tools
@@ -216,7 +224,7 @@ export class Agent {
   private async setup(): Promise<void> {
     // Register custom agent definitions
     if (this.cfg.agents) {
-      registerAgents(this.cfg.agents)
+      registerAgents(this.cfg.agents, { runtimeNamespace: this.cfg.runtimeNamespace })
     }
 
     // Connect MCP servers (supports stdio, SSE, HTTP, and in-process SDK servers)
@@ -230,6 +238,7 @@ export class Agent {
             // External MCP server
             const connection = await connectMCPServer(name, config)
             this.mcpLinks.push(connection)
+            setMcpConnections(this.mcpLinks, { runtimeNamespace: this.cfg.runtimeNamespace })
 
             if (connection.status === 'connected' && connection.tools.length > 0) {
               this.toolPool = [...this.toolPool, ...connection.tools]
@@ -243,7 +252,7 @@ export class Agent {
 
     // Resume or continue session
     if (this.cfg.resume) {
-      const sessionData = await loadSession(this.cfg.resume)
+      const sessionData = await loadSession(this.cfg.resume, this.sessionStoreOptions())
       if (sessionData) {
         this.history = sessionData.messages
         this.sid = this.cfg.resume
@@ -260,7 +269,7 @@ export class Agent {
   ): AsyncGenerator<SDKMessage, void> {
     await this.setupDone
 
-    const opts = { ...this.cfg, ...overrides }
+    const opts = { ...this.cfg, ...overrides, runtimeNamespace: this.cfg.runtimeNamespace }
     const cwd = opts.cwd || process.cwd()
 
     // Create abort controller for this query
@@ -330,6 +339,7 @@ export class Agent {
       agents: opts.agents,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
+      runtimeNamespace: opts.runtimeNamespace,
       memory: opts.memory,
     })
     this.currentEngine = engine
@@ -387,6 +397,7 @@ export class Agent {
     let durationApiMs = 0
     let numTurns = 0
     let usage: TokenUsage = { input_tokens: 0, output_tokens: 0 }
+    let trace: AgentRunTrace | undefined
     let errors: string[] | undefined
 
     for await (const ev of this.query(text, overrides)) {
@@ -407,6 +418,7 @@ export class Agent {
           durationApiMs = ev.duration_api_ms ?? 0
           numTurns = ev.num_turns ?? 0
           usage = ev.usage ?? usage
+          trace = ev.trace
           errors = ev.errors
           break
         }
@@ -432,6 +444,7 @@ export class Agent {
       messages: [...this.messageLog],
       events,
       errors,
+      trace,
     }
 
     const selfImprovement = resolveSelfImprovementConfig(overrides?.selfImprovement ?? this.cfg.selfImprovement)
@@ -544,7 +557,7 @@ export class Agent {
    */
   async stopTask(taskId: string): Promise<void> {
     const { getTask } = await import('./tools/task-tools.js')
-    const task = getTask(taskId)
+    const task = getTask(taskId, { runtimeNamespace: this.cfg.runtimeNamespace })
     if (task) {
       task.status = 'cancelled'
     }
@@ -560,11 +573,16 @@ export class Agent {
     // Persist session if enabled
     if (this.cfg.persistSession !== false && this.history.length > 0) {
       try {
-        await saveSession(this.sid, this.history, {
-          cwd,
-          model: this.modelId,
-          summary: undefined,
-        })
+        await saveSession(
+          this.sid,
+          this.history,
+          {
+            cwd,
+            model: this.modelId,
+            summary: undefined,
+          },
+          this.sessionStoreOptions(),
+        )
       } catch {
         // Session persistence is best-effort
       }
@@ -619,6 +637,7 @@ export class Agent {
       await conn.close()
     }
     this.mcpLinks = []
+    setMcpConnections([], { runtimeNamespace: this.cfg.runtimeNamespace })
   }
 }
 

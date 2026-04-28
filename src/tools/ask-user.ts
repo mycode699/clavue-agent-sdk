@@ -6,25 +6,37 @@
  * In non-interactive mode, returns a default or denies.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// Callback for handling user questions (set by the agent)
-let questionHandler: ((question: string, options?: string[]) => Promise<string>) | null = null
+type QuestionHandler = (question: string, options?: string[]) => Promise<string>
+
+const questionHandlerNamespaces = new Map<string, QuestionHandler>()
+
+function getQuestionHandler(context?: RuntimeNamespaceContext): QuestionHandler | undefined {
+  return questionHandlerNamespaces.get(getRuntimeNamespace(context))
+}
 
 /**
  * Set the question handler for AskUserQuestion.
  */
 export function setQuestionHandler(
-  handler: (question: string, options?: string[]) => Promise<string>,
+  handler: QuestionHandler,
+  context?: RuntimeNamespaceContext,
 ): void {
-  questionHandler = handler
+  questionHandlerNamespaces.set(getRuntimeNamespace(context), handler)
 }
 
 /**
  * Clear the question handler.
  */
-export function clearQuestionHandler(): void {
-  questionHandler = null
+export function clearQuestionHandler(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    questionHandlerNamespaces.clear()
+    return
+  }
+  questionHandlerNamespaces.delete(namespace)
 }
 
 export const AskUserQuestionTool: ToolDefinition = {
@@ -50,7 +62,8 @@ export const AskUserQuestionTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Ask the user a question.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const questionHandler = getQuestionHandler(context)
     if (questionHandler) {
       try {
         const answer = await questionHandler(input.question, input.options)

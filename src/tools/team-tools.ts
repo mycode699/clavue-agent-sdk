@@ -5,7 +5,8 @@
  * Manages team composition, task lists, and inter-agent messaging.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
 /**
  * Team definition.
@@ -20,32 +21,47 @@ export interface Team {
   status: 'active' | 'disbanded'
 }
 
-/**
- * Global team store.
- */
-const teamStore = new Map<string, Team>()
-let teamCounter = 0
+interface TeamNamespaceState {
+  store: Map<string, Team>
+  counter: number
+}
+
+const teamNamespaces = new Map<string, TeamNamespaceState>()
+
+function getTeamState(context?: RuntimeNamespaceContext): TeamNamespaceState {
+  const namespace = getRuntimeNamespace(context)
+  let state = teamNamespaces.get(namespace)
+  if (!state) {
+    state = { store: new Map(), counter: 0 }
+    teamNamespaces.set(namespace, state)
+  }
+  return state
+}
 
 /**
  * Get all teams.
  */
-export function getAllTeams(): Team[] {
-  return Array.from(teamStore.values())
+export function getAllTeams(context?: RuntimeNamespaceContext): Team[] {
+  return Array.from(getTeamState(context).store.values())
 }
 
 /**
  * Get a team by ID.
  */
-export function getTeam(id: string): Team | undefined {
-  return teamStore.get(id)
+export function getTeam(id: string, context?: RuntimeNamespaceContext): Team | undefined {
+  return getTeamState(context).store.get(id)
 }
 
 /**
  * Clear all teams.
  */
-export function clearTeams(): void {
-  teamStore.clear()
-  teamCounter = 0
+export function clearTeams(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    teamNamespaces.clear()
+    return
+  }
+  teamNamespaces.delete(namespace)
 }
 
 // ============================================================================
@@ -72,8 +88,9 @@ export const TeamCreateTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Create a team for multi-agent coordination.' },
-  async call(input: any): Promise<ToolResult> {
-    const id = `team_${++teamCounter}`
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getTeamState(context)
+    const id = `team_${++state.counter}`
     const team: Team = {
       id,
       name: input.name,
@@ -82,7 +99,7 @@ export const TeamCreateTool: ToolDefinition = {
       createdAt: new Date().toISOString(),
       status: 'active',
     }
-    teamStore.set(id, team)
+    state.store.set(id, team)
 
     return {
       type: 'tool_result',
@@ -110,14 +127,15 @@ export const TeamDeleteTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Delete/disband a team.' },
-  async call(input: any): Promise<ToolResult> {
-    const team = teamStore.get(input.id)
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getTeamState(context)
+    const team = state.store.get(input.id)
     if (!team) {
       return { type: 'tool_result', tool_use_id: '', content: `Team not found: ${input.id}`, is_error: true }
     }
 
     team.status = 'disbanded'
-    teamStore.delete(input.id)
+    state.store.delete(input.id)
 
     return {
       type: 'tool_result',

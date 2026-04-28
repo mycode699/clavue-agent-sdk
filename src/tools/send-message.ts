@@ -5,7 +5,8 @@
  * between teammates in a multi-agent setup.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
 /**
  * Message inbox for inter-agent communication.
@@ -18,12 +19,23 @@ export interface AgentMessage {
   type: 'text' | 'shutdown_request' | 'shutdown_response' | 'plan_approval_response'
 }
 
-const mailboxes = new Map<string, AgentMessage[]>()
+const mailboxNamespaces = new Map<string, Map<string, AgentMessage[]>>()
+
+function getMailboxes(context?: RuntimeNamespaceContext): Map<string, AgentMessage[]> {
+  const namespace = getRuntimeNamespace(context)
+  let mailboxes = mailboxNamespaces.get(namespace)
+  if (!mailboxes) {
+    mailboxes = new Map()
+    mailboxNamespaces.set(namespace, mailboxes)
+  }
+  return mailboxes
+}
 
 /**
  * Read messages from a mailbox.
  */
-export function readMailbox(agentName: string): AgentMessage[] {
+export function readMailbox(agentName: string, context?: RuntimeNamespaceContext): AgentMessage[] {
+  const mailboxes = getMailboxes(context)
   const messages = mailboxes.get(agentName) || []
   mailboxes.set(agentName, []) // Clear after reading
   return messages
@@ -32,7 +44,12 @@ export function readMailbox(agentName: string): AgentMessage[] {
 /**
  * Write to a mailbox.
  */
-export function writeToMailbox(agentName: string, message: AgentMessage): void {
+export function writeToMailbox(
+  agentName: string,
+  message: AgentMessage,
+  context?: RuntimeNamespaceContext,
+): void {
+  const mailboxes = getMailboxes(context)
   const messages = mailboxes.get(agentName) || []
   messages.push(message)
   mailboxes.set(agentName, messages)
@@ -41,8 +58,13 @@ export function writeToMailbox(agentName: string, message: AgentMessage): void {
 /**
  * Clear all mailboxes.
  */
-export function clearMailboxes(): void {
-  mailboxes.clear()
+export function clearMailboxes(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    mailboxNamespaces.clear()
+    return
+  }
+  mailboxNamespaces.delete(namespace)
 }
 
 export const SendMessageTool: ToolDefinition = {
@@ -65,7 +87,7 @@ export const SendMessageTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Send a message to another agent.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
     const message: AgentMessage = {
       from: 'self',
       to: input.to,
@@ -76,8 +98,9 @@ export const SendMessageTool: ToolDefinition = {
 
     if (input.to === '*') {
       // Broadcast to all known mailboxes
+      const mailboxes = getMailboxes(context)
       for (const [name] of mailboxes) {
-        writeToMailbox(name, { ...message, to: name })
+        writeToMailbox(name, { ...message, to: name }, context)
       }
       return {
         type: 'tool_result',
@@ -86,7 +109,7 @@ export const SendMessageTool: ToolDefinition = {
       }
     }
 
-    writeToMailbox(input.to, message)
+    writeToMailbox(input.to, message, context)
     return {
       type: 'tool_result',
       tool_use_id: '',

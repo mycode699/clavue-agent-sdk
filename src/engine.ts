@@ -19,6 +19,8 @@ import type {
   ToolResult,
   ToolContext,
   TokenUsage,
+  AgentRunTrace,
+  AgentRunToolTrace,
 } from './types.js'
 import type {
   LLMProvider,
@@ -116,6 +118,48 @@ function canRunConcurrently(tool?: ToolDefinition): boolean {
   return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
 }
 
+function createToolContext(config: QueryEngineConfig): ToolContext {
+  return {
+    cwd: config.cwd,
+    abortSignal: config.abortSignal,
+    provider: config.provider,
+    model: config.model,
+    apiType: config.provider.apiType,
+    policy: config.policy,
+    runtimeNamespace: config.runtimeNamespace,
+  }
+}
+
+async function collectToolPromptFragments(config: QueryEngineConfig): Promise<string[]> {
+  const context = createToolContext(config)
+  const fragments: string[] = []
+  const maxChars = 8_000
+  const maxFragmentChars = 2_000
+  let used = 0
+
+  for (const tool of config.tools) {
+    if (!tool.prompt) continue
+    if (tool.isEnabled && !tool.isEnabled(context)) continue
+
+    try {
+      const prompt = (await tool.prompt(context)).trim()
+      if (!prompt) continue
+
+      const trimmedPrompt = prompt.length > maxFragmentChars
+        ? `${prompt.slice(0, maxFragmentChars)}\n...(tool guidance truncated)...`
+        : prompt
+      const fragment = `## ${tool.name}\n${trimmedPrompt}`
+      if (used + fragment.length > maxChars) continue
+      fragments.push(fragment)
+      used += fragment.length
+    } catch {
+      // Tool prompt fragments are best-effort and should not block a run.
+    }
+  }
+
+  return fragments
+}
+
 async function getInjectedMemories(config: QueryEngineConfig): Promise<MemoryEntry[]> {
   if (!config.memory?.enabled || config.memory.autoInject === false) {
     return []
@@ -183,6 +227,12 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
     parts.push(`- **${tool.name}**: ${tool.description}`)
   }
 
+  const toolPromptFragments = await collectToolPromptFragments(config)
+  if (toolPromptFragments.length > 0) {
+    parts.push('\n# Tool Guidance\n')
+    parts.push(toolPromptFragments.join('\n\n'))
+  }
+
   // Add agent definitions
   if (config.agents && Object.keys(config.agents).length > 0) {
     parts.push('\n# Available Subagents\n')
@@ -240,13 +290,21 @@ export class QueryEngine {
   private totalUsage: TokenUsage = { input_tokens: 0, output_tokens: 0 }
   private totalCost = 0
   private turnCount = 0
+  private trace: AgentRunTrace = {
+    turns: [],
+    tools: [],
+    concurrency_batches: [],
+    retry_count: 0,
+    compaction_count: 0,
+    permission_denials: [],
+  }
   private compactState: AutoCompactState
   private sessionId: string
   private apiTimeMs = 0
   private hookRegistry?: HookRegistry
 
   constructor(config: QueryEngineConfig) {
-    this.config = config
+    this.config = { ...config, runtimeNamespace: config.runtimeNamespace ?? config.sessionId }
     this.provider = config.provider
     this.compactState = createAutoCompactState()
     this.sessionId = config.sessionId || crypto.randomUUID()
@@ -353,6 +411,7 @@ export class QueryEngine {
           )
           this.messages = result.compactedMessages as NormalizedMessageParam[]
           this.compactState = result.state
+          this.trace.compaction_count += 1
           await this.executeHooks('PostCompact')
         } catch {
           // Continue with uncompacted messages
@@ -369,10 +428,12 @@ export class QueryEngine {
 
       // Make API call with retry via provider
       let response: CreateMessageResponse
+      let apiAttempts = 0
       const apiStart = performance.now()
       try {
         response = await withRetry(
           async () => {
+            apiAttempts += 1
             return this.provider.createMessage({
               model: this.config.model,
               maxTokens: this.config.maxTokens,
@@ -393,7 +454,9 @@ export class QueryEngine {
           undefined,
           this.config.abortSignal,
         )
+        this.trace.retry_count += Math.max(0, apiAttempts - 1)
       } catch (err: any) {
+        this.trace.retry_count += Math.max(0, apiAttempts - 1)
         // Handle prompt-too-long by compacting
         if (isPromptTooLongError(err) && !this.compactState.compacted) {
           try {
@@ -406,6 +469,7 @@ export class QueryEngine {
             )
             this.messages = result.compactedMessages as NormalizedMessageParam[]
             this.compactState = result.state
+            this.trace.compaction_count += 1
             turnsRemaining++ // Retry this turn
             this.turnCount--
             continue
@@ -417,15 +481,33 @@ export class QueryEngine {
         yield {
           type: 'result',
           subtype: 'error',
+          session_id: this.sessionId,
+          is_error: true,
           usage: this.totalUsage,
           num_turns: this.turnCount,
+          total_cost_usd: this.totalCost,
+          duration_api_ms: Math.round(this.apiTimeMs + performance.now() - apiStart),
+          permission_denials: this.trace.permission_denials,
+          trace: this.getTrace(),
+          errors: [err?.message || String(err)],
           cost: this.totalCost,
         }
         return
       }
 
       // Track API timing
-      this.apiTimeMs += performance.now() - apiStart
+      const turnApiTimeMs = performance.now() - apiStart
+      this.apiTimeMs += turnApiTimeMs
+
+      const inputTokens = response.usage?.input_tokens ?? 0
+      const outputTokens = response.usage?.output_tokens ?? 0
+      this.trace.turns.push({
+        turn: this.turnCount,
+        duration_api_ms: Math.round(turnApiTimeMs),
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        tool_calls: response.content.filter((block) => block.type === 'tool_use').length,
+      })
 
       // Track usage (normalized by provider)
       if (response.usage) {
@@ -545,6 +627,8 @@ export class QueryEngine {
       duration_api_ms: Math.round(this.apiTimeMs),
       usage: this.totalUsage,
       model_usage: { [this.config.model]: { input_tokens: this.totalUsage.input_tokens, output_tokens: this.totalUsage.output_tokens } },
+      permission_denials: this.trace.permission_denials,
+      trace: this.getTrace(),
       cost: this.totalCost,
     }
   }
@@ -559,12 +643,9 @@ export class QueryEngine {
     toolUseBlocks: ToolUseBlock[],
   ): Promise<(ToolResult & { tool_name?: string })[]> {
     const context: ToolContext = {
-      cwd: this.config.cwd,
-      abortSignal: this.config.abortSignal,
+      ...createToolContext(this.config),
       provider: this.provider,
-      model: this.config.model,
       apiType: this.provider.apiType,
-      policy: this.config.policy,
     }
 
     const maxConcurrency = getMaxToolConcurrency()
@@ -575,11 +656,16 @@ export class QueryEngine {
     const flushConcurrentRun = async () => {
       for (let i = 0; i < concurrentRun.length; i += maxConcurrency) {
         const batch = concurrentRun.slice(i, i + maxConcurrency)
+        this.trace.concurrency_batches.push(batch.length)
+        const batchTraces: AgentRunToolTrace[] = []
         const batchResults = await Promise.all(
-          batch.map((item) =>
-            this.executeSingleTool(item.block, item.tool, context),
+          batch.map((item, index) =>
+            this.executeSingleTool(item.block, item.tool, context, (trace) => {
+              batchTraces[index] = trace
+            }),
           ),
         )
+        this.trace.tools.push(...batchTraces)
         results.push(...batchResults)
       }
       concurrentRun = []
@@ -593,6 +679,7 @@ export class QueryEngine {
       }
 
       await flushConcurrentRun()
+      this.trace.concurrency_batches.push(1)
       results.push(await this.executeSingleTool(block, tool, context))
     }
 
@@ -608,99 +695,129 @@ export class QueryEngine {
     block: ToolUseBlock,
     tool: ToolDefinition | undefined,
     context: ToolContext,
+    recordTrace: ((trace: AgentRunToolTrace) => void) | true = true,
   ): Promise<ToolResult & { tool_name?: string }> {
-    if (!tool) {
-      return {
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: `Error: Unknown tool "${block.name}"`,
-        is_error: true,
-        tool_name: block.name,
-      }
-    }
+    const start = performance.now()
+    let result: ToolResult & { tool_name?: string } | undefined
 
-    // Check enabled
-    if (tool.isEnabled && !tool.isEnabled()) {
-      return {
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: `Error: Tool "${block.name}" is not enabled`,
-        is_error: true,
-        tool_name: block.name,
-      }
-    }
-
-    // Check permissions
     try {
-      const permission = await this.config.policy.canUseTool(tool, block.input)
-      if (permission.behavior === 'deny') {
-        return {
+      if (!tool) {
+        result = {
           type: 'tool_result',
           tool_use_id: block.id,
-          content: permission.message || `Permission denied for tool "${block.name}"`,
+          content: `Error: Unknown tool "${block.name}"`,
           is_error: true,
           tool_name: block.name,
         }
+        return result
       }
-      if (permission.updatedInput !== undefined) {
-        block = { ...block, input: permission.updatedInput }
-      }
-    } catch (err: any) {
-      return {
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: `Permission check error: ${err.message}`,
-        is_error: true,
-        tool_name: block.name,
-      }
-    }
 
-    // Hook: PreToolUse
-    const preHookResults = await this.executeHooks('PreToolUse', {
-      toolName: block.name,
-      toolInput: block.input,
-      toolUseId: block.id,
-    })
-    // Check if any hook blocks this tool
-    if (preHookResults.some((r) => r.block)) {
-      const msg = preHookResults.find((r) => r.message)?.message || 'Blocked by PreToolUse hook'
-      return {
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: msg,
-        is_error: true,
-        tool_name: block.name,
+      // Check enabled
+      if (tool.isEnabled && !tool.isEnabled(context)) {
+        result = {
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `Error: Tool "${block.name}" is not enabled`,
+          is_error: true,
+          tool_name: block.name,
+        }
+        return result
       }
-    }
 
-    // Execute the tool
-    try {
-      const result = await tool.call(block.input, context)
+      // Check permissions
+      try {
+        const permission = await this.config.policy.canUseTool(tool, block.input)
+        if (permission.behavior === 'deny') {
+          const reason = permission.message || `Permission denied for tool "${block.name}"`
+          this.trace.permission_denials.push({ tool: block.name, reason })
+          result = {
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: reason,
+            is_error: true,
+            tool_name: block.name,
+          }
+          return result
+        }
+        if (permission.updatedInput !== undefined) {
+          block = { ...block, input: permission.updatedInput }
+        }
+      } catch (err: any) {
+        const reason = `Permission check error: ${err.message}`
+        this.trace.permission_denials.push({ tool: block.name, reason })
+        result = {
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: reason,
+          is_error: true,
+          tool_name: block.name,
+        }
+        return result
+      }
 
-      // Hook: PostToolUse
-      await this.executeHooks('PostToolUse', {
+      // Hook: PreToolUse
+      const preHookResults = await this.executeHooks('PreToolUse', {
         toolName: block.name,
         toolInput: block.input,
-        toolOutput: typeof result.content === 'string' ? result.content : JSON.stringify(result.content),
         toolUseId: block.id,
       })
+      // Check if any hook blocks this tool
+      if (preHookResults.some((r) => r.block)) {
+        const msg = preHookResults.find((r) => r.message)?.message || 'Blocked by PreToolUse hook'
+        result = {
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: msg,
+          is_error: true,
+          tool_name: block.name,
+        }
+        return result
+      }
 
-      return { ...result, tool_use_id: block.id, tool_name: block.name }
-    } catch (err: any) {
-      // Hook: PostToolUseFailure
-      await this.executeHooks('PostToolUseFailure', {
-        toolName: block.name,
-        toolInput: block.input,
-        toolUseId: block.id,
-        error: err.message,
-      })
+      // Execute the tool
+      try {
+        const toolResult = await tool.call(block.input, context)
 
-      return {
-        type: 'tool_result',
+        // Hook: PostToolUse
+        await this.executeHooks('PostToolUse', {
+          toolName: block.name,
+          toolInput: block.input,
+          toolOutput: typeof toolResult.content === 'string' ? toolResult.content : JSON.stringify(toolResult.content),
+          toolUseId: block.id,
+        })
+
+        result = { ...toolResult, tool_use_id: block.id, tool_name: block.name }
+        return result
+      } catch (err: any) {
+        // Hook: PostToolUseFailure
+        await this.executeHooks('PostToolUseFailure', {
+          toolName: block.name,
+          toolInput: block.input,
+          toolUseId: block.id,
+          error: err.message,
+        })
+
+        result = {
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `Tool execution error: ${err.message}`,
+          is_error: true,
+          tool_name: block.name,
+        }
+        return result
+      }
+    } finally {
+      const trace = {
         tool_use_id: block.id,
-        content: `Tool execution error: ${err.message}`,
-        is_error: true,
         tool_name: block.name,
+        duration_ms: Math.round(performance.now() - start),
+        is_error: result?.is_error === true,
+        concurrency_safe: canRunConcurrently(tool),
+      }
+      if (recordTrace === true) {
+        this.trace.tools.push(trace)
+      } else {
+        recordTrace(trace)
       }
     }
   }
@@ -724,5 +841,19 @@ export class QueryEngine {
    */
   getCost(): number {
     return this.totalCost
+  }
+
+  /**
+   * Get a defensive copy of the run trace.
+   */
+  getTrace(): AgentRunTrace {
+    return {
+      turns: this.trace.turns.map((turn) => ({ ...turn })),
+      tools: this.trace.tools.map((tool) => ({ ...tool })),
+      concurrency_batches: [...this.trace.concurrency_batches],
+      retry_count: this.trace.retry_count,
+      compaction_count: this.trace.compaction_count,
+      permission_denials: this.trace.permission_denials.map((denial) => ({ ...denial })),
+    }
   }
 }

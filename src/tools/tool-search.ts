@@ -5,17 +5,24 @@
  * Supports keyword search and exact name selection.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
 import { parseCommaSeparatedList } from '../utils/parsing.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// Registry of deferred tools (set by the agent)
-let deferredTools: ToolDefinition[] = []
+const deferredToolNamespaces = new Map<string, ToolDefinition[]>()
+
+function getDeferredTools(context?: RuntimeNamespaceContext): ToolDefinition[] {
+  return deferredToolNamespaces.get(getRuntimeNamespace(context)) || []
+}
 
 /**
  * Set deferred tools available for search.
  */
-export function setDeferredTools(tools: ToolDefinition[]): void {
-  deferredTools = tools
+export function setDeferredTools(
+  tools: ToolDefinition[],
+  context?: RuntimeNamespaceContext,
+): void {
+  deferredToolNamespaces.set(getRuntimeNamespace(context), tools)
 }
 
 export const ToolSearchTool: ToolDefinition = {
@@ -39,8 +46,9 @@ export const ToolSearchTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Search for available tools.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
     const { query, max_results = 5 } = input
+    const deferredTools = getDeferredTools(context)
 
     if (deferredTools.length === 0) {
       return {

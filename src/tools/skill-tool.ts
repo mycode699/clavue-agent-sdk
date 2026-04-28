@@ -6,7 +6,7 @@
  */
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
-import { getSkill, getUserInvocableSkills } from '../skills/registry.js'
+import { formatSkillsForPrompt, getSkill, getUserInvocableSkills } from '../skills/registry.js'
 import { formatImageBlockForText } from '../utils/messages.js'
 
 export const SkillTool: ToolDefinition = {
@@ -33,24 +33,16 @@ export const SkillTool: ToolDefinition = {
 
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
-  isEnabled: () => getUserInvocableSkills().length > 0,
+  isEnabled: (context?: ToolContext) => getUserInvocableSkills(context).length > 0,
 
-  async prompt(): Promise<string> {
-    const skills = getUserInvocableSkills()
-    if (skills.length === 0) return ''
-
-    const lines = skills.map((s) => {
-      const desc =
-        s.description.length > 200
-          ? s.description.slice(0, 200) + '...'
-          : s.description
-      return `- ${s.name}: ${desc}`
-    })
+  async prompt(context: ToolContext): Promise<string> {
+    const skillListing = formatSkillsForPrompt(undefined, context)
+    if (!skillListing) return ''
 
     return (
       'Execute a skill within the main conversation.\n\n' +
       'Available skills:\n' +
-      lines.join('\n') +
+      skillListing +
       '\n\nWhen a skill matches the user\'s request, invoke it using the Skill tool.'
     )
   },
@@ -68,9 +60,9 @@ export const SkillTool: ToolDefinition = {
       }
     }
 
-    const skill = getSkill(skillName)
+    const skill = getSkill(skillName, context)
     if (!skill) {
-      const available = getUserInvocableSkills()
+      const available = getUserInvocableSkills(context)
         .map((s) => s.name)
         .join(', ')
       return {
@@ -82,7 +74,7 @@ export const SkillTool: ToolDefinition = {
     }
 
     // Check if skill is enabled
-    if (skill.isEnabled && !skill.isEnabled()) {
+    if (skill.isEnabled && !skill.isEnabled(context)) {
       return {
         type: 'tool_result',
         tool_use_id: '',

@@ -7,6 +7,7 @@
 
 import type { ImageSource, ToolContext } from '../types.js'
 import type { HookConfig } from '../hooks.js'
+import type { RuntimeNamespaceContext } from '../utils/runtime.js'
 
 /**
  * Content block for skill prompts (compatible with Anthropic API).
@@ -48,7 +49,7 @@ export interface SkillDefinition {
   userInvocable?: boolean
 
   /** Runtime check for availability */
-  isEnabled?: () => boolean
+  isEnabled?: (context?: RuntimeNamespaceContext) => boolean
 
   /** Hook overrides while skill is active */
   hooks?: HookConfig

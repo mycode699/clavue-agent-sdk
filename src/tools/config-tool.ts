@@ -4,30 +4,45 @@
  * Get/set global configuration and session settings.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// In-memory config store
-const configStore = new Map<string, unknown>()
+const configNamespaces = new Map<string, Map<string, unknown>>()
+
+function getConfigStore(context?: RuntimeNamespaceContext): Map<string, unknown> {
+  const namespace = getRuntimeNamespace(context)
+  let store = configNamespaces.get(namespace)
+  if (!store) {
+    store = new Map()
+    configNamespaces.set(namespace, store)
+  }
+  return store
+}
 
 /**
  * Get a config value.
  */
-export function getConfig(key: string): unknown {
-  return configStore.get(key)
+export function getConfig(key: string, context?: RuntimeNamespaceContext): unknown {
+  return getConfigStore(context).get(key)
 }
 
 /**
  * Set a config value.
  */
-export function setConfig(key: string, value: unknown): void {
-  configStore.set(key, value)
+export function setConfig(key: string, value: unknown, context?: RuntimeNamespaceContext): void {
+  getConfigStore(context).set(key, value)
 }
 
 /**
  * Clear all config.
  */
-export function clearConfig(): void {
-  configStore.clear()
+export function clearConfig(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    configNamespaces.clear()
+    return
+  }
+  configNamespaces.delete(namespace)
 }
 
 export const ConfigTool: ToolDefinition = {
@@ -50,7 +65,8 @@ export const ConfigTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Manage configuration settings.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const configStore = getConfigStore(context)
     switch (input.action) {
       case 'get': {
         if (!input.key) {

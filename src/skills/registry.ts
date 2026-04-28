@@ -6,17 +6,37 @@
  */
 
 import type { SkillDefinition } from './types.js'
+import {
+  DEFAULT_RUNTIME_NAMESPACE,
+  getRuntimeNamespace,
+  type RuntimeNamespaceContext,
+} from '../utils/runtime.js'
 
-/** Internal skill store */
-const skills: Map<string, SkillDefinition> = new Map()
+interface SkillNamespaceState {
+  skills: Map<string, SkillDefinition>
+  aliases: Map<string, string>
+}
 
-/** Alias -> skill name mapping */
-const aliases: Map<string, string> = new Map()
+const skillNamespaces: Map<string, SkillNamespaceState> = new Map()
+
+function getSkillState(context?: RuntimeNamespaceContext): SkillNamespaceState {
+  const namespace = getRuntimeNamespace(context)
+  let state = skillNamespaces.get(namespace)
+  if (!state) {
+    state = { skills: new Map(), aliases: new Map() }
+    skillNamespaces.set(namespace, state)
+  }
+  return state
+}
 
 /**
  * Register a skill definition.
  */
-export function registerSkill(definition: SkillDefinition): void {
+export function registerSkill(
+  definition: SkillDefinition,
+  context?: RuntimeNamespaceContext,
+): void {
+  const { skills, aliases } = getSkillState(context)
   skills.set(definition.name, definition)
 
   // Register aliases
@@ -30,7 +50,9 @@ export function registerSkill(definition: SkillDefinition): void {
 /**
  * Get a skill by name or alias.
  */
-export function getSkill(name: string): SkillDefinition | undefined {
+export function getSkill(name: string, context?: RuntimeNamespaceContext): SkillDefinition | undefined {
+  const namespace = getRuntimeNamespace(context)
+  const { skills, aliases } = getSkillState(context)
   // Direct lookup
   const direct = skills.get(name)
   if (direct) return direct
@@ -39,36 +61,51 @@ export function getSkill(name: string): SkillDefinition | undefined {
   const resolved = aliases.get(name)
   if (resolved) return skills.get(resolved)
 
+  if (namespace !== DEFAULT_RUNTIME_NAMESPACE) {
+    return getSkill(name)
+  }
+
   return undefined
 }
 
 /**
  * Get all registered skills.
  */
-export function getAllSkills(): SkillDefinition[] {
-  return Array.from(skills.values())
+export function getAllSkills(context?: RuntimeNamespaceContext): SkillDefinition[] {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === DEFAULT_RUNTIME_NAMESPACE) {
+    return Array.from(getSkillState(context).skills.values())
+  }
+
+  const byName = new Map<string, SkillDefinition>()
+  for (const skill of getAllSkills()) byName.set(skill.name, skill)
+  for (const skill of getSkillState(context).skills.values()) byName.set(skill.name, skill)
+  return Array.from(byName.values())
 }
 
 /**
  * Get all user-invocable skills (for /command listing).
  */
-export function getUserInvocableSkills(): SkillDefinition[] {
-  return getAllSkills().filter(
-    (s) => s.userInvocable !== false && (!s.isEnabled || s.isEnabled()),
+export function getUserInvocableSkills(context?: RuntimeNamespaceContext): SkillDefinition[] {
+  return getAllSkills(context).filter(
+    (s) => s.userInvocable !== false && (!s.isEnabled || s.isEnabled(context)),
   )
 }
 
 /**
  * Check if a skill exists.
  */
-export function hasSkill(name: string): boolean {
-  return skills.has(name) || aliases.has(name)
+export function hasSkill(name: string, context?: RuntimeNamespaceContext): boolean {
+  const namespace = getRuntimeNamespace(context)
+  const { skills, aliases } = getSkillState(context)
+  return skills.has(name) || aliases.has(name) || (namespace !== DEFAULT_RUNTIME_NAMESPACE && hasSkill(name))
 }
 
 /**
  * Remove a skill.
  */
-export function unregisterSkill(name: string): boolean {
+export function unregisterSkill(name: string, context?: RuntimeNamespaceContext): boolean {
+  const { skills, aliases } = getSkillState(context)
   const skill = skills.get(name)
   if (!skill) return false
 
@@ -85,9 +122,13 @@ export function unregisterSkill(name: string): boolean {
 /**
  * Clear all skills (for testing).
  */
-export function clearSkills(): void {
-  skills.clear()
-  aliases.clear()
+export function clearSkills(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    skillNamespaces.clear()
+    return
+  }
+  skillNamespaces.delete(namespace)
 }
 
 /**
@@ -98,8 +139,9 @@ export function clearSkills(): void {
  */
 export function formatSkillsForPrompt(
   contextWindowTokens?: number,
+  context?: RuntimeNamespaceContext,
 ): string {
-  const invocable = getUserInvocableSkills()
+  const invocable = getUserInvocableSkills(context)
   if (invocable.length === 0) return ''
 
   // Budget: 1% of context window in characters (4 chars per token)

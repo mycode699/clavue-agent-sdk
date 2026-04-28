@@ -11,22 +11,44 @@ import { formatImageBlockForText } from '../utils/messages.js'
 import { QueryEngine } from '../engine.js'
 import { getAllBaseTools, filterTools } from './index.js'
 import { createProvider, type ApiType } from '../providers/index.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// Store for registered agent definitions
-let registeredAgents: Record<string, AgentDefinition> = {}
+const agentDefinitionNamespaces = new Map<string, Record<string, AgentDefinition>>()
+
+function getRegisteredAgents(context?: RuntimeNamespaceContext): Record<string, AgentDefinition> {
+  return agentDefinitionNamespaces.get(getRuntimeNamespace(context)) || {}
+}
+
+export function getRegisteredAgentDefinitions(
+  context?: RuntimeNamespaceContext,
+): Record<string, AgentDefinition> {
+  return { ...getRegisteredAgents(context) }
+}
 
 /**
  * Register agent definitions for the AgentTool to use.
  */
-export function registerAgents(agents: Record<string, AgentDefinition>): void {
-  registeredAgents = { ...registeredAgents, ...agents }
+export function registerAgents(
+  agents: Record<string, AgentDefinition>,
+  context?: RuntimeNamespaceContext,
+): void {
+  const namespace = getRuntimeNamespace(context)
+  agentDefinitionNamespaces.set(namespace, {
+    ...getRegisteredAgents(context),
+    ...agents,
+  })
 }
 
 /**
  * Clear registered agents.
  */
-export function clearAgents(): void {
-  registeredAgents = {}
+export function clearAgents(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    agentDefinitionNamespaces.clear()
+    return
+  }
+  agentDefinitionNamespaces.delete(namespace)
 }
 
 /**
@@ -88,6 +110,7 @@ export const AgentTool: ToolDefinition = {
     const agentType = input.subagent_type || 'general-purpose'
 
     // Find agent definition
+    const registeredAgents = getRegisteredAgents(context)
     const agentDef = registeredAgents[agentType] || BUILTIN_AGENTS[agentType]
 
     // Determine tools for subagent
@@ -117,10 +140,13 @@ export const AgentTool: ToolDefinition = {
       provider,
       tools,
       appendSystemPrompt: agentDef?.prompt,
+      initialPrompt: input.prompt,
       maxTurns: agentDef?.maxTurns || 10,
       maxTokens: 16384,
       policy,
       includePartialMessages: false,
+      agents: registeredAgents,
+      runtimeNamespace: context.runtimeNamespace,
     })
 
     // Run the subagent

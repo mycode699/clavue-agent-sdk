@@ -8,6 +8,7 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
 /**
  * Task status.
@@ -31,33 +32,47 @@ export interface Task {
   metadata?: Record<string, unknown>
 }
 
-/**
- * Global task store (shared across tools in a session).
- */
-const taskStore = new Map<string, Task>()
+interface TaskNamespaceState {
+  store: Map<string, Task>
+  counter: number
+}
 
-let taskCounter = 0
+const taskNamespaces = new Map<string, TaskNamespaceState>()
+
+function getTaskState(context?: RuntimeNamespaceContext): TaskNamespaceState {
+  const namespace = getRuntimeNamespace(context)
+  let state = taskNamespaces.get(namespace)
+  if (!state) {
+    state = { store: new Map(), counter: 0 }
+    taskNamespaces.set(namespace, state)
+  }
+  return state
+}
 
 /**
  * Get all tasks.
  */
-export function getAllTasks(): Task[] {
-  return Array.from(taskStore.values())
+export function getAllTasks(context?: RuntimeNamespaceContext): Task[] {
+  return Array.from(getTaskState(context).store.values())
 }
 
 /**
  * Get a task by ID.
  */
-export function getTask(id: string): Task | undefined {
-  return taskStore.get(id)
+export function getTask(id: string, context?: RuntimeNamespaceContext): Task | undefined {
+  return getTaskState(context).store.get(id)
 }
 
 /**
  * Clear all tasks (for session reset).
  */
-export function clearTasks(): void {
-  taskStore.clear()
-  taskCounter = 0
+export function clearTasks(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    taskNamespaces.clear()
+    return
+  }
+  taskNamespaces.delete(namespace)
 }
 
 // ============================================================================
@@ -81,8 +96,9 @@ export const TaskCreateTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Create a task for tracking progress.' },
-  async call(input: any): Promise<ToolResult> {
-    const id = `task_${++taskCounter}`
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getTaskState(context)
+    const id = `task_${++state.counter}`
     const task: Task = {
       id,
       subject: input.subject,
@@ -92,7 +108,7 @@ export const TaskCreateTool: ToolDefinition = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    taskStore.set(id, task)
+    state.store.set(id, task)
 
     return {
       type: 'tool_result',
@@ -120,8 +136,8 @@ export const TaskListTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'List tasks.' },
-  async call(input: any): Promise<ToolResult> {
-    let tasks = getAllTasks()
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    let tasks = getAllTasks(context)
 
     if (input.status) {
       tasks = tasks.filter(t => t.status === input.status)
@@ -168,8 +184,8 @@ export const TaskUpdateTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Update a task.' },
-  async call(input: any): Promise<ToolResult> {
-    const task = taskStore.get(input.id)
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const task = getTask(input.id, context)
     if (!task) {
       return { type: 'tool_result', tool_use_id: '', content: `Task not found: ${input.id}`, is_error: true }
     }
@@ -206,8 +222,8 @@ export const TaskGetTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Get task details.' },
-  async call(input: any): Promise<ToolResult> {
-    const task = taskStore.get(input.id)
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const task = getTask(input.id, context)
     if (!task) {
       return { type: 'tool_result', tool_use_id: '', content: `Task not found: ${input.id}`, is_error: true }
     }
@@ -239,8 +255,8 @@ export const TaskStopTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Stop a task.' },
-  async call(input: any): Promise<ToolResult> {
-    const task = taskStore.get(input.id)
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const task = getTask(input.id, context)
     if (!task) {
       return { type: 'tool_result', tool_use_id: '', content: `Task not found: ${input.id}`, is_error: true }
     }
@@ -275,8 +291,8 @@ export const TaskOutputTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Get task output.' },
-  async call(input: any): Promise<ToolResult> {
-    const task = taskStore.get(input.id)
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const task = getTask(input.id, context)
     if (!task) {
       return { type: 'tool_result', tool_use_id: '', content: `Task not found: ${input.id}`, is_error: true }
     }

@@ -5,18 +5,32 @@
  * Allows the agent to enter a design/planning phase before execution.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// Track plan mode state
-let planModeActive = false
-let currentPlan: string | null = null
-
-export function isPlanModeActive(): boolean {
-  return planModeActive
+interface PlanNamespaceState {
+  active: boolean
+  currentPlan: string | null
 }
 
-export function getCurrentPlan(): string | null {
-  return currentPlan
+const planNamespaces = new Map<string, PlanNamespaceState>()
+
+function getPlanState(context?: RuntimeNamespaceContext): PlanNamespaceState {
+  const namespace = getRuntimeNamespace(context)
+  let state = planNamespaces.get(namespace)
+  if (!state) {
+    state = { active: false, currentPlan: null }
+    planNamespaces.set(namespace, state)
+  }
+  return state
+}
+
+export function isPlanModeActive(context?: RuntimeNamespaceContext): boolean {
+  return getPlanState(context).active
+}
+
+export function getCurrentPlan(context?: RuntimeNamespaceContext): string | null {
+  return getPlanState(context).currentPlan
 }
 
 export const EnterPlanModeTool: ToolDefinition = {
@@ -30,8 +44,9 @@ export const EnterPlanModeTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Enter plan mode for structured planning.' },
-  async call(): Promise<ToolResult> {
-    if (planModeActive) {
+  async call(_input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getPlanState(context)
+    if (state.active) {
       return {
         type: 'tool_result',
         tool_use_id: '',
@@ -39,8 +54,8 @@ export const EnterPlanModeTool: ToolDefinition = {
       }
     }
 
-    planModeActive = true
-    currentPlan = null
+    state.active = true
+    state.currentPlan = null
 
     return {
       type: 'tool_result',
@@ -64,8 +79,9 @@ export const ExitPlanModeTool: ToolDefinition = {
   isConcurrencySafe: () => false,
   isEnabled: () => true,
   async prompt() { return 'Exit plan mode with a completed plan.' },
-  async call(input: any): Promise<ToolResult> {
-    if (!planModeActive) {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getPlanState(context)
+    if (!state.active) {
       return {
         type: 'tool_result',
         tool_use_id: '',
@@ -74,15 +90,15 @@ export const ExitPlanModeTool: ToolDefinition = {
       }
     }
 
-    planModeActive = false
-    currentPlan = input.plan || null
+    state.active = false
+    state.currentPlan = input.plan || null
 
     const status = input.approved !== false ? 'approved' : 'pending approval'
 
     return {
       type: 'tool_result',
       tool_use_id: '',
-      content: `Plan mode exited. Plan status: ${status}.${currentPlan ? `\n\nPlan:\n${currentPlan}` : ''}`,
+      content: `Plan mode exited. Plan status: ${status}.${state.currentPlan ? `\n\nPlan:\n${state.currentPlan}` : ''}`,
     }
   },
 }

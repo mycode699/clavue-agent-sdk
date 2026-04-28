@@ -100,6 +100,8 @@ export interface SDKResultMessage {
   model_usage?: Record<string, { input_tokens: number; output_tokens: number }>
   permission_denials?: Array<{ tool: string; reason: string }>
   structured_output?: unknown
+  /** Structured execution trace for observability and performance analysis. */
+  trace?: AgentRunTrace
   errors?: string[]
   /** @deprecated Use total_cost_usd */
   cost?: number
@@ -181,7 +183,7 @@ export interface ToolDefinition {
   call: (input: any, context: ToolContext) => Promise<ToolResult>
   isReadOnly?: () => boolean
   isConcurrencySafe?: () => boolean
-  isEnabled?: () => boolean
+  isEnabled?: (context?: ToolContext) => boolean
   prompt?: (context: ToolContext) => Promise<string>
 }
 
@@ -194,6 +196,8 @@ export interface ToolInputSchema {
 export interface ToolContext {
   cwd: string
   abortSignal?: AbortSignal
+  /** Isolates module-level tool state for hosts running multiple SDK instances in one process. */
+  runtimeNamespace?: string
   /** Parent agent's LLM provider (inherited by subagents) */
   provider?: import('./providers/types.js').LLMProvider
   /** Parent agent's model ID */
@@ -223,6 +227,31 @@ export type PermissionMode =
   | 'plan'
   | 'dontAsk'
   | 'auto'
+
+export interface AgentRunToolTrace {
+  tool_use_id: string
+  tool_name: string
+  duration_ms: number
+  is_error: boolean
+  concurrency_safe: boolean
+}
+
+export interface AgentRunTurnTrace {
+  turn: number
+  duration_api_ms: number
+  input_tokens: number
+  output_tokens: number
+  tool_calls: number
+}
+
+export interface AgentRunTrace {
+  turns: AgentRunTurnTrace[]
+  tools: AgentRunToolTrace[]
+  concurrency_batches: number[]
+  retry_count: number
+  compaction_count: number
+  permission_denials: Array<{ tool: string; reason: string }>
+}
 
 export type PermissionBehavior = 'allow' | 'deny'
 
@@ -352,6 +381,10 @@ export interface MemoryConfig {
   repoPath?: string
 }
 
+export interface SessionConfig {
+  dir?: string
+}
+
 export interface SelfImprovementMemoryConfig {
   enabled?: boolean
   dir?: string
@@ -466,6 +499,10 @@ export interface AgentOptions {
   env?: Record<string, string | undefined>
   /** Structured memory configuration */
   memory?: MemoryConfig
+  /** Session persistence configuration */
+  session?: SessionConfig
+  /** Optional namespace for process-local tool registries and coordination state. */
+  runtimeNamespace?: string
   /** Automated run learning and retro/eval feedback loop. */
   selfImprovement?: boolean | SelfImprovementConfig
   /** Named built-in capability profiles that expand into allowed tool names */
@@ -565,6 +602,8 @@ export interface AgentRunResult {
   events: SDKMessage[]
   /** Engine errors when available */
   errors?: string[]
+  /** Structured execution trace for observability and performance analysis. */
+  trace?: AgentRunTrace
   /** Auto-learning artifacts captured after the run when selfImprovement is enabled. */
   self_improvement?: AgentSelfImprovementResult
 }
@@ -609,6 +648,8 @@ export interface QueryEngineConfig {
   hookRegistry?: import('./hooks.js').HookRegistry
   /** Session ID for hook context */
   sessionId?: string
+  /** Namespace for process-local tool state */
+  runtimeNamespace?: string
   /** Structured memory configuration */
   memory?: MemoryConfig
 }

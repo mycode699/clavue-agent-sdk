@@ -58,3 +58,21 @@ There is currently no dedicated lint script in `package.json`.
 - Top-level API selection is provider-agnostic. Model naming plus `CLAVUE_AGENT_*` environment variables decide whether the SDK uses Anthropic Messages or OpenAI-compatible APIs.
 - If you are updating user-facing behavior, check both the corresponding numbered example and the exported surface in `src/index.ts`; the examples show intended usage, while `src/index.ts` shows what is actually public.
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files are present in this repository right now.
+
+<!-- CLAVUE_INIT_DETECTED_CONTEXT_START -->
+<!-- This section is maintained by /init. Keep custom guidance outside these markers. -->
+## Repository
+- Root: open-agent-sdk-typescript
+- Top-level directories: dist, docs, examples, src, tests
+
+## Commands
+- npm run build
+- npm run dev
+- npm run test
+
+## Detected Project Context
+- package.json: package clavue-agent-sdk; type module; scripts: npm run build (tsc); npm run dev (tsc --watch); npm run test (npx tsx --test tests/*.test.ts); notable deps: typescript
+- package-lock.json: {
+- README.md: # Clavue Agent SDK
+- tsconfig.json: {
+<!-- CLAVUE_INIT_DETECTED_CONTEXT_END -->

@@ -5,7 +5,8 @@
  * RemoteTrigger - Manage remote scheduled agent triggers.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
 /**
  * Cron job definition.
@@ -21,23 +22,40 @@ export interface CronJob {
   nextRunAt?: string
 }
 
-// In-memory cron store
-const cronStore = new Map<string, CronJob>()
-let cronCounter = 0
+interface CronNamespaceState {
+  store: Map<string, CronJob>
+  counter: number
+}
+
+const cronNamespaces = new Map<string, CronNamespaceState>()
+
+function getCronState(context?: RuntimeNamespaceContext): CronNamespaceState {
+  const namespace = getRuntimeNamespace(context)
+  let state = cronNamespaces.get(namespace)
+  if (!state) {
+    state = { store: new Map(), counter: 0 }
+    cronNamespaces.set(namespace, state)
+  }
+  return state
+}
 
 /**
  * Get all cron jobs.
  */
-export function getAllCronJobs(): CronJob[] {
-  return Array.from(cronStore.values())
+export function getAllCronJobs(context?: RuntimeNamespaceContext): CronJob[] {
+  return Array.from(getCronState(context).store.values())
 }
 
 /**
  * Clear all cron jobs.
  */
-export function clearCronJobs(): void {
-  cronStore.clear()
-  cronCounter = 0
+export function clearCronJobs(context?: RuntimeNamespaceContext): void {
+  const namespace = getRuntimeNamespace(context)
+  if (namespace === 'default') {
+    cronNamespaces.clear()
+    return
+  }
+  cronNamespaces.delete(namespace)
 }
 
 export const CronCreateTool: ToolDefinition = {
@@ -56,8 +74,9 @@ export const CronCreateTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Create a scheduled cron job.' },
-  async call(input: any): Promise<ToolResult> {
-    const id = `cron_${++cronCounter}`
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getCronState(context)
+    const id = `cron_${++state.counter}`
     const job: CronJob = {
       id,
       name: input.name,
@@ -66,7 +85,7 @@ export const CronCreateTool: ToolDefinition = {
       enabled: true,
       createdAt: new Date().toISOString(),
     }
-    cronStore.set(id, job)
+    state.store.set(id, job)
 
     return {
       type: 'tool_result',
@@ -90,11 +109,12 @@ export const CronDeleteTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Delete a cron job.' },
-  async call(input: any): Promise<ToolResult> {
-    if (!cronStore.has(input.id)) {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const state = getCronState(context)
+    if (!state.store.has(input.id)) {
       return { type: 'tool_result', tool_use_id: '', content: `Cron job not found: ${input.id}`, is_error: true }
     }
-    cronStore.delete(input.id)
+    state.store.delete(input.id)
     return { type: 'tool_result', tool_use_id: '', content: `Cron job deleted: ${input.id}` }
   },
 }
@@ -107,8 +127,8 @@ export const CronListTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'List cron jobs.' },
-  async call(): Promise<ToolResult> {
-    const jobs = getAllCronJobs()
+  async call(_input: any, context?: ToolContext): Promise<ToolResult> {
+    const jobs = getAllCronJobs(context)
     if (jobs.length === 0) {
       return { type: 'tool_result', tool_use_id: '', content: 'No cron jobs scheduled.' }
     }

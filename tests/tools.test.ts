@@ -4,7 +4,23 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { FileReadTool, GrepTool, LSPTool, ListMcpResourcesTool, WebFetchTool, WebSearchTool } from '../src/index.ts'
+import {
+  FileReadTool,
+  GrepTool,
+  LSPTool,
+  ListMcpResourcesTool,
+  WebFetchTool,
+  WebSearchTool,
+  TodoWriteTool,
+  clearTodos,
+  getTodos,
+  TeamCreateTool,
+  clearTeams,
+  getAllTeams,
+  saveSession,
+  loadSession,
+  listSessions,
+} from '../src/index.ts'
 import { setMcpConnections } from '../src/tools/mcp-resource-tools.ts'
 
 test('GrepTool reports invalid regex errors instead of falling through to no matches', async () => {
@@ -70,6 +86,7 @@ test('web tools compose timeout and context abort signals', async () => {
 })
 
 test('ListMcpResources awaits async MCP resource listings', async () => {
+  const context = { cwd: process.cwd(), runtimeNamespace: 'mcp-resource-test' }
   setMcpConnections([
     {
       name: 'docs',
@@ -83,15 +100,66 @@ test('ListMcpResources awaits async MCP resource listings', async () => {
         }),
       },
     } as any,
-  ])
+  ], context)
 
   try {
-    const result = await ListMcpResourcesTool.call({}, { cwd: process.cwd() })
+    const result = await ListMcpResourcesTool.call({}, context)
 
     assert.equal(result.is_error, undefined)
     assert.match(String(result.content), /Server: docs/)
     assert.match(String(result.content), /Guide/)
   } finally {
-    setMcpConnections([])
+    setMcpConnections([], context)
   }
+})
+
+test('process-local tool stores are isolated by runtime namespace', async () => {
+  const first = { cwd: process.cwd(), runtimeNamespace: 'tools-isolation-a' }
+  const second = { cwd: process.cwd(), runtimeNamespace: 'tools-isolation-b' }
+
+  clearTodos(first)
+  clearTodos(second)
+  clearTeams(first)
+  clearTeams(second)
+
+  try {
+    await TodoWriteTool.call({ action: 'add', text: 'first todo' }, first)
+    await TodoWriteTool.call({ action: 'add', text: 'second todo' }, second)
+    await TeamCreateTool.call({ name: 'first team' }, first)
+    await TeamCreateTool.call({ name: 'second team' }, second)
+
+    assert.deepEqual(getTodos(first).map(todo => todo.text), ['first todo'])
+    assert.deepEqual(getTodos(second).map(todo => todo.text), ['second todo'])
+    assert.deepEqual(getTodos(first).map(todo => todo.id), [1])
+    assert.deepEqual(getTodos(second).map(todo => todo.id), [1])
+
+    assert.deepEqual(getAllTeams(first).map(team => team.name), ['first team'])
+    assert.deepEqual(getAllTeams(second).map(team => team.name), ['second team'])
+    assert.deepEqual(getAllTeams(first).map(team => team.id), ['team_1'])
+    assert.deepEqual(getAllTeams(second).map(team => team.id), ['team_1'])
+  } finally {
+    clearTodos(first)
+    clearTodos(second)
+    clearTeams(first)
+    clearTeams(second)
+  }
+})
+
+test('session store options isolate persisted transcripts by directory', async () => {
+  const firstDir = await mkdtemp(join(tmpdir(), 'sessions-a-'))
+  const secondDir = await mkdtemp(join(tmpdir(), 'sessions-b-'))
+  const messages = [{ role: 'user' as const, content: 'hello' }]
+
+  await saveSession('same-id', messages, { cwd: firstDir, model: 'model-a' }, { dir: firstDir })
+  await saveSession('same-id', messages, { cwd: secondDir, model: 'model-b' }, { dir: secondDir })
+
+  const first = await loadSession('same-id', { dir: firstDir })
+  const second = await loadSession('same-id', { dir: secondDir })
+  const firstSessions = await listSessions({ dir: firstDir })
+  const secondSessions = await listSessions({ dir: secondDir })
+
+  assert.equal(first?.metadata.model, 'model-a')
+  assert.equal(second?.metadata.model, 'model-b')
+  assert.deepEqual(firstSessions.map(session => session.model), ['model-a'])
+  assert.deepEqual(secondSessions.map(session => session.model), ['model-b'])
 })

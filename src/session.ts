@@ -5,9 +5,8 @@
  * Manages session lifecycle (create, resume, list, fork).
  */
 
-import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises'
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises'
 import { join } from 'path'
-import type { Message } from './types.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -31,10 +30,15 @@ export interface SessionData {
   messages: NormalizedMessageParam[]
 }
 
+export interface SessionStoreOptions {
+  dir?: string
+}
+
 /**
  * Get the sessions directory path.
  */
-function getSessionsDir(): string {
+function getSessionsDir(options?: SessionStoreOptions): string {
+  if (options?.dir) return options.dir
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
   return join(home, '.clavue-agent-sdk', 'sessions')
 }
@@ -42,8 +46,8 @@ function getSessionsDir(): string {
 /**
  * Get the path for a specific session.
  */
-function getSessionPath(sessionId: string): string {
-  return join(getSessionsDir(), sessionId)
+function getSessionPath(sessionId: string, options?: SessionStoreOptions): string {
+  return join(getSessionsDir(options), sessionId)
 }
 
 /**
@@ -53,8 +57,9 @@ export async function saveSession(
   sessionId: string,
   messages: NormalizedMessageParam[],
   metadata: Partial<SessionMetadata>,
+  options?: SessionStoreOptions,
 ): Promise<void> {
-  const dir = getSessionPath(sessionId)
+  const dir = getSessionPath(sessionId, options)
   await mkdir(dir, { recursive: true })
 
   const data: SessionData = {
@@ -80,9 +85,12 @@ export async function saveSession(
 /**
  * Load session from disk.
  */
-export async function loadSession(sessionId: string): Promise<SessionData | null> {
+export async function loadSession(
+  sessionId: string,
+  options?: SessionStoreOptions,
+): Promise<SessionData | null> {
   try {
-    const filePath = join(getSessionPath(sessionId), 'transcript.json')
+    const filePath = join(getSessionPath(sessionId, options), 'transcript.json')
     const content = await readFile(filePath, 'utf-8')
     return JSON.parse(content) as SessionData
   } catch {
@@ -93,15 +101,15 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
 /**
  * List all sessions.
  */
-export async function listSessions(): Promise<SessionMetadata[]> {
+export async function listSessions(options?: SessionStoreOptions): Promise<SessionMetadata[]> {
   try {
-    const dir = getSessionsDir()
+    const dir = getSessionsDir(options)
     const entries = await readdir(dir)
     const sessions: SessionMetadata[] = []
 
     for (const entry of entries) {
       try {
-        const data = await loadSession(entry)
+        const data = await loadSession(entry, options)
         if (data?.metadata) {
           sessions.push(data.metadata)
         }
@@ -125,18 +133,24 @@ export async function listSessions(): Promise<SessionMetadata[]> {
 export async function forkSession(
   sourceSessionId: string,
   newSessionId?: string,
+  options?: SessionStoreOptions,
 ): Promise<string | null> {
-  const data = await loadSession(sourceSessionId)
+  const data = await loadSession(sourceSessionId, options)
   if (!data) return null
 
   const forkId = newSessionId || crypto.randomUUID()
 
-  await saveSession(forkId, data.messages, {
-    ...data.metadata,
-    id: forkId,
-    createdAt: new Date().toISOString(),
-    summary: `Forked from session ${sourceSessionId}`,
-  })
+  await saveSession(
+    forkId,
+    data.messages,
+    {
+      ...data.metadata,
+      id: forkId,
+      createdAt: new Date().toISOString(),
+      summary: `Forked from session ${sourceSessionId}`,
+    },
+    options,
+  )
 
   return forkId
 }
@@ -146,8 +160,9 @@ export async function forkSession(
  */
 export async function getSessionMessages(
   sessionId: string,
+  options?: SessionStoreOptions,
 ): Promise<NormalizedMessageParam[]> {
-  const data = await loadSession(sessionId)
+  const data = await loadSession(sessionId, options)
   return data?.messages || []
 }
 
@@ -157,24 +172,28 @@ export async function getSessionMessages(
 export async function appendToSession(
   sessionId: string,
   message: NormalizedMessageParam,
+  options?: SessionStoreOptions,
 ): Promise<void> {
-  const data = await loadSession(sessionId)
+  const data = await loadSession(sessionId, options)
   if (!data) return
 
   data.messages.push(message)
   data.metadata.updatedAt = new Date().toISOString()
   data.metadata.messageCount = data.messages.length
 
-  await saveSession(sessionId, data.messages, data.metadata)
+  await saveSession(sessionId, data.messages, data.metadata, options)
 }
 
 /**
  * Delete a session.
  */
-export async function deleteSession(sessionId: string): Promise<boolean> {
+export async function deleteSession(
+  sessionId: string,
+  options?: SessionStoreOptions,
+): Promise<boolean> {
   try {
     const { rm } = await import('fs/promises')
-    await rm(getSessionPath(sessionId), { recursive: true, force: true })
+    await rm(getSessionPath(sessionId, options), { recursive: true, force: true })
     return true
   } catch {
     return false
@@ -188,7 +207,7 @@ export async function getSessionInfo(
   sessionId: string,
   options?: { dir?: string },
 ): Promise<SessionMetadata | null> {
-  const data = await loadSession(sessionId)
+  const data = await loadSession(sessionId, options)
   return data?.metadata || null
 }
 
@@ -200,13 +219,13 @@ export async function renameSession(
   title: string,
   options?: { dir?: string },
 ): Promise<void> {
-  const data = await loadSession(sessionId)
+  const data = await loadSession(sessionId, options)
   if (!data) return
 
   data.metadata.summary = title
   data.metadata.updatedAt = new Date().toISOString()
 
-  await saveSession(sessionId, data.messages, data.metadata)
+  await saveSession(sessionId, data.messages, data.metadata, options)
 }
 
 /**
@@ -217,11 +236,11 @@ export async function tagSession(
   tag: string | null,
   options?: { dir?: string },
 ): Promise<void> {
-  const data = await loadSession(sessionId)
+  const data = await loadSession(sessionId, options)
   if (!data) return
 
   ;(data.metadata as any).tag = tag
   data.metadata.updatedAt = new Date().toISOString()
 
-  await saveSession(sessionId, data.messages, data.metadata)
+  await saveSession(sessionId, data.messages, data.metadata, options)
 }

@@ -4,17 +4,24 @@
  * ListMcpResources / ReadMcpResource - Access resources from MCP servers.
  */
 
-import type { ToolDefinition, ToolResult } from '../types.js'
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
 import type { MCPConnection } from '../mcp/client.js'
+import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
-// Registry of MCP connections (set by the agent)
-let mcpConnections: MCPConnection[] = []
+const mcpConnectionNamespaces = new Map<string, MCPConnection[]>()
+
+function getMcpConnections(context?: RuntimeNamespaceContext): MCPConnection[] {
+  return mcpConnectionNamespaces.get(getRuntimeNamespace(context)) || []
+}
 
 /**
  * Set MCP connections for resource access.
  */
-export function setMcpConnections(connections: MCPConnection[]): void {
-  mcpConnections = connections
+export function setMcpConnections(
+  connections: MCPConnection[],
+  context?: RuntimeNamespaceContext,
+): void {
+  mcpConnectionNamespaces.set(getRuntimeNamespace(context), connections)
 }
 
 export const ListMcpResourcesTool: ToolDefinition = {
@@ -30,7 +37,8 @@ export const ListMcpResourcesTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'List MCP resources.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const mcpConnections = getMcpConnections(context)
     const connections = input.server
       ? mcpConnections.filter(c => c.name === input.server)
       : mcpConnections
@@ -88,7 +96,8 @@ export const ReadMcpResourceTool: ToolDefinition = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   async prompt() { return 'Read an MCP resource.' },
-  async call(input: any): Promise<ToolResult> {
+  async call(input: any, context?: ToolContext): Promise<ToolResult> {
+    const mcpConnections = getMcpConnections(context)
     const conn = mcpConnections.find(c => c.name === input.server)
     if (!conn) {
       return {
