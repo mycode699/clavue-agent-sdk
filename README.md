@@ -419,6 +419,52 @@ const result = await agent.prompt('Use the "explain" skill to explain git rebase
 console.log(result.text);
 ```
 
+Skills can also run in a forked subagent context by setting `context: "fork"`. Forked skills create durable background AgentJobs, inherit the parent provider and permission policy, apply skill-level `model` and `allowedTools`, and preserve the subagent `trace`, `evidence`, and `quality_gates` on the final job record.
+
+```typescript
+import {
+  SkillTool,
+  getAgentJob,
+  registerAgents,
+  registerSkill,
+} from "clavue-agent-sdk";
+
+registerAgents({
+  reviewer: {
+    description: "Specialized review agent",
+    prompt: "Review carefully and produce concise findings.",
+    tools: ["Read", "Glob", "Grep"],
+  },
+}, { runtimeNamespace: "docs-forked-skill" });
+
+registerSkill({
+  name: "deep-review",
+  description: "Run a durable background code review",
+  context: "fork",
+  agent: "reviewer",
+  allowedTools: ["Read", "Glob", "Grep"],
+  model: "gpt-5.4",
+  userInvocable: true,
+  async getPrompt(args) {
+    return [{ type: "text", text: `Review this target: ${args}` }];
+  },
+}, { runtimeNamespace: "docs-forked-skill" });
+
+const result = await SkillTool.call(
+  { skill: "deep-review", args: "src/agent.ts" },
+  {
+    cwd: process.cwd(),
+    runtimeNamespace: "docs-forked-skill",
+    model: "gpt-5.4",
+    provider,
+  },
+);
+
+const { job_id } = JSON.parse(String(result.content));
+const job = await getAgentJob(job_id, { runtimeNamespace: "docs-forked-skill" });
+console.log(job?.status, job?.trace, job?.evidence, job?.quality_gates);
+```
+
 ### Self-improvement memory
 
 Enable `selfImprovement` when you want each structured run to capture reusable operational lessons for future runs. It is opt-in and stores bounded `improvement` memories after `Agent.run()` / top-level `run()` completes.
@@ -697,6 +743,59 @@ for await (const msg of query({
 }
 ```
 
+### Durable background AgentJobs
+
+Use `AgentTool` with `run_in_background: true` when a subagent should continue without blocking the parent turn. The tool returns a durable job envelope immediately:
+
+```json
+{
+  "success": true,
+  "type": "clavue.agent.job",
+  "version": 1,
+  "job_id": "agent_job_...",
+  "status": "queued"
+}
+```
+
+The job is persisted under the current runtime namespace, stores final output, trace, evidence, quality gates, errors, and heartbeat status, and can be inspected or cancelled through tools or SDK APIs.
+
+```typescript
+import {
+  AgentTool,
+  AgentJobListTool,
+  AgentJobGetTool,
+  AgentJobStopTool,
+  getAgentJob,
+  listAgentJobs,
+} from "clavue-agent-sdk";
+
+const context = {
+  cwd: process.cwd(),
+  runtimeNamespace: "docs-background-demo",
+  model: "gpt-5.4",
+  provider,
+};
+
+const started = await AgentTool.call({
+  prompt: "Review src/ for security risks.",
+  description: "security review",
+  subagent_type: "Explore",
+  run_in_background: true,
+}, context);
+
+const { job_id } = JSON.parse(String(started.content));
+console.log(await listAgentJobs({ runtimeNamespace: context.runtimeNamespace }));
+console.log(await getAgentJob(job_id, { runtimeNamespace: context.runtimeNamespace }));
+
+await AgentJobListTool.call({}, context);
+await AgentJobGetTool.call({ id: job_id }, context);
+await AgentJobStopTool.call({ id: job_id, reason: "no longer needed" }, context);
+```
+
+Exported helpers include `createAgentJob()`, `getAgentJob()`, `listAgentJobs()`, `stopAgentJob()`, `clearAgentJobs()`, and the public types `AgentJobRecord`, `AgentJobStatus`, `AgentJobKind`, `AgentJobCompletion`, `AgentJobStoreOptions`, and `CreateAgentJobInput`.
+
+`AgentJob` storage defaults to `~/.clavue-agent-sdk/agent-jobs`; set `CLAVUE_AGENT_JOBS_DIR` or pass `AgentJobStoreOptions.dir` to isolate stores in tests or multi-tenant hosts.
+
 ### Permissions and tool execution safety
 
 ```typescript
@@ -763,7 +862,7 @@ npx tsx examples/web/server.ts
 3. The provider layer sends normalized messages and tool schemas to Anthropic Messages or an OpenAI-compatible chat endpoint.
 4. When the model requests a tool, the engine applies allow/deny filters, `canUseTool`, permission mode, and hooks, then executes the tool.
 5. Tool results are appended to the conversation and the engine repeats until the provider returns a final answer or the run reaches limits.
-6. The SDK returns either streaming `SDKMessage` events or a structured `AgentRunResult` artifact, and reusable agents can persist sessions under `~/.clavue-agent-sdk`.
+6. The SDK returns either streaming `SDKMessage` events or a structured `AgentRunResult` artifact, reusable agents can persist sessions under `~/.clavue-agent-sdk`, and background AgentJobs persist under `~/.clavue-agent-sdk/agent-jobs`.
 
 ### Top-level functions
 
@@ -778,6 +877,11 @@ npx tsx examples/web/server.ts
 | `getAllBaseTools()`                   | Get all 35+ built-in tools                                     |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
+| `createAgentJob(input, opts)`         | Create a durable background agent job record                   |
+| `getAgentJob(id, opts)`               | Read a durable background job by ID                            |
+| `listAgentJobs(opts)`                 | List durable background jobs in a runtime namespace            |
+| `stopAgentJob(id, reason, opts)`      | Cancel a queued or running background job                      |
+| `clearAgentJobs(opts)`                | Clear background jobs for a runtime namespace                  |
 | `runSelfImprovement(run, config, opts)` | Persist bounded improvement memories and optionally run retro/eval feedback |
 | `extractRunImprovementCandidates(run, config, opts)` | Inspect which improvement memories a run would generate |
 | `runRetroEvaluation(input)`           | Run deterministic retro/eval orchestration and return typed results |
@@ -810,6 +914,7 @@ npx tsx examples/web/server.ts
 | `agent.interrupt()`             | Abort current query                                   |
 | `agent.setModel(model)`         | Change model mid-session                              |
 | `agent.setPermissionMode(mode)` | Change permission mode                                |
+| `agent.stopTask(id)`            | Stop a durable AgentJob by ID, then fall back to legacy task cancellation |
 | `agent.getApiType()`            | Get current API type                                  |
 | `agent.close()`                 | Close MCP connections, persist session                |
 
@@ -881,7 +986,7 @@ console.log(getToolsetTools([selected]));
 | `planning`      | `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`, `TodoWrite`       |
 | `tasks`         | `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskGet`, `TaskStop`, `TaskOutput` |
 | `automation`    | `CronCreate`, `CronDelete`, `CronList`, `RemoteTrigger`               |
-| `agents`        | `Agent`, `SendMessage`, `TeamCreate`, `TeamDelete`                    |
+| `agents`        | `Agent`, `AgentJobList`, `AgentJobGet`, `AgentJobStop`, `SendMessage`, `TeamCreate`, `TeamDelete` |
 | `mcp`           | `ListMcpResources`, `ReadMcpResource`                                 |
 | `skills`        | `Skill`                                                               |
 
@@ -898,6 +1003,7 @@ console.log(getToolsetTools([selected]));
 | `CLAVUE_AGENT_MODEL`      | Default model override                                   |
 | `CLAVUE_AGENT_BASE_URL`   | Custom API endpoint                                      |
 | `CLAVUE_AGENT_AUTH_TOKEN` | Alternative auth token                                   |
+| `CLAVUE_AGENT_JOBS_DIR`   | Override durable AgentJob storage directory              |
 | `AGENT_SDK_MAX_TOOL_CONCURRENCY` | Max concurrent batch size for tools that are both read-only and concurrency-safe; invalid values fall back to `10` |
 
 ## Built-in tools
@@ -905,6 +1011,10 @@ console.log(getToolsetTools([selected]));
 Filesystem tools resolve paths relative to `cwd` but may access absolute paths when the host exposes them. For least privilege, combine `cwd`, `toolsets`, `allowedTools`/`disallowedTools`, `canUseTool`, and `sandbox` settings at the application boundary.
 
 文件系统工具会相对 `cwd` 解析路径，但当宿主环境暴露绝对路径时也可能访问绝对路径。最小权限部署时，请在应用边界组合使用 `cwd`、`toolsets`、`allowedTools`/`disallowedTools`、`canUseTool` 与 `sandbox` 设置。
+
+Session IDs are validated before disk access so persisted transcripts cannot escape the configured session store via absolute paths, `..`, or null-byte input. For multi-tenant hosts, also isolate `session.dir`, `CLAVUE_AGENT_JOBS_DIR`, and `runtimeNamespace` per tenant.
+
+Session ID 在访问磁盘前会进行校验，持久化 transcript 不能通过绝对路径、`..` 或空字节输入逃逸配置的 session store。多租户宿主还应为每个租户隔离 `session.dir`、`CLAVUE_AGENT_JOBS_DIR` 与 `runtimeNamespace`。
 
 | Tool                                       | Description                                  |
 | ------------------------------------------ | -------------------------------------------- |
@@ -918,6 +1028,7 @@ Filesystem tools resolve paths relative to `cwd` but may access absolute paths w
 | **WebSearch**                              | Search the web                               |
 | **NotebookEdit**                           | Edit Jupyter notebook cells                  |
 | **Agent**                                  | Spawn subagents for parallel work            |
+| **AgentJobList/Get/Stop**                  | Inspect and cancel durable background AgentJobs |
 | **Skill**                                  | Invoke registered skills                     |
 | **TaskCreate/List/Update/Get/Stop/Output** | Task management system                       |
 | **TeamCreate/Delete**                      | Multi-agent team coordination                |
@@ -988,6 +1099,7 @@ Register custom skills with `registerSkill()`.
 | **Token estimation**  | Rough token counting with pricing for Claude, GPT, DeepSeek models |
 | **File cache**        | LRU cache (100 entries, 25 MB) for file reads                      |
 | **Session storage**   | Persist / resume / fork sessions on disk                           |
+| **AgentJob storage**  | Durable background subagent records with output, trace, evidence, quality gates, cancellation, and stale-heartbeat detection |
 | **Structured memory** | Queryable user/project/reference/feedback/decision/improvement entries |
 | **Self-improvement**  | Opt-in run learning from failures plus optional retro verification  |
 | **Context injection** | Git status + AGENT.md automatically injected into system prompt    |
@@ -1019,6 +1131,7 @@ Register custom skills with `registerSkill()`.
 | 13  | `examples/13-hooks.ts`               | Lifecycle hooks                        |
 | 14  | `examples/14-openai-compat.ts`       | OpenAI / DeepSeek models               |
 | 15  | `examples/15-self-improvement.ts`    | Opt-in run learning and improvement memories |
+| 16  | `examples/16-background-agent-jobs.ts` | Durable background AgentJob APIs       |
 | web | `examples/web/`                       | Web chat UI for testing                |
 
 Run any example:

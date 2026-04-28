@@ -85,6 +85,7 @@ interface SkillActivation {
   prompt?: string
   allowedTools?: string[]
   model?: string
+  job_id?: string
 }
 
 function getMemoryPriority(memory: MemoryEntry): number {
@@ -165,6 +166,7 @@ function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
         ? parsed.allowedTools.filter((name): name is string => typeof name === 'string')
         : undefined,
       model: typeof parsed.model === 'string' ? parsed.model : undefined,
+      job_id: typeof parsed.job_id === 'string' ? parsed.job_id : undefined,
     }
   } catch {
     return undefined

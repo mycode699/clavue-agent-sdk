@@ -6,7 +6,7 @@
  */
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises'
-import { join } from 'path'
+import { isAbsolute, join, relative, resolve } from 'path'
 import type { NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -47,7 +47,23 @@ function getSessionsDir(options?: SessionStoreOptions): string {
  * Get the path for a specific session.
  */
 function getSessionPath(sessionId: string, options?: SessionStoreOptions): string {
-  return join(getSessionsDir(options), sessionId)
+  if (!sessionId || sessionId.includes('\0')) {
+    throw new Error('Invalid session id')
+  }
+
+  const sessionsDir = resolve(getSessionsDir(options))
+  const sessionPath = resolve(sessionsDir, sessionId)
+  const pathFromStore = relative(sessionsDir, sessionPath)
+
+  if (
+    pathFromStore === '' ||
+    pathFromStore.startsWith('..') ||
+    isAbsolute(pathFromStore)
+  ) {
+    throw new Error('Invalid session id')
+  }
+
+  return sessionPath
 }
 
 /**

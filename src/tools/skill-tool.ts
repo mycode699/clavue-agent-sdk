@@ -8,6 +8,8 @@
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import { formatSkillsForPrompt, getSkill, getUserInvocableSkills } from '../skills/registry.js'
 import { formatImageBlockForText } from '../utils/messages.js'
+import { createAgentJob, runAgentJob } from '../agent-jobs.js'
+import { runAgentSubagent } from './agent-tool.js'
 
 export const SkillTool: ToolDefinition = {
   name: 'Skill',
@@ -92,6 +94,48 @@ export const SkillTool: ToolDefinition = {
         .map((b) => b.type === 'text' ? b.text : formatImageBlockForText(b))
         .join('\n\n')
 
+      if (skill.context === 'fork') {
+        const job = await createAgentJob({
+          kind: 'subagent',
+          prompt: promptText,
+          description: `Skill ${skill.name}`,
+          subagent_type: skill.agent || 'general-purpose',
+          model: skill.model,
+          allowedTools: skill.allowedTools,
+        }, { runtimeNamespace: context.runtimeNamespace })
+
+        runAgentJob(job.id, (signal) => runAgentSubagent({
+          input: {
+            prompt: promptText,
+            description: `Skill ${skill.name}`,
+            subagent_type: skill.agent || 'general-purpose',
+            model: skill.model,
+          },
+          context,
+          abortSignal: signal,
+          allowedTools: skill.allowedTools,
+          appendSystemPrompt: promptText,
+        }), { runtimeNamespace: context.runtimeNamespace })
+
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: JSON.stringify({
+            type: 'clavue.skill.activation',
+            version: 1,
+            success: true,
+            skillName: skill.name,
+            commandName: skill.name,
+            status: 'forked',
+            job_id: job.id,
+            agent: skill.agent || 'general-purpose',
+            prompt: promptText,
+            allowedTools: skill.allowedTools,
+            model: skill.model,
+          }),
+        }
+      }
+
       // Build result with metadata
       const result: Record<string, unknown> = {
         type: 'clavue.skill.activation',
@@ -99,7 +143,7 @@ export const SkillTool: ToolDefinition = {
         success: true,
         skillName: skill.name,
         commandName: skill.name,
-        status: skill.context === 'fork' ? 'forked' : 'inline',
+        status: 'inline',
         prompt: promptText,
       }
 

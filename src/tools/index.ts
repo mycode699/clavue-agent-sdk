@@ -22,6 +22,7 @@ import { WebSearchTool } from './web-search.js'
 
 // Agent & Multi-agent
 import { AgentTool } from './agent-tool.js'
+import { AgentJobGetTool, AgentJobListTool, AgentJobStopTool } from './agent-job-tools.js'
 import { SendMessageTool } from './send-message.js'
 import { TeamCreateTool, TeamDeleteTool } from './team-tools.js'
 
@@ -84,6 +85,9 @@ const ALL_TOOLS: ToolDefinition[] = [
 
   // Agent & Multi-agent
   AgentTool,
+  AgentJobListTool,
+  AgentJobGetTool,
+  AgentJobStopTool,
   SendMessageTool,
   TeamCreateTool,
   TeamDeleteTool,
@@ -159,7 +163,7 @@ const TOOLSETS: Record<ToolsetName, string[]> = {
   planning: ['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoWrite'],
   tasks: ['TaskCreate', 'TaskList', 'TaskUpdate', 'TaskGet', 'TaskStop', 'TaskOutput'],
   automation: ['CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger'],
-  agents: ['Agent', 'SendMessage', 'TeamCreate', 'TeamDelete'],
+  agents: ['Agent', 'AgentJobList', 'AgentJobGet', 'AgentJobStop', 'SendMessage', 'TeamCreate', 'TeamDelete'],
   mcp: ['ListMcpResources', 'ReadMcpResource'],
   skills: ['Skill'],
 }
@@ -236,6 +240,9 @@ export {
   WebSearchTool,
   // Agent
   AgentTool,
+  AgentJobListTool,
+  AgentJobGetTool,
+  AgentJobStopTool,
   SendMessageTool,
   TeamCreateTool,
   TeamDeleteTool,

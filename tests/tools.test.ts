@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -162,4 +162,22 @@ test('session store options isolate persisted transcripts by directory', async (
   assert.equal(second?.metadata.model, 'model-b')
   assert.deepEqual(firstSessions.map(session => session.model), ['model-a'])
   assert.deepEqual(secondSessions.map(session => session.model), ['model-b'])
+})
+
+test('session ids cannot escape the configured session store', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sessions-safe-'))
+  const outside = join(dir, '..', 'escaped-session')
+  const messages = [{ role: 'user' as const, content: 'hello' }]
+
+  await assert.rejects(
+    saveSession('../escaped-session', messages, { cwd: dir, model: 'model-a' }, { dir }),
+    /invalid session id/i,
+  )
+  await assert.rejects(
+    saveSession('/tmp/escaped-session', messages, { cwd: dir, model: 'model-a' }, { dir }),
+    /invalid session id/i,
+  )
+
+  assert.equal(await loadSession('../escaped-session', { dir }), null)
+  await assert.rejects(access(outside))
 })

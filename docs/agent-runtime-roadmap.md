@@ -7,9 +7,9 @@ This roadmap captures the current state of `clavue-agent-sdk`, the main gaps fou
 ## Baseline
 
 - `npm run build` passes.
-- `npm test` passes: 116 tests in about 5.9 seconds.
-- Current strengths: in-process agent loop, provider abstraction, tool registry and named toolsets, MCP integration, hooks, sessions, structured memory, bundled skills, subagents, retro/eval, and runtime namespace isolation.
-- Current risk: many high-level capabilities are present as primitives or metadata, but not yet enforced as durable workflow contracts.
+- `npm test` passes: 136 tests.
+- Current strengths: in-process agent loop, provider abstraction, tool registry and named toolsets, MCP integration, hooks, sessions, structured memory, bundled skills, subagents, durable background AgentJobs, retro/eval, and runtime namespace isolation.
+- Current risk: many high-level capabilities are present as primitives or metadata, but not all are enforced as durable workflow contracts.
 
 ## External Practice Baseline
 
@@ -21,10 +21,18 @@ This roadmap captures the current state of `clavue-agent-sdk`, the main gaps fou
 
 ### P0. Skill Execution Is Advisory, Not Enforced
 
-Evidence:
+Status: partially completed.
 
-- `SkillDefinition` includes `allowedTools`, `model`, `hooks`, `context`, and `agent`, but `SkillTool` returns these as JSON instead of applying them to execution.
-- `context: 'fork'` and skill-level tool/model restrictions are not enforced by the engine.
+Completed:
+
+- Inline skill activations now inject the skill prompt, model override, and allowed tool set into the active engine run.
+- Forked skill activations now create durable background AgentJobs through the shared subagent runner.
+- Forked skill jobs preserve trace, evidence, and quality gate artifacts.
+
+Remaining evidence:
+
+- Skill-level hooks and typed manifest preconditions are not yet enforced.
+- Quality gates are observable artifacts, not terminal success/failure semantics yet.
 
 Impact:
 
@@ -152,30 +160,31 @@ Acceptance gates:
 - `npm test`.
 - `npm run build`.
 
-### P1. Subagents Are Not Durable Or Replayable
+### P1. Background AgentJobs Are Durable, But Not Fully Resumable
 
 Evidence:
 
-- `AgentTool` starts nested `QueryEngine` instances synchronously.
-- `run_in_background` exists in schema but is not implemented.
-- Subagent transcript/tool execution details collapse into a text result.
+- `AgentTool` supports `run_in_background` and persists job records with output, trace, evidence, quality gates, cancellation state, runner heartbeat, and stale detection.
+- `AgentJobList`, `AgentJobGet`, and `AgentJobStop` expose status inspection and cancellation.
+- Public APIs include `createAgentJob()`, `getAgentJob()`, `listAgentJobs()`, `stopAgentJob()`, and `clearAgentJobs()`.
+- In-process jobs cannot yet resume active provider/tool execution after process death; stale jobs are marked stale instead.
 
 Impact:
 
-- Complex multi-agent runs are hard to debug, resume, or audit.
-- Background work is not durable across process restarts.
+- Complex multi-agent runs are now inspectable and auditable.
+- True process-restart continuation still requires a resumable execution runner.
 
 Implementation slices:
 
-1. Add optional `subagentTrace` collection to `AgentTool`.
-2. Persist subagent traces with sessions when enabled.
-3. Either implement `run_in_background` with a durable job store or remove it from schema until supported.
-4. Add cancellation, timeout, and status inspection tests.
+1. Add process-restart resume semantics for queued/stale jobs.
+2. Persist enough input/provider/tool context for safe replay.
+3. Add optional timeout policy per job.
+4. Add CLI or doctor support for listing stale jobs and storage health.
 
 Acceptance gates:
 
-- Stub-provider tests for trace collection.
-- Runtime namespace isolation tests for concurrent subagent runs.
+- Tests proving queued job resume or explicit stale recovery.
+- Runtime namespace isolation tests for concurrent background runs.
 - `npm test`.
 - `npm run build`.
 
@@ -235,7 +244,7 @@ Acceptance gates:
 3. Add lifecycle workflow skills and proof-gate metadata.
 4. Enforce built-in safety policy modes.
 5. Add brain-first memory policy and trace metadata.
-6. Add subagent trace persistence and decide the `run_in_background` contract.
+6. Add process-restart resume semantics for durable AgentJobs.
 7. Add benchmark harness.
 8. Add `doctor()` health checks.
 

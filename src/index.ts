@@ -169,6 +169,9 @@ export {
 
   // Agent & Multi-agent
   AgentTool,
+  AgentJobListTool,
+  AgentJobGetTool,
+  AgentJobStopTool,
   SendMessageTool,
   TeamCreateTool,
   TeamDeleteTool,
@@ -427,7 +430,24 @@ export {
   registerAgents,
   clearAgents,
   getRegisteredAgentDefinitions,
+  runAgentSubagent,
 } from './tools/agent-tool.js'
+
+export {
+  createAgentJob,
+  getAgentJob,
+  listAgentJobs,
+  stopAgentJob,
+  clearAgentJobs,
+} from './agent-jobs.js'
+export type {
+  AgentJobCompletion,
+  AgentJobKind,
+  AgentJobRecord,
+  AgentJobStatus,
+  AgentJobStoreOptions,
+  CreateAgentJobInput,
+} from './agent-jobs.js'
 
 export {
   setQuestionHandler,

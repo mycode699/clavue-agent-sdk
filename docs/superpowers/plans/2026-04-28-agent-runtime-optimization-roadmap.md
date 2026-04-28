@@ -48,7 +48,7 @@ Reusable lessons:
 - `src/providers/` isolates Anthropic and OpenAI-compatible transports.
 - `src/skills/` and `SkillTool` provide a starting plugin surface.
 - `src/retro/` gives deterministic evaluation and policy primitives.
-- Current test baseline is green: `npm test` passed 116/116 tests on 2026-04-28.
+- Current test baseline is green: `npm test` passed 136/136 tests after AgentJob and session-hardening work on 2026-04-28.
 
 ### Gaps
 
@@ -56,10 +56,11 @@ Reusable lessons:
    - No benchmark harness for tool throughput, provider latency, prompt/context size, memory retrieval quality, or subagent overhead.
    - `AGENT_SDK_MAX_TOOL_CONCURRENCY` exists, but there is no regression gate proving concurrency behavior remains efficient under load.
 
-2. **Background orchestration is incomplete**
-   - `AgentTool` accepts `run_in_background`, but current behavior is a synchronous nested engine run.
-   - Tasks/todos/team mailboxes are process-local unless explicitly persisted elsewhere.
-   - Long-running specialist work cannot yet be resumed, cancelled, or observed as a durable job.
+2. **Background orchestration is durable but not fully resumable**
+   - `AgentTool` now honors `run_in_background` and returns a `clavue.agent.job` envelope with a durable job ID.
+   - `AgentJobList`, `AgentJobGet`, and `AgentJobStop` expose list/read/cancel operations.
+   - Job records persist output, errors, trace, evidence, quality gates, heartbeat, and stale status.
+   - Long-running specialist work still cannot resume active provider/tool execution after process death; stale jobs are detected instead.
 
 3. **Skill/plugin contract is under-specified**
    - Skills are callable, but the runtime does not yet enforce typed preconditions, artifacts, quality gates, evidence, or compatibility metadata.
@@ -93,8 +94,8 @@ Reusable lessons:
    - Persist artifacts and evidence as structured objects.
 
 4. **Durable jobs**
-   - Implement background subagent/tool jobs as resumable records.
-   - Add status, cancellation, output file/path, errors, timing, and parent session linkage.
+   - Extend AgentJob records from durable status/artifact records into resumable records.
+   - Add replay context, timeout/retention policy, parent session linkage, and stale-job repair UX.
 
 5. **Plugin/skill registry**
    - Add manifest metadata: version, triggers, preconditions, tools, artifacts, gates, permissions, compatibility.
@@ -139,20 +140,20 @@ Why first:
 - Without measurement, efficiency claims are subjective.
 - Trace data also supports later durable jobs and quality gates.
 
-### P2: Implement real background subagent jobs
+### P2: Extend durable background subagent jobs to resumable jobs
 
 Implementation slice:
 
-- Honor `AgentTool` `run_in_background`.
-- Return a job/task id immediately.
-- Persist background state in a runtime namespace scoped registry first; later add optional file persistence.
-- Provide read/stop semantics through existing task/team tools or a dedicated job API.
-- Capture final output, errors, timing, and tool summary.
+- Keep the current `AgentTool` `run_in_background` contract and `clavue.agent.job` response envelope.
+- Persist enough launch context for explicit replay/resume after process restart.
+- Add timeout and retention policies.
+- Add doctor/reporting support for stale jobs.
+- Preserve final output, errors, timing, trace, evidence, and quality gates.
 
 Acceptance:
 
-- Background job can be launched, listed/read, cancelled, and completed without blocking the parent loop.
-- Tests cover success, failure, cancellation, and namespace isolation.
+- Background job can be launched, listed/read, cancelled, completed, marked stale, and resumed or explicitly replayed without blocking the parent loop.
+- Tests cover success, failure, cancellation, stale recovery, replay, and namespace isolation.
 
 ### P3: Formalize skill/plugin manifests and quality gates
 

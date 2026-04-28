@@ -3,12 +3,20 @@ import assert from 'node:assert/strict'
 import {
   Agent,
   AgentTool,
+  AgentJobGetTool,
+  AgentJobListTool,
+  AgentJobStopTool,
   GlobTool,
   EnterWorktreeTool,
   SkillTool,
   clearAgents,
+  clearAgentJobs,
   clearSkills,
+  createAgentJob,
+  getAgentJob,
   getRegisteredAgentDefinitions,
+  listAgentJobs,
+  registerAgents,
   registerSkill,
 } from '../src/index.ts'
 import type { CreateMessageParams, CreateMessageResponse, LLMProvider, SDKMessage, ToolDefinition } from '../src/index.ts'
@@ -87,6 +95,24 @@ async function collectEvents(agent: Agent, prompt = 'test permissions'): Promise
     events.push(event)
   }
   return events
+}
+
+async function eventually(assertion: () => Promise<void>, timeoutMs = 500): Promise<void> {
+  const start = Date.now()
+  let lastError: unknown
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await assertion()
+      return
+    } catch (err) {
+      lastError = err
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+
+  if (lastError) throw lastError
+  throw new Error('eventually timed out')
 }
 
 test('default permission mode is trustedAutomation in init event', async () => {
@@ -994,6 +1020,202 @@ test('subagents inherit parent permission policy and mode', async () => {
   } finally {
     clearAgents(context)
     await agent.close()
+  }
+})
+
+test('AgentTool run_in_background creates durable job and records completion', async () => {
+  const context = { runtimeNamespace: 'background-agent-complete-test' }
+  await clearAgentJobs(context)
+  clearAgents(context)
+
+  const provider = new StubProvider([
+    textResponse('background result'),
+  ])
+
+  try {
+    const result = await AgentTool.call(
+      {
+        prompt: 'run background task',
+        description: 'background task',
+        run_in_background: true,
+      },
+      {
+        cwd: process.cwd(),
+        provider,
+        model: 'gpt-5.4',
+        apiType: 'openai-completions',
+        runtimeNamespace: context.runtimeNamespace,
+      },
+    )
+    const payload = JSON.parse(String(result.content))
+
+    assert.equal(payload.type, 'clavue.agent.job')
+    assert.equal(payload.status, 'queued')
+    assert.match(payload.job_id, /^agent_job_/)
+
+    await eventually(async () => {
+      const job = await getAgentJob(payload.job_id, context)
+      assert.equal(job?.status, 'completed')
+      assert.equal(job?.output, 'background result')
+      assert.equal(job?.trace?.turns.length, 1)
+    })
+
+    const jobs = await listAgentJobs(context)
+    assert.equal(jobs.length, 1)
+    assert.equal(jobs[0]?.id, payload.job_id)
+  } finally {
+    await clearAgentJobs(context)
+    clearAgents(context)
+  }
+})
+
+test('Agent job tools list, get, and stop background jobs by namespace', async () => {
+  const contextA = { runtimeNamespace: 'background-agent-tools-a' }
+  const contextB = { runtimeNamespace: 'background-agent-tools-b' }
+  await clearAgentJobs(contextA)
+  await clearAgentJobs(contextB)
+
+  let releaseBackground!: () => void
+  const provider = new StubProvider([
+    new Promise((resolve) => {
+      releaseBackground = () => resolve(textResponse('late background result'))
+    }) as any,
+  ])
+
+  try {
+    const result = await AgentTool.call(
+      {
+        prompt: 'slow background task',
+        description: 'slow background task',
+        run_in_background: true,
+      },
+      {
+        cwd: process.cwd(),
+        provider,
+        model: 'gpt-5.4',
+        apiType: 'openai-completions',
+        runtimeNamespace: contextA.runtimeNamespace,
+      },
+    )
+    const { job_id: jobId } = JSON.parse(String(result.content))
+
+    await eventually(async () => {
+      const job = await getAgentJob(jobId, contextA)
+      assert.equal(job?.status, 'running')
+    })
+
+    const listA = await AgentJobListTool.call({}, { cwd: process.cwd(), ...contextA })
+    const listB = await AgentJobListTool.call({}, { cwd: process.cwd(), ...contextB })
+    assert.match(String(listA.content), new RegExp(jobId))
+    assert.equal(String(listB.content), '[]')
+
+    const getA = await AgentJobGetTool.call({ id: jobId }, { cwd: process.cwd(), ...contextA })
+    assert.match(String(getA.content), /slow background task/)
+
+    const stop = await AgentJobStopTool.call(
+      { id: jobId, reason: 'test cancellation' },
+      { cwd: process.cwd(), ...contextA },
+    )
+    assert.equal(stop.is_error, undefined)
+    assert.match(String(stop.content), /cancelled/)
+
+    releaseBackground()
+    await eventually(async () => {
+      const job = await getAgentJob(jobId, contextA)
+      assert.equal(job?.status, 'cancelled')
+      assert.match(job?.error || '', /test cancellation/)
+    })
+  } finally {
+    releaseBackground?.()
+    await clearAgentJobs(contextA)
+    await clearAgentJobs(contextB)
+  }
+})
+
+test('stale queued agent jobs are marked stale on read', async () => {
+  const context = { runtimeNamespace: 'background-agent-stale-test', staleAfterMs: 0 }
+  await clearAgentJobs(context)
+
+  try {
+    const job = await createAgentJob({
+      kind: 'subagent',
+      prompt: 'never started',
+      description: 'never started',
+    }, context)
+
+    const refreshed = await getAgentJob(job.id, context)
+
+    assert.equal(refreshed?.status, 'stale')
+    assert.match(refreshed?.error || '', /heartbeat expired/)
+  } finally {
+    await clearAgentJobs(context)
+  }
+})
+
+test('forked skills create background agent jobs with allowed built-in tools', async () => {
+  const context = { runtimeNamespace: 'forked-skill-background-test' }
+  await clearAgentJobs(context)
+  clearSkills(context)
+  clearAgents(context)
+
+  const provider = new StubProvider([
+    textResponse('forked skill result'),
+  ])
+
+  registerSkill({
+    name: 'deep-review',
+    description: 'Deep review workflow',
+    context: 'fork',
+    agent: 'reviewer',
+    allowedTools: ['Glob'],
+    model: 'skill-model',
+    userInvocable: true,
+    async getPrompt(args) {
+      return [{ type: 'text', text: `FORKED_SKILL_PROMPT ${args}` }]
+    },
+  }, context)
+
+  registerAgents({
+    reviewer: {
+      description: 'Review agent',
+      prompt: 'Use the provided forked skill prompt.',
+      tools: ['Glob', 'Grep'],
+    },
+  }, context)
+
+  try {
+    const result = await SkillTool.call(
+      { skill: 'deep-review', args: 'src/engine.ts' },
+      {
+        cwd: process.cwd(),
+        provider,
+        model: 'base-model',
+        apiType: 'openai-completions',
+        runtimeNamespace: context.runtimeNamespace,
+      },
+    )
+    const payload = JSON.parse(String(result.content))
+
+    assert.equal(payload.status, 'forked')
+    assert.match(payload.job_id, /^agent_job_/)
+
+    await eventually(async () => {
+      const job = await getAgentJob(payload.job_id, context)
+      assert.equal(job?.status, 'completed')
+      assert.equal(job?.model, 'skill-model')
+      assert.deepEqual(job?.allowedTools, ['Glob'])
+      assert.match(job?.prompt || '', /FORKED_SKILL_PROMPT src\/engine\.ts/)
+      assert.match(job?.output || '', /forked skill result/)
+      assert.equal(job?.trace?.turns.length, 1)
+    })
+
+    assert.equal(provider.calls[0]?.model, 'skill-model')
+    assert.deepEqual(provider.calls[0]?.tools?.map((tool) => tool.name), ['Glob'])
+    assert.match(provider.calls[0]?.system || '', /FORKED_SKILL_PROMPT src\/engine\.ts/)
+  } finally {
+    await clearAgentJobs(context)
+    clearSkills(context)
+    clearAgents(context)
   }
 })
 

@@ -564,6 +564,10 @@ export class Agent {
    * Stop a background task.
    */
   async stopTask(taskId: string): Promise<void> {
+    const { stopAgentJob } = await import('./agent-jobs.js')
+    const stoppedJob = await stopAgentJob(taskId, undefined, { runtimeNamespace: this.cfg.runtimeNamespace })
+    if (stoppedJob) return
+
     const { getTask } = await import('./tools/task-tools.js')
     const task = getTask(taskId, { runtimeNamespace: this.cfg.runtimeNamespace })
     if (task) {
