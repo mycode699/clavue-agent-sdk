@@ -341,6 +341,8 @@ export class Agent {
       sessionId: this.sid,
       runtimeNamespace: opts.runtimeNamespace,
       memory: opts.memory,
+      evidence: opts.evidence,
+      quality_gates: opts.quality_gates,
     })
     this.currentEngine = engine
 
@@ -398,6 +400,8 @@ export class Agent {
     let numTurns = 0
     let usage: TokenUsage = { input_tokens: 0, output_tokens: 0 }
     let trace: AgentRunTrace | undefined
+    let evidence: AgentRunResult['evidence']
+    let qualityGates: AgentRunResult['quality_gates']
     let errors: string[] | undefined
 
     for await (const ev of this.query(text, overrides)) {
@@ -419,6 +423,8 @@ export class Agent {
           numTurns = ev.num_turns ?? 0
           usage = ev.usage ?? usage
           trace = ev.trace
+          evidence = ev.evidence
+          qualityGates = ev.quality_gates
           errors = ev.errors
           break
         }
@@ -444,6 +450,8 @@ export class Agent {
       messages: [...this.messageLog],
       events,
       errors,
+      evidence,
+      quality_gates: qualityGates,
       trace,
     }
 

@@ -485,8 +485,12 @@ export type {
   ToolContext,
   ToolResult,
 
-  // Permission and trace types
+  // Permission, evidence, quality gate, and trace types
   PermissionMode,
+  EvidenceSource,
+  Evidence,
+  QualityGateStatus,
+  QualityGateResult,
   AgentRunToolTrace,
   AgentRunTurnTrace,
   AgentRunTrace,

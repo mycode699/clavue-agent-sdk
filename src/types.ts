@@ -81,6 +81,8 @@ export interface SDKToolResultMessage {
     tool_use_id: string
     tool_name: string
     output: string
+    evidence?: Evidence[]
+    quality_gates?: QualityGateResult[]
   }
 }
 
@@ -100,6 +102,10 @@ export interface SDKResultMessage {
   model_usage?: Record<string, { input_tokens: number; output_tokens: number }>
   permission_denials?: Array<{ tool: string; reason: string }>
   structured_output?: unknown
+  /** Evidence captured during the run for auditability. */
+  evidence?: Evidence[]
+  /** Quality gate results captured during the run. */
+  quality_gates?: QualityGateResult[]
   /** Structured execution trace for observability and performance analysis. */
   trace?: AgentRunTrace
   errors?: string[]
@@ -187,6 +193,34 @@ export interface ToolDefinition {
   prompt?: (context: ToolContext) => Promise<string>
 }
 
+export type EvidenceSource = 'tool' | 'skill' | 'hook' | 'agent' | 'eval' | 'external'
+
+export interface Evidence {
+  /** Stable evidence category, such as test, build, trace, review, or artifact. */
+  type: string
+  /** Human-readable evidence summary. */
+  summary: string
+  /** Component that produced the evidence. */
+  source?: EvidenceSource | string
+  /** Tool call, skill, hook, or run id that produced this evidence. */
+  id?: string
+  /** Optional file path, URL, or artifact pointer. */
+  location?: string
+  /** Additional structured metadata for consumers. */
+  metadata?: Record<string, unknown>
+}
+
+export type QualityGateStatus = 'passed' | 'failed' | 'skipped' | 'pending'
+
+export interface QualityGateResult {
+  /** Stable gate name, such as build, tests, lint, review, or skill:<name>. */
+  name: string
+  status: QualityGateStatus
+  summary?: string
+  evidence?: Evidence[]
+  metadata?: Record<string, unknown>
+}
+
 export interface ToolInputSchema {
   type: 'object'
   properties: Record<string, any>
@@ -213,6 +247,8 @@ export interface ToolResult {
   tool_use_id: string
   content: string | any[]
   is_error?: boolean
+  evidence?: Evidence[]
+  quality_gates?: QualityGateResult[]
 }
 
 // --------------------------------------------------------------------------
@@ -503,6 +539,10 @@ export interface AgentOptions {
   session?: SessionConfig
   /** Optional namespace for process-local tool registries and coordination state. */
   runtimeNamespace?: string
+  /** Evidence already known when a run starts. */
+  evidence?: Evidence[]
+  /** Quality gates already known when a run starts. */
+  quality_gates?: QualityGateResult[]
   /** Automated run learning and retro/eval feedback loop. */
   selfImprovement?: boolean | SelfImprovementConfig
   /** Named built-in capability profiles that expand into allowed tool names */
@@ -602,6 +642,10 @@ export interface AgentRunResult {
   events: SDKMessage[]
   /** Engine errors when available */
   errors?: string[]
+  /** Evidence captured during the run for auditability. */
+  evidence?: Evidence[]
+  /** Quality gate results captured during the run. */
+  quality_gates?: QualityGateResult[]
   /** Structured execution trace for observability and performance analysis. */
   trace?: AgentRunTrace
   /** Auto-learning artifacts captured after the run when selfImprovement is enabled. */
@@ -652,4 +696,8 @@ export interface QueryEngineConfig {
   runtimeNamespace?: string
   /** Structured memory configuration */
   memory?: MemoryConfig
+  /** Evidence already known when this engine run starts. */
+  evidence?: Evidence[]
+  /** Quality gates already known when this engine run starts. */
+  quality_gates?: QualityGateResult[]
 }

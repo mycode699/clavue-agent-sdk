@@ -281,6 +281,151 @@ test('SkillTool prompt uses registry formatter with triggers and enabled skills 
   }
 })
 
+test('inline SkillTool activation injects prompt, model override, and allowed tools', async () => {
+  const context = { runtimeNamespace: 'skill-activation-inline-test' }
+  clearSkills(context)
+
+  registerSkill({
+    name: 'focused-review',
+    description: 'Focused review workflow',
+    allowedTools: ['capture'],
+    model: 'skill-model',
+    userInvocable: true,
+    async getPrompt(args) {
+      return [{ type: 'text', text: `UNIQUE_SKILL_PROMPT ${args}` }]
+    },
+  }, context)
+
+  const provider = new StubProvider([
+    toolUseResponse({ skill: 'focused-review', args: 'src/engine.ts' }, 'Skill'),
+    toolUseResponse({ value: 'from skill' }, 'capture'),
+    textResponse('done'),
+  ])
+  const agent = new Agent({
+    model: 'base-model',
+    tools: [
+      SkillTool,
+      captureTool(),
+      captureTool(undefined, { name: 'other' }),
+    ],
+    runtimeNamespace: context.runtimeNamespace,
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent)
+    const final = events.find((event) => event.type === 'result')
+
+    assert.equal(provider.calls[0]?.model, 'base-model')
+    assert.doesNotMatch(provider.calls[0]?.system || '', /UNIQUE_SKILL_PROMPT/)
+
+    assert.equal(provider.calls[1]?.model, 'skill-model')
+    assert.match(provider.calls[1]?.system || '', /# Active Skill: focused-review/)
+    assert.match(provider.calls[1]?.system || '', /UNIQUE_SKILL_PROMPT src\/engine\.ts/)
+    assert.deepEqual(provider.calls[1]?.tools?.map((tool) => tool.name), ['Skill', 'capture'])
+
+    assert.equal(provider.calls[2]?.model, 'skill-model')
+    assert.match(provider.calls[2]?.system || '', /# Active Skill: focused-review/)
+    assert.deepEqual(provider.calls[2]?.tools?.map((tool) => tool.name), ['Skill', 'capture'])
+
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.deepEqual(final.model_usage, {
+        'base-model': { input_tokens: 1, output_tokens: 1 },
+        'skill-model': { input_tokens: 2, output_tokens: 2 },
+      })
+    }
+  } finally {
+    clearSkills(context)
+    await agent.close()
+  }
+})
+
+test('inline SkillTool activation enforces allowed tools during execution', async () => {
+  const context = { runtimeNamespace: 'skill-activation-enforce-test' }
+  clearSkills(context)
+
+  registerSkill({
+    name: 'restricted-skill',
+    description: 'Restricted skill workflow',
+    allowedTools: ['capture'],
+    userInvocable: true,
+    async getPrompt() {
+      return [{ type: 'text', text: 'restricted skill prompt' }]
+    },
+  }, context)
+
+  const provider = new StubProvider([
+    toolUseResponse({ skill: 'restricted-skill' }, 'Skill'),
+    toolUseResponse({ value: 'blocked' }, 'other'),
+    textResponse('done'),
+  ])
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [
+      SkillTool,
+      captureTool(),
+      captureTool(undefined, { name: 'other' }),
+    ],
+    runtimeNamespace: context.runtimeNamespace,
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent)
+    const toolResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'other',
+    )
+
+    assert.ok(toolResult)
+    assert.match(toolResult.result.output, /Unknown tool "other"/)
+    assert.deepEqual(provider.calls[1]?.tools?.map((tool) => tool.name), ['Skill', 'capture'])
+  } finally {
+    clearSkills(context)
+    await agent.close()
+  }
+})
+
+test('malformed Skill tool output does not activate skill constraints', async () => {
+  const malformedSkillTool: ToolDefinition = {
+    name: 'Skill',
+    description: 'Malformed skill test tool',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+    call: async () => ({
+      type: 'tool_result',
+      tool_use_id: '',
+      content: 'not-json',
+    }),
+  }
+
+  const provider = new StubProvider([
+    toolUseResponse({}, 'Skill'),
+    toolUseResponse({ value: 'allowed after malformed output' }, 'other'),
+    textResponse('done'),
+  ])
+  const agent = new Agent({
+    model: 'base-model',
+    tools: [
+      malformedSkillTool,
+      captureTool(undefined, { name: 'other' }),
+    ],
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    await collectEvents(agent)
+
+    assert.equal(provider.calls[1]?.model, 'base-model')
+    assert.doesNotMatch(provider.calls[1]?.system || '', /# Active Skill:/)
+    assert.deepEqual(provider.calls[1]?.tools?.map((tool) => tool.name), ['Skill', 'other'])
+  } finally {
+    await agent.close()
+  }
+})
+
 test('custom system prompt bypasses default tool prompt guidance', async () => {
   const provider = new StubProvider([textResponse('ok')])
   const agent = new Agent({
@@ -626,6 +771,84 @@ test('concurrency-safe tools execute concurrently and final result includes trac
     assert.equal(final?.type, 'result')
     if (final?.type === 'result') {
       assert.deepEqual(final.trace, run.trace)
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('tool evidence and quality gates propagate to events and run result', async () => {
+  const evidence = [{
+    type: 'test',
+    summary: 'Focused verification passed',
+    source: 'tool',
+    id: 'capture-verification',
+  }]
+  const qualityGates = [{
+    name: 'focused-tests',
+    status: 'passed' as const,
+    summary: 'Focused tests passed',
+    evidence,
+  }]
+  const tool = captureTool(undefined, {
+    call: async () => ({
+      type: 'tool_result',
+      tool_use_id: '',
+      content: 'verified',
+      evidence,
+      quality_gates: qualityGates,
+    }),
+  })
+
+  const agent = new Agent({ model: 'gpt-5.4', tools: [tool] })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({ value: 'one' }),
+    textResponse('done'),
+  ])
+
+  try {
+    const run = await agent.run('test evidence')
+    const toolEvent = run.events.find((event) => event.type === 'tool_result')
+    const final = run.events.find((event) => event.type === 'result')
+
+    assert.deepEqual(run.evidence, evidence)
+    assert.deepEqual(run.quality_gates, qualityGates)
+    assert.equal(toolEvent?.type, 'tool_result')
+    if (toolEvent?.type === 'tool_result') {
+      assert.deepEqual(toolEvent.result.evidence, evidence)
+      assert.deepEqual(toolEvent.result.quality_gates, qualityGates)
+    }
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.deepEqual(final.evidence, evidence)
+      assert.deepEqual(final.quality_gates, qualityGates)
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('initial evidence and quality gates propagate to final run result', async () => {
+  const evidence = [{ type: 'artifact', summary: 'Preflight artifact exists', source: 'external' }]
+  const qualityGates = [{ name: 'preflight', status: 'passed' as const, evidence }]
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    evidence,
+    quality_gates: qualityGates,
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('done')])
+
+  try {
+    const run = await agent.run('test initial evidence')
+    const final = run.events.find((event) => event.type === 'result')
+
+    assert.deepEqual(run.evidence, evidence)
+    assert.deepEqual(run.quality_gates, qualityGates)
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.deepEqual(final.evidence, evidence)
+      assert.deepEqual(final.quality_gates, qualityGates)
     }
   } finally {
     await agent.close()

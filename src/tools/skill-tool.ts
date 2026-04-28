@@ -94,7 +94,10 @@ export const SkillTool: ToolDefinition = {
 
       // Build result with metadata
       const result: Record<string, unknown> = {
+        type: 'clavue.skill.activation',
+        version: 1,
         success: true,
+        skillName: skill.name,
         commandName: skill.name,
         status: skill.context === 'fork' ? 'forked' : 'inline',
         prompt: promptText,

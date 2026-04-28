@@ -21,6 +21,8 @@ import type {
   TokenUsage,
   AgentRunTrace,
   AgentRunToolTrace,
+  Evidence,
+  QualityGateResult,
 } from './types.js'
 import type {
   LLMProvider,
@@ -73,6 +75,18 @@ interface ToolUseBlock {
   input: any
 }
 
+interface SkillActivation {
+  type: 'clavue.skill.activation'
+  version: 1
+  success: true
+  skillName?: string
+  commandName?: string
+  status?: 'inline' | 'forked'
+  prompt?: string
+  allowedTools?: string[]
+  model?: string
+}
+
 function getMemoryPriority(memory: MemoryEntry): number {
   switch (memory.type) {
     case 'feedback':
@@ -116,6 +130,45 @@ function getMaxToolConcurrency(): number {
 
 function canRunConcurrently(tool?: ToolDefinition): boolean {
   return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
+}
+
+function filterToolsForSkill(tools: ToolDefinition[], allowedTools?: string[]): ToolDefinition[] {
+  if (!allowedTools || allowedTools.length === 0) return tools
+
+  const allowed = new Set([...allowedTools, 'Skill'])
+  return tools.filter((tool) => allowed.has(tool.name))
+}
+
+function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
+  if (result.is_error || typeof result.content !== 'string') return undefined
+
+  try {
+    const parsed = JSON.parse(result.content) as Partial<SkillActivation>
+    if (
+      parsed?.type !== 'clavue.skill.activation' ||
+      parsed.version !== 1 ||
+      parsed.success !== true ||
+      typeof parsed.prompt !== 'string'
+    ) {
+      return undefined
+    }
+
+    return {
+      type: 'clavue.skill.activation',
+      version: 1,
+      success: true,
+      skillName: typeof parsed.skillName === 'string' ? parsed.skillName : parsed.commandName,
+      commandName: typeof parsed.commandName === 'string' ? parsed.commandName : parsed.skillName,
+      status: parsed.status === 'forked' ? 'forked' : 'inline',
+      prompt: parsed.prompt,
+      allowedTools: Array.isArray(parsed.allowedTools)
+        ? parsed.allowedTools.filter((name): name is string => typeof name === 'string')
+        : undefined,
+      model: typeof parsed.model === 'string' ? parsed.model : undefined,
+    }
+  } catch {
+    return undefined
+  }
 }
 
 function createToolContext(config: QueryEngineConfig): ToolContext {
@@ -288,6 +341,7 @@ export class QueryEngine {
   private provider: LLMProvider
   public messages: NormalizedMessageParam[] = []
   private totalUsage: TokenUsage = { input_tokens: 0, output_tokens: 0 }
+  private modelUsage: Record<string, { input_tokens: number; output_tokens: number }> = {}
   private totalCost = 0
   private turnCount = 0
   private trace: AgentRunTrace = {
@@ -302,9 +356,14 @@ export class QueryEngine {
   private sessionId: string
   private apiTimeMs = 0
   private hookRegistry?: HookRegistry
+  private activeSkill?: SkillActivation
+  private evidence: Evidence[] = []
+  private qualityGates: QualityGateResult[] = []
 
   constructor(config: QueryEngineConfig) {
     this.config = { ...config, runtimeNamespace: config.runtimeNamespace ?? config.sessionId }
+    this.evidence = [...(config.evidence ?? [])]
+    this.qualityGates = [...(config.quality_gates ?? [])]
     this.provider = config.provider
     this.compactState = createAutoCompactState()
     this.sessionId = config.sessionId || crypto.randomUUID()
@@ -330,6 +389,13 @@ export class QueryEngine {
     } catch {
       return []
     }
+  }
+
+  private recordModelUsage(model: string, usage: TokenUsage): void {
+    const current = this.modelUsage[model] ?? { input_tokens: 0, output_tokens: 0 }
+    current.input_tokens += usage.input_tokens
+    current.output_tokens += usage.output_tokens
+    this.modelUsage[model] = current
   }
 
   /**
@@ -363,12 +429,9 @@ export class QueryEngine {
     // Add user message
     this.messages.push({ role: 'user', content: prompt as any })
 
-    // Build tool definitions for provider
-    const tools = this.config.tools.map(toProviderTool)
-
     // Build system prompt
     this.config.initialPrompt = typeof prompt === 'string' ? prompt : undefined
-    const systemPrompt = await buildSystemPrompt(this.config)
+    let systemPrompt = await buildSystemPrompt(this.config)
 
     // Emit init system message
     yield {
@@ -426,6 +489,16 @@ export class QueryEngine {
       this.turnCount++
       turnsRemaining--
 
+      const activeSkill = this.activeSkill
+      const activeTools = activeSkill
+        ? filterToolsForSkill(this.config.tools, activeSkill.allowedTools)
+        : this.config.tools
+      const providerTools = activeTools.map(toProviderTool)
+      const requestModel = activeSkill?.model || this.config.model
+      const requestSystemPrompt = activeSkill
+        ? `${systemPrompt}\n\n# Active Skill: ${activeSkill.skillName || activeSkill.commandName || 'unknown'}\n${activeSkill.prompt}\n\nRemain within this active skill until the current workflow is complete. Use only the tools available for this request.`
+        : systemPrompt
+
       // Make API call with retry via provider
       let response: CreateMessageResponse
       let apiAttempts = 0
@@ -435,11 +508,11 @@ export class QueryEngine {
           async () => {
             apiAttempts += 1
             return this.provider.createMessage({
-              model: this.config.model,
+              model: requestModel,
               maxTokens: this.config.maxTokens,
-              system: systemPrompt,
+              system: requestSystemPrompt,
               messages: apiMessages,
-              tools: tools.length > 0 ? tools : undefined,
+              tools: providerTools.length > 0 ? providerTools : undefined,
               thinking:
                 this.config.thinking?.type === 'enabled' &&
                 this.config.thinking.budgetTokens
@@ -487,7 +560,10 @@ export class QueryEngine {
           num_turns: this.turnCount,
           total_cost_usd: this.totalCost,
           duration_api_ms: Math.round(this.apiTimeMs + performance.now() - apiStart),
+          model_usage: this.getModelUsage(),
           permission_denials: this.trace.permission_denials,
+          evidence: this.getEvidence(),
+          quality_gates: this.getQualityGates(),
           trace: this.getTrace(),
           errors: [err?.message || String(err)],
           cost: this.totalCost,
@@ -523,7 +599,8 @@ export class QueryEngine {
             (this.totalUsage.cache_read_input_tokens || 0) +
             response.usage.cache_read_input_tokens
         }
-        this.totalCost += estimateCost(this.config.model, response.usage)
+        this.recordModelUsage(requestModel, response.usage)
+        this.totalCost += estimateCost(requestModel, response.usage)
       }
 
       // Add assistant message to conversation
@@ -559,6 +636,7 @@ export class QueryEngine {
       }
 
       if (toolUseBlocks.length === 0) {
+        this.activeSkill = undefined
         completedNormally = true
         break // No tool calls - agent is done
       }
@@ -580,6 +658,8 @@ export class QueryEngine {
               typeof result.content === 'string'
                 ? result.content
                 : JSON.stringify(result.content),
+            evidence: result.evidence,
+            quality_gates: result.quality_gates,
           },
         }
       }
@@ -626,8 +706,10 @@ export class QueryEngine {
       total_cost_usd: this.totalCost,
       duration_api_ms: Math.round(this.apiTimeMs),
       usage: this.totalUsage,
-      model_usage: { [this.config.model]: { input_tokens: this.totalUsage.input_tokens, output_tokens: this.totalUsage.output_tokens } },
+      model_usage: this.getModelUsage(),
       permission_denials: this.trace.permission_denials,
+      evidence: this.getEvidence(),
+      quality_gates: this.getQualityGates(),
       trace: this.getTrace(),
       cost: this.totalCost,
     }
@@ -649,7 +731,10 @@ export class QueryEngine {
     }
 
     const maxConcurrency = getMaxToolConcurrency()
-    const toolsByName = new Map(this.config.tools.map((tool) => [tool.name, tool]))
+    const toolsForThisTurn = this.activeSkill
+      ? filterToolsForSkill(this.config.tools, this.activeSkill.allowedTools)
+      : this.config.tools
+    const toolsByName = new Map(toolsForThisTurn.map((tool) => [tool.name, tool]))
     const results: (ToolResult & { tool_name?: string })[] = []
     let concurrentRun: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
 
@@ -777,6 +862,17 @@ export class QueryEngine {
       // Execute the tool
       try {
         const toolResult = await tool.call(block.input, context)
+        if (toolResult.evidence) {
+          this.evidence.push(...toolResult.evidence)
+        }
+        if (toolResult.quality_gates) {
+          this.qualityGates.push(...toolResult.quality_gates)
+        }
+
+        const activation = tool.name === 'Skill' ? parseSkillActivation(toolResult) : undefined
+        if (activation?.status === 'inline') {
+          this.activeSkill = activation
+        }
 
         // Hook: PostToolUse
         await this.executeHooks('PostToolUse', {
@@ -841,6 +937,46 @@ export class QueryEngine {
    */
   getCost(): number {
     return this.totalCost
+  }
+
+  /**
+   * Get a defensive copy of usage grouped by the actual model used per turn.
+   */
+  getModelUsage(): Record<string, { input_tokens: number; output_tokens: number }> {
+    const usage: Record<string, { input_tokens: number; output_tokens: number }> = {}
+    for (const [model, value] of Object.entries(this.modelUsage)) {
+      usage[model] = { ...value }
+    }
+    return usage
+  }
+
+  /**
+   * Get a defensive copy of run evidence.
+   */
+  getEvidence(): Evidence[] {
+    return this.evidence.map((entry) => {
+      const copy: Evidence = { ...entry }
+      if (entry.metadata) copy.metadata = { ...entry.metadata }
+      return copy
+    })
+  }
+
+  /**
+   * Get a defensive copy of quality gate results.
+   */
+  getQualityGates(): QualityGateResult[] {
+    return this.qualityGates.map((gate) => {
+      const copy: QualityGateResult = { ...gate }
+      if (gate.evidence) {
+        copy.evidence = gate.evidence.map((entry) => {
+          const evidence: Evidence = { ...entry }
+          if (entry.metadata) evidence.metadata = { ...entry.metadata }
+          return evidence
+        })
+      }
+      if (gate.metadata) copy.metadata = { ...gate.metadata }
+      return copy
+    })
   }
 
   /**
