@@ -10,7 +10,49 @@ import type {
   LLMProvider,
   CreateMessageParams,
   CreateMessageResponse,
+  ProviderError,
+  ProviderErrorCategory,
 } from './types.js'
+
+function categorizeAnthropicStatus(status?: number): ProviderErrorCategory {
+  switch (status) {
+    case 400:
+      return 'invalid_request'
+    case 401:
+      return 'authentication'
+    case 403:
+      return 'authorization'
+    case 404:
+      return 'unsupported'
+    case 408:
+    case 504:
+      return 'timeout'
+    case 429:
+      return 'rate_limit'
+    default:
+      return status && status >= 500 ? 'provider_error' : 'unknown'
+  }
+}
+
+function normalizeAnthropicError(err: unknown): ProviderError {
+  const source = err as Error & {
+    status?: number
+    headers?: Record<string, string>
+    body?: string
+    error?: unknown
+  }
+  const normalized = source instanceof Error
+    ? source as ProviderError
+    : new Error(String(err)) as ProviderError
+
+  normalized.provider = 'anthropic'
+  normalized.category = categorizeAnthropicStatus(source?.status)
+  if (source?.status !== undefined) normalized.status = source.status
+  if (source?.headers) normalized.headers = source.headers
+  if (source?.body !== undefined) normalized.body = source.body
+  if (source?.error !== undefined) normalized.error = source.error
+  return normalized
+}
 
 export class AnthropicProvider implements LLMProvider {
   readonly apiType = 'anthropic-messages' as const
@@ -42,9 +84,14 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
-    const response = await this.client.messages.create(requestParams, {
-      signal: params.abortSignal,
-    })
+    let response: Anthropic.Messages.Message
+    try {
+      response = await this.client.messages.create(requestParams, {
+        signal: params.abortSignal,
+      })
+    } catch (err) {
+      throw normalizeAnthropicError(err)
+    }
 
     return {
       content: response.content as CreateMessageResponse['content'],

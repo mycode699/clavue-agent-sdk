@@ -13,6 +13,15 @@ import type { AgentRunTrace, Evidence, QualityGateResult } from './types.js'
 export type AgentJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale'
 export type AgentJobKind = 'subagent'
 
+export interface AgentJobReplayInput {
+  prompt: string
+  description?: string
+  subagent_type?: string
+  model?: string
+  allowed_tools?: string[]
+  append_system_prompt?: string
+}
+
 export interface AgentJobRecord {
   id: string
   kind: AgentJobKind
@@ -35,6 +44,7 @@ export interface AgentJobRecord {
   quality_gates?: QualityGateResult[]
   runnerId?: string
   allowedTools?: string[]
+  replay?: AgentJobReplayInput
 }
 
 export interface AgentJobStoreOptions extends RuntimeNamespaceContext {
@@ -52,6 +62,7 @@ export interface CreateAgentJobInput {
   subagent_type?: string
   model?: string
   allowedTools?: string[]
+  replay?: AgentJobReplayInput
 }
 
 export interface AgentJobCompletion {
@@ -62,7 +73,7 @@ export interface AgentJobCompletion {
   quality_gates?: QualityGateResult[]
 }
 
-type AgentJobRunner = (signal: AbortSignal) => Promise<AgentJobCompletion>
+export type AgentJobRunner = (signal: AbortSignal) => Promise<AgentJobCompletion>
 
 interface ActiveAgentJob {
   abortController: AbortController
@@ -243,11 +254,41 @@ export async function createAgentJob(
     subagent_type: input.subagent_type,
     model: input.model,
     allowedTools: input.allowedTools,
+    replay: input.replay,
     createdAt: now,
     updatedAt: now,
   }
 
   return saveAgentJob(job, options)
+}
+
+export async function replayAgentJob(
+  id: string,
+  runner: AgentJobRunner,
+  options?: AgentJobStoreOptions,
+): Promise<AgentJobRecord | null> {
+  const existing = await loadAgentJob(id, options)
+  if (!existing) return null
+  if (existing.status !== 'stale' && existing.status !== 'failed' && existing.status !== 'cancelled') {
+    return cloneJob(existing)
+  }
+
+  const now = new Date().toISOString()
+  await updateAgentJob(id, {
+    status: 'queued',
+    startedAt: undefined,
+    heartbeatAt: now,
+    completedAt: undefined,
+    output: undefined,
+    error: undefined,
+    toolCalls: undefined,
+    trace: undefined,
+    evidence: undefined,
+    quality_gates: undefined,
+    runnerId: undefined,
+  }, options)
+  runAgentJob(id, runner, options)
+  return getAgentJob(id, options)
 }
 
 export function runAgentJob(

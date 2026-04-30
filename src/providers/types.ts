@@ -14,6 +14,72 @@
 
 export type ApiType = 'anthropic-messages' | 'openai-completions'
 
+export type ModelTransport = 'messages' | 'chat_completions' | 'responses'
+
+export type ProviderErrorCategory =
+  | 'authentication'
+  | 'authorization'
+  | 'rate_limit'
+  | 'timeout'
+  | 'aborted'
+  | 'unsupported'
+  | 'provider_error'
+  | 'invalid_request'
+  | 'unknown'
+
+export interface ProviderError extends Error {
+  provider: 'anthropic' | 'openai' | string
+  category: ProviderErrorCategory
+  status?: number
+  headers?: Record<string, string>
+  body?: string
+  error?: unknown
+}
+
+export interface ModelCapabilityOptions {
+  apiType?: ApiType
+}
+
+export type ModelCapabilityName =
+  | 'tools'
+  | 'images'
+  | 'thinking'
+  | 'json_schema'
+  | 'streaming'
+
+export type ModelCapabilitySupport = 'supported' | 'unsupported' | 'unknown'
+
+export interface ModelCapabilityDecision {
+  model: string
+  normalizedModel: string
+  apiType: ApiType
+  capability: ModelCapabilityName
+  supported: boolean
+  support: ModelCapabilitySupport
+  reason: string
+}
+
+export interface ModelCapabilities {
+  model: string
+  normalizedModel: string
+  apiType: ApiType
+  transport: ModelTransport
+  known: boolean
+  supportsTools: boolean
+  supportsImages: boolean
+  supportsThinking: boolean
+  supportsJsonSchema: boolean
+  supportsStreaming: boolean
+  contextWindow?: number
+  pricing?: {
+    inputPerMillionUsd: number
+    outputPerMillionUsd: number
+  }
+  fallback?: {
+    responsesToChatCompletionsStatuses?: number[]
+  }
+}
+
 // --------------------------------------------------------------------------
 // Normalized Request
 // --------------------------------------------------------------------------

@@ -49,6 +49,10 @@ export const GrepTool = defineTool({
     },
     required: ['pattern'],
   },
+  safety: {
+    read: true,
+    idempotent: true,
+  },
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {

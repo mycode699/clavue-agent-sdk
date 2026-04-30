@@ -27,6 +27,10 @@ export const FileReadTool = defineTool({
     },
     required: ['file_path'],
   },
+  safety: {
+    read: true,
+    idempotent: true,
+  },
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {

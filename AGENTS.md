@@ -10,7 +10,8 @@ This is a Node 18+ ESM TypeScript SDK. Source files live in `src/`, with the pub
 - `npm run build`: compile `src/` with `tsc` and emit output to `dist/`.
 - `npm run dev`: run TypeScript in watch mode during SDK development.
 - `npm test`: run all unit tests in `tests/*.test.ts` with `tsx --test`.
-- `npm run test:all`: execute each top-level example script in `examples/`.
+- `npm run test:all`: run the deterministic offline example smoke test.
+- `npm run test:examples:live`: execute each top-level example script in `examples/`; these examples require provider configuration and may return model/provider errors without credentials.
 - `npm run web`: start the example web server from `examples/web/server.ts`.
 
 ## Coding Style & Naming Conventions

@@ -83,6 +83,11 @@ export const SendMessageTool: ToolDefinition = {
     },
     required: ['to', 'content'],
   },
+  safety: {
+    write: true,
+    externalState: true,
+    approvalRequired: true,
+  },
   isReadOnly: () => false,
   isConcurrencySafe: () => true,
   isEnabled: () => true,

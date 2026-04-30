@@ -35,6 +35,12 @@ export interface MemoryQuery {
   limit?: number
 }
 
+export interface MemoryQueryResult {
+  entry: MemoryEntry
+  score: number
+  scoreReasons: string[]
+}
+
 function getMemoryDir(options?: MemoryStoreOptions): string {
   if (options?.dir) return options.dir
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
@@ -68,15 +74,25 @@ function uniqueSorted(values?: string[]): string[] | undefined {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort()
 }
 
-function scoreMemory(entry: MemoryEntry, query: MemoryQuery): number {
+function scoreMemory(entry: MemoryEntry, query: MemoryQuery): { score: number; scoreReasons: string[] } {
   let score = 0
+  const scoreReasons: string[] = []
 
-  if (query.repoPath && entry.repoPath === query.repoPath) score += 6
-  if (query.sessionId && entry.sessionId === query.sessionId) score += 4
+  if (query.repoPath && entry.repoPath === query.repoPath) {
+    score += 6
+    scoreReasons.push('repo_path')
+  }
+  if (query.sessionId && entry.sessionId === query.sessionId) {
+    score += 4
+    scoreReasons.push('session_id')
+  }
 
   const tags = new Set(entry.tags || [])
   for (const tag of query.tags || []) {
-    if (tags.has(tag)) score += 3
+    if (tags.has(tag)) {
+      score += 3
+      scoreReasons.push(`tag:${tag}`)
+    }
   }
 
   if (query.text) {
@@ -88,14 +104,23 @@ function scoreMemory(entry: MemoryEntry, query: MemoryQuery): number {
       .filter(Boolean)
 
     for (const term of terms) {
-      if (haystack.includes(term)) score += 2
+      if (haystack.includes(term)) {
+        score += 2
+        scoreReasons.push(`text:${term}`)
+      }
     }
   }
 
-  if (entry.confidence === 'high') score += 1
-  if (entry.lastValidatedAt) score += 1
+  if (entry.confidence === 'high') {
+    score += 1
+    scoreReasons.push('confidence:high')
+  }
+  if (entry.lastValidatedAt) {
+    score += 1
+    scoreReasons.push('validated')
+  }
 
-  return score
+  return { score, scoreReasons }
 }
 
 function matchesMemory(entry: MemoryEntry, query: MemoryQuery): boolean {
@@ -182,22 +207,32 @@ export async function listMemories(options?: MemoryStoreOptions): Promise<Memory
   }
 }
 
-export async function queryMemories(
+export async function queryMemoryMatches(
   query: MemoryQuery,
   options?: MemoryStoreOptions,
-): Promise<MemoryEntry[]> {
+): Promise<MemoryQueryResult[]> {
   const limit = query.limit ?? 10
   const memories = await listMemories(options)
 
   return memories
     .filter((entry) => matchesMemory(entry, query))
-    .map((entry) => ({ entry, score: scoreMemory(entry, query) }))
+    .map((entry) => {
+      const { score, scoreReasons } = scoreMemory(entry, query)
+      return { entry, score, scoreReasons }
+    })
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score
       return b.entry.updatedAt.localeCompare(a.entry.updatedAt)
     })
     .slice(0, limit)
-    .map(({ entry }) => entry)
+}
+
+export async function queryMemories(
+  query: MemoryQuery,
+  options?: MemoryStoreOptions,
+): Promise<MemoryEntry[]> {
+  const matches = await queryMemoryMatches(query, options)
+  return matches.map(({ entry }) => entry)
 }
 
 export async function deleteMemory(id: string, options?: MemoryStoreOptions): Promise<boolean> {

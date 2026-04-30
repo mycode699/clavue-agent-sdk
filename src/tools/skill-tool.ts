@@ -6,7 +6,7 @@
  */
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
-import { formatSkillsForPrompt, getSkill, getUserInvocableSkills } from '../skills/registry.js'
+import { formatSkillsForPrompt, getSkill, getUserInvocableSkills, validateSkillDefinition } from '../skills/registry.js'
 import { formatImageBlockForText } from '../utils/messages.js'
 import { createAgentJob, runAgentJob } from '../agent-jobs.js'
 import { runAgentSubagent } from './agent-tool.js'
@@ -31,6 +31,15 @@ export const SkillTool: ToolDefinition = {
       },
     },
     required: ['skill'],
+  },
+  safety: {
+    read: true,
+    write: true,
+    shell: true,
+    network: true,
+    externalState: true,
+    destructive: true,
+    approvalRequired: true,
   },
 
   isReadOnly: () => false,
@@ -85,6 +94,16 @@ export const SkillTool: ToolDefinition = {
       }
     }
 
+    const validation = validateSkillDefinition(skill, { availableTools: context.availableTools })
+    if (!validation.valid) {
+      return {
+        type: 'tool_result',
+        tool_use_id: '',
+        content: `Invalid skill "${skillName}": ${validation.issues.map((issue) => issue.message).join('; ')}`,
+        is_error: true,
+      }
+    }
+
     try {
       // Get skill prompt
       const contentBlocks = await skill.getPrompt(args, context)
@@ -132,6 +151,7 @@ export const SkillTool: ToolDefinition = {
             prompt: promptText,
             allowedTools: skill.allowedTools,
             model: skill.model,
+            qualityGates: skill.qualityGates,
           }),
         }
       }
@@ -153,6 +173,10 @@ export const SkillTool: ToolDefinition = {
 
       if (skill.model) {
         result.model = skill.model
+      }
+
+      if (skill.qualityGates) {
+        result.qualityGates = skill.qualityGates
       }
 
       return {

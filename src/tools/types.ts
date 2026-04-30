@@ -12,6 +12,7 @@ export function defineTool(config: {
   description: string
   inputSchema: ToolInputSchema
   call: (input: any, context: ToolContext) => Promise<string | { data: string; is_error?: boolean }>
+  safety?: ToolDefinition['safety']
   isReadOnly?: boolean
   isConcurrencySafe?: boolean
   prompt?: string | ((context: ToolContext) => Promise<string>)
@@ -20,6 +21,7 @@ export function defineTool(config: {
     name: config.name,
     description: config.description,
     inputSchema: config.inputSchema,
+    safety: config.safety,
     isReadOnly: () => config.isReadOnly ?? false,
     isConcurrencySafe: () => config.isConcurrencySafe ?? false,
     isEnabled: () => true,

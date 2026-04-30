@@ -123,6 +123,49 @@ In CI or services, prefer `run()` or CLI `--json` instead of scraping assistant 
 
 在 CI 或服务端集成里，优先使用 `run()` 或 CLI `--json`，不要依赖解析普通文本输出。根据 `status`、`subtype`、`errors`、`usage` 和 `total_cost_usd` 判断任务是否成功。
 
+### Enforce production controls / 启用生产控制能力
+
+For production hosts, combine narrow toolsets, `permissionMode`, `qualityGatePolicy`, memory policy, `doctor()`, and `runBenchmarks()` instead of relying only on prompt instructions.
+
+生产宿主应组合使用最小工具集、`permissionMode`、`qualityGatePolicy`、memory policy、`doctor()` 和 `runBenchmarks()`，不要只依赖 prompt 约束。
+
+```typescript
+import { doctor, run, runBenchmarks } from "clavue-agent-sdk";
+
+const health = await doctor({
+  toolsets: ["repo-readonly"],
+  memory: { enabled: true },
+});
+if (health.status === "error") throw new Error("SDK runtime is not ready");
+
+const result = await run({
+  prompt: "Review the current package and report release blockers.",
+  options: {
+    toolsets: ["repo-readonly"],
+    permissionMode: "default",
+    memory: { enabled: true, policy: { mode: "brainFirst" } },
+    quality_gates: [{ name: "release-review", status: "passed" }],
+    qualityGatePolicy: { required: ["release-review"] },
+    maxTurns: 6,
+  },
+});
+
+if (result.subtype === "error_quality_gate_failed") {
+  throw new Error(result.errors?.join("\n") || "Required quality gate failed");
+}
+
+const benchmarks = await runBenchmarks({ iterations: 3 });
+console.log(benchmarks.metrics);
+```
+
+Current memory trace records policy, query, repo path, selected memory IDs, selected memory score/reason metadata, source/scope/confidence, validation state, retrieval steps, injected count, and whether retrieval happened before the first model call.
+
+当前 memory trace 会记录 policy、query、repo path、selected memory IDs、被选记忆的分数和原因、source/scope/confidence、validation state、retrieval steps、injected count，以及是否在首次模型调用前完成检索。
+
+The current capability upgrade program is tracked in `docs/agent-sdk-capability-upgrade-program.md`. It expands the SDK beyond coding automation into collection, organization, planning, problem solving, memory intelligence, skill creation, self-learning, reusable agents, and workflow templates.
+
+当前能力升级计划见 `docs/agent-sdk-capability-upgrade-program.md`。它会把 SDK 从代码自动化扩展到资料收集、整理、规划、问题解决、记忆智能、技能创建、自学习、可复用 agent 和工作流模板。
+
 ### Keep prompts operational / 让 Prompt 面向执行
 
 Good prompts specify the goal, boundaries, expected output format, and verification command. Avoid broad prompts that mix unrelated work.
@@ -387,7 +430,7 @@ console.log(r.text);
 
 ### Skills
 
-Skills are reusable prompt templates that extend agent capabilities. Five bundled skills are included: `simplify`, `commit`, `review`, `debug`, `test`.
+Skills are reusable executable workflows that extend agent capabilities. Bundled skills include coding/review helpers such as `simplify`, `commit`, `review`, `debug`, and `test`, plus lifecycle workflows such as `define`, `plan`, `build`, `verify`, `workflow-review`, `ship`, and `repair`.
 
 ```typescript
 import {
@@ -821,9 +864,13 @@ Tool access is controlled in layers: `toolsets` and `allowedTools` choose the av
 
 工具访问按层控制：`toolsets` 和 `allowedTools` 选择可用工具名，`disallowedTools` 最后移除工具名，`canUseTool` 可以拒绝或改写单次工具输入，hooks 可以拦截生命周期事件。Subagent 会继承父 agent 的权限策略。
 
-The engine only parallelizes tool calls when a tool declares both `isReadOnly()` and `isConcurrencySafe()`. Mutating tools and read-only tools that are not concurrency-safe run serially. `AGENT_SDK_MAX_TOOL_CONCURRENCY` caps safe parallel batches; invalid, zero, or negative values fall back to `10` so runs do not hang.
+`permissionMode` also has built-in semantics. `default` allows read-only tools only. `plan` freezes mutating tools while allowing planning/read tools. `acceptEdits` allows local file edits but blocks shell, network, external-state, destructive, or approval-required tools. `trustedAutomation` and `bypassPermissions` are high-trust modes; still use `allowedTools`, `disallowedTools`, and `canUseTool` for least privilege.
 
-引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。`AGENT_SDK_MAX_TOOL_CONCURRENCY` 用于限制安全并行批次；无效、零或负数会回退到 `10`，避免运行卡住。
+`permissionMode` 也有内置语义。`default` 只允许只读工具。`plan` 会冻结修改型工具，同时允许规划和读取工具。`acceptEdits` 允许本地文件编辑，但会阻止 shell、网络、外部状态、破坏性或需要审批的工具。`trustedAutomation` 和 `bypassPermissions` 是高信任模式；生产环境仍建议配合 `allowedTools`、`disallowedTools` 和 `canUseTool` 做最小权限控制。
+
+The engine only parallelizes tool calls when a tool declares both `isReadOnly()` and `isConcurrencySafe()`. Mutating tools and read-only tools that are not concurrency-safe run serially. Set `maxToolConcurrency` per run to cap safe parallel batches; when omitted, `AGENT_SDK_MAX_TOOL_CONCURRENCY` is used as the fallback. Invalid, zero, or negative values fall back to `10` so runs do not hang. Run traces include `tool_concurrency_limit`, `tool_concurrency_source`, and the existing `concurrency_batches`.
+
+引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。可通过每次运行的 `maxToolConcurrency` 限制安全并行批次；未设置时回退使用 `AGENT_SDK_MAX_TOOL_CONCURRENCY`。无效、零或负数会回退到 `10`，避免运行卡住。运行 trace 会包含 `tool_concurrency_limit`、`tool_concurrency_source` 和已有的 `concurrency_batches`。
 
 ### Provider retries and tolerance
 
@@ -874,6 +921,8 @@ npx tsx examples/web/server.ts
 | `tool(name, desc, schema, handler)`   | Create a tool with Zod schema validation                       |
 | `createSdkMcpServer({ name, tools })` | Bundle tools into an in-process MCP server                     |
 | `defineTool(config)`                  | Low-level tool definition helper                               |
+| `doctor(options)`                     | Run structured provider, tool, skill, MCP, storage, and package checks |
+| `runBenchmarks(options)`              | Run offline benchmark metrics without live model calls         |
 | `getAllBaseTools()`                   | Get all 35+ built-in tools                                     |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
@@ -935,14 +984,16 @@ npx tsx examples/web/server.ts
 | `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
 | `permissionMode`     | `string`                                | `trustedAutomation`    | `trustedAutomation` / `auto` / `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
 | `canUseTool`         | `function`                              | allow all              | Custom tool guard or input modifier                                  |
+| `qualityGatePolicy`  | `QualityGatePolicy`                     | —                      | Mark a successful run as failed when required quality gates fail or are missing |
 | `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
+| `maxToolConcurrency` | `number`                                | env or `10`            | Max concurrent read-only concurrency-safe tool calls per batch       |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |
 | `effort`             | `string`                                | `high`                 | Reasoning effort: `low` / `medium` / `high` / `max`                  |
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
 | `agents`             | `Record<string, AgentDefinition>`       | —                      | Subagent definitions                                                 |
 | `hooks`              | `Record<string, HookCallbackMatcher[]>` | —                      | Lifecycle hooks                                                      |
-| `memory`             | `MemoryConfig`                          | —                      | Structured memory injection and session-summary persistence          |
+| `memory`             | `MemoryConfig`                          | —                      | Structured memory injection, `off` / `autoInject` / `brainFirst` policy, and session-summary persistence |
 | `selfImprovement`    | `boolean \| SelfImprovementConfig`       | `false`                | Opt-in run learning via improvement memories and optional retro cycle |
 | `resume`             | `string`                                | —                      | Resume session by ID                                                 |
 | `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
@@ -1053,6 +1104,13 @@ Session ID 在访问磁盘前会进行校验，持久化 transcript 不能通过
 | `review`     | Review code changes for correctness, security, and performance |
 | `debug`      | Systematic debugging using structured investigation            |
 | `test`       | Run tests and analyze failures                                 |
+| `define`     | Define goals, constraints, assumptions, and acceptance criteria |
+| `plan`       | Produce an ordered implementation plan and verification strategy |
+| `build`      | Implement scoped changes while preserving local patterns        |
+| `verify`     | Run targeted checks and report evidence                         |
+| `workflow-review` | Review lifecycle work for defects, risks, and missing evidence |
+| `ship`       | Prepare a handoff or release summary with verification status   |
+| `repair`     | Diagnose and fix failed workflow outcomes with recovery evidence |
 
 Register custom skills with `registerSkill()`.
 
@@ -1091,7 +1149,7 @@ Register custom skills with `registerSkill()`.
 | --------------------- | ------------------------------------------------------------------ |
 | **Provider layer**    | Abstracts Anthropic / OpenAI API differences                       |
 | **QueryEngine**       | Core agentic loop with auto-compact, retry, safe tool orchestration |
-| **Skill system**      | Reusable prompt templates with 5 bundled skills                    |
+| **Skill system**      | Reusable executable workflows with bundled coding, review, test, and lifecycle skills |
 | **Hook system**       | 20 lifecycle events integrated into the engine                     |
 | **Auto-compact**      | Summarizes conversation when context window fills up               |
 | **Micro-compact**     | Truncates oversized tool results                                   |
@@ -1134,7 +1192,13 @@ Register custom skills with `registerSkill()`.
 | 16  | `examples/16-background-agent-jobs.ts` | Durable background AgentJob APIs       |
 | web | `examples/web/`                       | Web chat UI for testing                |
 
-Run any example:
+Run the offline smoke-tested example:
+
+```bash
+npm run test:all
+```
+
+Run any live provider example:
 
 ```bash
 npx tsx examples/01-simple-query.ts

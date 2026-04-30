@@ -4,12 +4,16 @@ Last updated: 2026-04-28
 
 This roadmap captures the current state of `clavue-agent-sdk`, the main gaps found by Codex and Clavue, and the implementation order for improving functionality, efficiency, quality, and agent best-practice alignment.
 
+For the broader product and architecture upgrade program, use `docs/agent-sdk-capability-upgrade-program.md` as the controlling document. That program expands the SDK beyond coding automation into collection, organization, planning, problem solving, memory intelligence, skill creation, self-learning, and workflow templates.
+
 ## Baseline
 
 - `npm run build` passes.
-- `npm test` passes: 136 tests.
-- Current strengths: in-process agent loop, provider abstraction, tool registry and named toolsets, MCP integration, hooks, sessions, structured memory, bundled skills, subagents, durable background AgentJobs, retro/eval, and runtime namespace isolation.
-- Current risk: many high-level capabilities are present as primitives or metadata, but not all are enforced as durable workflow contracts.
+- `npm test` passes: 151 tests.
+- Focused gate passes: `npx tsx --test tests/permissions.test.ts tests/memory-integration.test.ts tests/doctor.test.ts tests/package-payload.test.ts`.
+- Current strengths: in-process agent loop, provider abstraction, tool registry and named toolsets, MCP integration, hooks, sessions, structured memory, bundled skills, lifecycle workflow skills, subagents, durable background AgentJobs, retro/eval, runtime namespace isolation, doctor checks, benchmark API, and package/CLI regression coverage.
+- Current risk: the code has advanced faster than public docs and examples. Stabilization now matters more than adding more primitives.
+- Audit note: `src/benchmark.ts` needed one TypeScript initialization fix during this review; after that `npm run build`, package payload tests, focused gates, and full `npm test` all passed.
 
 ## External Practice Baseline
 
@@ -21,7 +25,7 @@ This roadmap captures the current state of `clavue-agent-sdk`, the main gaps fou
 
 ### P0. Skill Execution Is Advisory, Not Enforced
 
-Status: partially completed.
+Status: mostly completed for activation constraints; not complete for automatic precondition/gate enforcement.
 
 Completed:
 
@@ -32,12 +36,12 @@ Completed:
 Remaining evidence:
 
 - Skill-level hooks and typed manifest preconditions are not yet enforced.
-- Quality gates are observable artifacts, not terminal success/failure semantics yet.
+- Quality gates can be terminal through `qualityGatePolicy`, but skills do not yet automatically require their own gates without caller policy.
 
 Impact:
 
-- Skills act as prompt snippets, not executable workflow units.
-- The SDK cannot yet guarantee that a review/test/ship skill actually runs with the intended tools, model, and gates.
+- Skills are now executable enough to constrain prompt, tools, model, and forked job behavior.
+- The remaining gap is turning skill preconditions and required evidence into automatic blockers rather than metadata and caller-enforced policies.
 
 Implementation slices:
 
@@ -55,16 +59,18 @@ Acceptance gates:
 
 ### P0. Skill And Tool Prompt Surfacing Is Weak
 
+Status: completed in the current working tree.
+
 Evidence:
 
-- `formatSkillsForPrompt()` exists, but the engine does not use it in the default system prompt.
-- Several tools define `prompt()` methods, but `buildSystemPrompt()` only lists tool names and descriptions.
+- The default system prompt includes bounded enabled tool prompt fragments.
+- The `Skill` tool prompt uses the registry formatter with triggers, argument hints, artifacts, gates, and enabled-skill filtering.
+- Tests cover disabled tool/skill omission and oversized prompt truncation.
 
 Impact:
 
-- Skill routing depends too much on the model discovering a generic `Skill` tool.
-- Tool-specific operating rules are not consistently visible.
-- Progressive disclosure is weaker than the agent-skills pattern.
+- Skill and tool routing is now materially more visible to the model.
+- Remaining work is documentation and prompt-budget monitoring, not core functionality.
 
 Implementation slices:
 
@@ -82,15 +88,18 @@ Acceptance gates:
 
 ### P0. Delivery Workflow Gates Are Not First-Class
 
+Status: mostly completed for run-level gate semantics; partially completed for full workflow automation.
+
 Evidence:
 
-- Bundled skills cover review/debug/test/commit/simplify, but there is no first-class Define -> Plan -> Build -> Verify -> Review -> Ship loop.
-- Retro/eval exists, but regular agent runs do not naturally produce proof-gate artifacts unless the caller wires it.
+- Bundled lifecycle skills now cover define, plan, build, verify, workflow-review, ship, and repair.
+- Skill manifests expose artifacts and quality gates.
+- `qualityGatePolicy` can make failed or missing required gates produce `error_quality_gate_failed`.
 
 Impact:
 
-- The agent can skip verification if the model fails to follow instructions.
-- Quality depends on prompt discipline rather than SDK-level workflow structure.
+- Hosts can now make configured gates terminal.
+- The SDK still needs docs and examples showing how hosts should wire required workflow gates for production runs.
 
 Implementation slices:
 
@@ -108,16 +117,19 @@ Acceptance gates:
 
 ### P1. Safety Modes Need Built-In Semantics
 
+Status: completed for built-in tool policy defaults in the current working tree.
+
 Evidence:
 
-- Permission modes are mostly metadata plus prompt text.
-- Enforcement is delegated to host-provided `canUseTool`.
-- `plan` mode is not an edit freeze by default.
+- Tool safety annotations are present on built-in tools.
+- Built-in policy now denies unsafe tools before host `canUseTool` can override the denial.
+- `default`, `plan`, and `acceptEdits` modes have focused tests.
+- Subagent permission inheritance remains covered.
 
 Impact:
 
-- Hosts must rebuild common safety behavior.
-- SDK defaults are less safe than gstack-style `careful`, `freeze`, and `guard` modes.
+- Hosts no longer need to rebuild the common read-only, plan-freeze, and accept-edits policy baseline.
+- Remaining safety work is finer policy tracing, MCP live classification, and doc clarity.
 
 Implementation slices:
 
@@ -135,15 +147,18 @@ Acceptance gates:
 
 ### P1. Memory Is Useful But Not Brain-First
 
+Status: completed for policy modes and basic trace; partial for rich provenance and retrieval quality.
+
 Evidence:
 
-- Memory injection is optional and based on simple JSON file scans and text matching.
-- There is no mandatory lookup trace, typed linking, citation/evidence model, or retrieval benchmark.
+- `memory.policy.mode` supports `off`, `autoInject`, and `brainFirst`.
+- Brain-first retrieval happens before the first provider call.
+- Final run trace records policy, query, repo path, selected IDs, injected count, and pre-model-call status.
 
 Impact:
 
-- The SDK has memory, but not brain-grade retrieval.
-- Agents can act without checking durable context.
+- Memory use is now auditable at a basic level.
+- It is still not brain-grade until scores, source/scope/confidence, validation state, staleness, and retrieval benchmarks are richer.
 
 Implementation slices:
 
@@ -190,15 +205,17 @@ Acceptance gates:
 
 ### P2. Efficiency Is Not Measured
 
+Status: initial benchmark API completed; coverage still needs expansion.
+
 Evidence:
 
-- Read-only concurrency and micro-compaction exist.
-- There is no benchmark harness for tool throughput, context size, subagent latency, memory retrieval quality, or provider conversion overhead.
+- `runBenchmarks()` exists and emits machine-readable metrics without network/API calls.
+- Tests cover read-only fan-out, serial mutation ordering, context build, memory query, and agent job storage metrics.
 
 Impact:
 
-- The current code is plausibly efficient for unit-scale use, but “fast enough” cannot be proven.
-- Regressions can land without visibility.
+- The SDK has a first measurement foothold.
+- Next measurement work should add provider conversion, compaction, subagent startup, and stable CLI/script output before setting budgets.
 
 Implementation slices:
 
@@ -215,14 +232,17 @@ Acceptance gates:
 
 ### P2. Operator Health Checks Are Missing
 
+Status: initial API completed.
+
 Evidence:
 
-- There is no SDK-level `doctor()` equivalent.
-- CLI is currently one-shot prompt oriented.
+- `doctor()` is exported and returns structured checks for provider config, tools, skills, MCP config, storage, jobs, and package entrypoints.
+- Focused tests cover ready checks and actionable warning/error cases without network calls.
 
 Impact:
 
-- Users cannot easily validate provider config, MCP connectivity, skill registry state, memory/session paths, or package health.
+- Hosts can now validate baseline runtime readiness.
+- Remaining operator work is stale-job recovery reporting, live MCP connection health, CLI command UX, and docs.
 
 Implementation slices:
 
@@ -239,14 +259,14 @@ Acceptance gates:
 
 ## Recommended TODO Order
 
-1. Integrate skill/tool prompt surfacing.
-2. Enforce skill activation semantics.
-3. Add lifecycle workflow skills and proof-gate metadata.
-4. Enforce built-in safety policy modes.
-5. Add brain-first memory policy and trace metadata.
-6. Add process-restart resume semantics for durable AgentJobs.
-7. Add benchmark harness.
-8. Add `doctor()` health checks.
+1. Finish the currently assigned model capability registry and provider fallback/error policy slice.
+2. Add reusable runtime profiles and startup/context-build benchmark coverage.
+3. Extract a budgeted, traceable `ContextPack` / `ContextPipeline`.
+4. Deepen memory trace provenance, retrieval quality, and `brainFirst` semantics.
+5. Add exported skill validation and optional skill gate/precondition enforcement.
+6. Add skill authoring/scaffolding APIs and bundled authoring skills.
+7. Make self-improvement skill-aware and able to propose skill/checklist promotion.
+8. Add reusable agents, workflow templates, and public event/artifact contracts.
 
 ## Development Rules For This Roadmap
 
@@ -256,6 +276,7 @@ Acceptance gates:
 - Prefer deterministic tests with stub providers over live model calls.
 - Do not claim efficiency improvements without a measurement script.
 - Do not expand skill count without adding routing and activation tests.
+- Do not start another large runtime slice until README/API docs cover the current feature batch.
 
 ## Coordination Protocol
 

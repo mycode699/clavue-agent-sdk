@@ -31,6 +31,12 @@ export const FileEditTool = defineTool({
     },
     required: ['file_path', 'old_string', 'new_string'],
   },
+  safety: {
+    read: true,
+    write: true,
+    destructive: true,
+    approvalRequired: true,
+  },
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {

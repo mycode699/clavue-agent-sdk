@@ -43,9 +43,10 @@ import {
 import { saveMemory } from './memory.js'
 import { persistSessionMemoryCandidates } from './memory-policy.js'
 import { runSelfImprovement } from './improvement.js'
+import { applyRuntimeProfile } from './runtime-profiles.js'
 import { createHookRegistry, type HookRegistry } from './hooks.js'
 import { initBundledSkills } from './skills/index.js'
-import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
+import { createProvider, getModelCapabilities, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 import { createDefaultToolPolicy } from './types.js'
 import { extractTextFromContent } from './utils/messages.js'
@@ -79,7 +80,7 @@ export class Agent {
 
   constructor(options: AgentOptions = {}) {
     // Shallow copy to avoid mutating caller's object
-    this.cfg = { ...options }
+    this.cfg = applyRuntimeProfile(options)
 
     // Merge credentials from options.env map, direct options, and process.env
     this.apiCredentials = this.pickCredentials()
@@ -133,13 +134,11 @@ export class Agent {
   }
 
   /**
-   * Resolve API type from options, env, or model name heuristic.
+   * Resolve API type from options, env, or model capability metadata.
    */
   private resolveApiType(): ApiType {
-    // Explicit option
     if (this.cfg.apiType) return this.cfg.apiType
 
-    // Env var
     const envType =
       this.cfg.env?.CLAVUE_AGENT_API_TYPE ??
       this.readEnv('CLAVUE_AGENT_API_TYPE')
@@ -147,24 +146,7 @@ export class Agent {
       return envType
     }
 
-    // Heuristic from model name
-    const model = this.modelId.toLowerCase()
-    if (
-      model.includes('gpt-') ||
-      model.includes('o1') ||
-      model.includes('o3') ||
-      model.includes('o4') ||
-      model.includes('deepseek') ||
-      model.includes('qwen') ||
-      model.includes('yi-') ||
-      model.includes('glm') ||
-      model.includes('mistral') ||
-      model.includes('gemma')
-    ) {
-      return 'openai-completions'
-    }
-
-    return 'anthropic-messages'
+    return getModelCapabilities(this.modelId).apiType
   }
 
   /** Pick API key and base URL from options or CLAVUE_AGENT_* env vars. */
@@ -269,7 +251,7 @@ export class Agent {
   ): AsyncGenerator<SDKMessage, void> {
     await this.setupDone
 
-    const opts = { ...this.cfg, ...overrides, runtimeNamespace: this.cfg.runtimeNamespace }
+    const opts = applyRuntimeProfile({ ...this.cfg, ...overrides, runtimeNamespace: this.cfg.runtimeNamespace })
     const cwd = opts.cwd || process.cwd()
 
     // Create abort controller for this query
@@ -293,14 +275,21 @@ export class Agent {
     // Resolve permission metadata and tool policy
     const policy = createDefaultToolPolicy(opts.permissionMode)
     if (opts.canUseTool) {
-      policy.canUseTool = opts.canUseTool
+      const builtInCanUseTool = policy.canUseTool
+      policy.canUseTool = async (tool, input) => {
+        const builtInDecision = await builtInCanUseTool(tool, input)
+        if (builtInDecision.behavior === 'deny') return builtInDecision
+
+        const hostDecision = await opts.canUseTool!(tool, builtInDecision.updatedInput ?? input)
+        if (hostDecision.updatedInput === undefined && builtInDecision.updatedInput !== undefined) {
+          return { ...hostDecision, updatedInput: builtInDecision.updatedInput }
+        }
+        return hostDecision
+      }
     }
 
-    // Resolve tools with overrides
-    let tools = this.toolPool
-    if (overrides?.toolsets || overrides?.allowedTools || overrides?.disallowedTools) {
-      tools = this.filterConfiguredTools(tools, overrides)
-    }
+    // Resolve tools with profile-expanded query options.
+    let tools = this.filterConfiguredTools(this.toolPool, opts)
     if (overrides?.tools) {
       const ot = overrides.tools
       if (Array.isArray(ot) && ot.length > 0 && typeof ot[0] === 'string') {
@@ -324,11 +313,13 @@ export class Agent {
     const engine = new QueryEngine({
       cwd,
       model: opts.model || this.modelId,
+      fallbackModel: opts.fallbackModel,
       provider,
       tools,
       systemPrompt,
       appendSystemPrompt,
       maxTurns: opts.maxTurns ?? 10,
+      maxToolConcurrency: opts.maxToolConcurrency,
       maxBudgetUsd: opts.maxBudgetUsd,
       maxTokens: opts.maxTokens ?? 16384,
       thinking: opts.thinking,
@@ -343,6 +334,7 @@ export class Agent {
       memory: opts.memory,
       evidence: opts.evidence,
       quality_gates: opts.quality_gates,
+      qualityGatePolicy: opts.qualityGatePolicy,
     })
     this.currentEngine = engine
 

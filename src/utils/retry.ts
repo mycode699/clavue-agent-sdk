@@ -39,8 +39,17 @@ export function isRetryableError(err: any, config: RetryConfig = DEFAULT_RETRY_C
     return false
   }
 
-  if (err?.status && config.retryableStatusCodes.includes(err.status)) {
+  const status = err?.status
+  if (status && config.retryableStatusCodes.includes(status)) {
     return true
+  }
+
+  if (err?.category === 'rate_limit' || err?.category === 'timeout' || err?.category === 'provider_error') {
+    return true
+  }
+
+  if (err?.category === 'authentication' || err?.category === 'authorization' || err?.category === 'unsupported' || err?.category === 'invalid_request') {
+    return false
   }
 
   const networkCodes = new Set([

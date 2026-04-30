@@ -42,6 +42,11 @@ export const ToolSearchTool: ToolDefinition = {
     },
     required: ['query'],
   },
+  safety: {
+    read: true,
+    externalState: true,
+    idempotent: true,
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   isEnabled: () => true,

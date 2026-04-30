@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.5.0",
+  "version": "0.6.1",
   "description": "Clavue Agent SDK. Runs the full agent loop in-process — no local CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,7 +22,8 @@
     "clavue-agent": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "exports": {
     ".": {
@@ -35,7 +36,8 @@
     "prepack": "npm run build",
     "dev": "tsc --watch",
     "test": "npx tsx --test tests/*.test.ts",
-    "test:all": "for f in examples/*.ts; do echo \"--- Running $f ---\"; npx tsx $f; echo; done",
+    "test:all": "node --import tsx examples/16-background-agent-jobs.ts",
+    "test:examples:live": "for f in examples/*.ts; do echo \"--- Running $f ---\"; npx tsx $f; echo; done",
     "web": "npx tsx examples/web/server.ts"
   },
   "engines": {

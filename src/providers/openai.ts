@@ -15,7 +15,10 @@ import type {
   NormalizedContentBlock,
   NormalizedTool,
   NormalizedResponseBlock,
+  ProviderError,
+  ProviderErrorCategory,
 } from './types.js'
+import { getModelCapabilities } from './capabilities.js'
 
 // --------------------------------------------------------------------------
 // OpenAI-specific types (minimal, just what we need)
@@ -134,15 +137,50 @@ interface OpenAIResponsesResponse {
   }
 }
 
-interface OpenAIError extends Error {
+type OpenAIError = ProviderError
+
+function headersToRecord(headers: Headers): Record<string, string> {
+  return Object.fromEntries(headers.entries())
+}
+
+function categorizeOpenAIStatus(status?: number): ProviderErrorCategory {
+  switch (status) {
+    case 400:
+      return 'invalid_request'
+    case 401:
+      return 'authentication'
+    case 403:
+      return 'authorization'
+    case 404:
+    case 405:
+    case 501:
+      return 'unsupported'
+    case 408:
+    case 504:
+      return 'timeout'
+    case 429:
+      return 'rate_limit'
+    default:
+      return status && status >= 500 ? 'provider_error' : 'unknown'
+  }
+}
+
+function createOpenAIProviderError(input: {
+  message: string
+  category?: ProviderErrorCategory
   status?: number
   headers?: Record<string, string>
   body?: string
   error?: unknown
-}
-
-function headersToRecord(headers: Headers): Record<string, string> {
-  return Object.fromEntries(headers.entries())
+}): OpenAIError {
+  const err = new Error(input.message) as OpenAIError
+  err.provider = 'openai'
+  err.category = input.category ?? categorizeOpenAIStatus(input.status)
+  if (input.status !== undefined) err.status = input.status
+  if (input.headers) err.headers = input.headers
+  if (input.body !== undefined) err.body = input.body
+  if (input.error !== undefined) err.error = input.error
+  return err
 }
 
 async function createOpenAIError(response: Response): Promise<OpenAIError> {
@@ -154,14 +192,13 @@ async function createOpenAIError(response: Response): Promise<OpenAIError> {
     parsed = undefined
   }
 
-  const err: OpenAIError = new Error(
-    `OpenAI API error: ${response.status} ${response.statusText}: ${body}`,
-  )
-  err.status = response.status
-  err.headers = headersToRecord(response.headers)
-  err.body = body
-  err.error = parsed
-  return err
+  return createOpenAIProviderError({
+    message: `OpenAI API error: ${response.status} ${response.statusText}: ${body}`,
+    status: response.status,
+    headers: headersToRecord(response.headers),
+    body,
+    error: parsed,
+  })
 }
 
 // --------------------------------------------------------------------------
@@ -187,8 +224,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   private shouldUseResponsesApi(model: string): boolean {
-    const normalized = model.toLowerCase()
-    return normalized.includes('gpt-5')
+    return getModelCapabilities(model, { apiType: this.apiType }).transport === 'responses'
   }
 
   private async createChatCompletionsMessage(
@@ -252,7 +288,7 @@ export class OpenAIProvider implements LLMProvider {
     })
 
     if (!response.ok) {
-      if (!params.abortSignal?.aborted && this.shouldFallbackToChatCompletions(response.status)) {
+      if (!params.abortSignal?.aborted && this.shouldFallbackToChatCompletions(params.model, response.status)) {
         return this.createChatCompletionsMessage(params)
       }
 
@@ -263,8 +299,8 @@ export class OpenAIProvider implements LLMProvider {
     return this.convertResponsesResponse(data)
   }
 
-  private shouldFallbackToChatCompletions(status: number): boolean {
-    return status === 400 || status === 404 || status === 405 || status === 501
+  private shouldFallbackToChatCompletions(model: string, status: number): boolean {
+    return getModelCapabilities(model, { apiType: this.apiType }).fallback?.responsesToChatCompletionsStatuses?.includes(status) === true
   }
 
   // --------------------------------------------------------------------------
@@ -586,7 +622,11 @@ export class OpenAIProvider implements LLMProvider {
     data: OpenAIResponsesResponse,
   ): CreateMessageResponse {
     if (data.status === 'failed' || data.status === 'cancelled') {
-      throw new Error(data.error?.message || `OpenAI Responses API returned ${data.status}`)
+      throw createOpenAIProviderError({
+        message: data.error?.message || `OpenAI Responses API returned ${data.status}`,
+        category: data.status === 'cancelled' ? 'aborted' : 'provider_error',
+        error: data.error,
+      })
     }
 
     const content: NormalizedResponseBlock[] = []

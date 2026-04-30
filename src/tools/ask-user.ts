@@ -58,6 +58,10 @@ export const AskUserQuestionTool: ToolDefinition = {
     },
     required: ['question'],
   },
+  safety: {
+    read: true,
+    externalState: true,
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => false,
   isEnabled: () => true,

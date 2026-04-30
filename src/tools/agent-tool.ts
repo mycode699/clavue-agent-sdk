@@ -14,6 +14,8 @@ import { createProvider, type ApiType } from '../providers/index.js'
 import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 import {
   createAgentJob,
+  getAgentJob,
+  replayAgentJob,
   runAgentJob,
   type AgentJobCompletion,
 } from '../agent-jobs.js'
@@ -78,6 +80,19 @@ interface SubagentRunOptions {
   abortSignal?: AbortSignal
   allowedTools?: string[]
   appendSystemPrompt?: string
+}
+
+function createReplayableSubagentInput(input: any): any {
+  return {
+    prompt: input.prompt,
+    description: input.description,
+    subagent_type: input.subagent_type || 'general-purpose',
+    model: input.model,
+    allowed_tools: Array.isArray(input.allowed_tools) ? [...input.allowed_tools] : undefined,
+    append_system_prompt: typeof input.append_system_prompt === 'string'
+      ? input.append_system_prompt
+      : undefined,
+  }
 }
 
 export async function runAgentSubagent({
@@ -188,6 +203,10 @@ export const AgentTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
+      id: {
+        type: 'string',
+        description: 'Existing stale, failed, or cancelled background job id to replay',
+      },
       prompt: {
         type: 'string',
         description: 'The task for the agent to perform',
@@ -212,6 +231,10 @@ export const AgentTool: ToolDefinition = {
         type: 'boolean',
         description: 'Whether to run in background',
       },
+      replay: {
+        type: 'boolean',
+        description: 'Replay an existing stale, failed, or cancelled background job by id',
+      },
       allowed_tools: {
         type: 'array',
         items: { type: 'string' },
@@ -222,7 +245,16 @@ export const AgentTool: ToolDefinition = {
         description: 'Optional additional system prompt for this subagent run',
       },
     },
-    required: ['prompt', 'description'],
+    required: [],
+  },
+  safety: {
+    read: true,
+    write: true,
+    shell: true,
+    network: true,
+    externalState: true,
+    destructive: true,
+    approvalRequired: true,
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
@@ -231,6 +263,66 @@ export const AgentTool: ToolDefinition = {
     return 'Launch a subagent to handle complex tasks autonomously.'
   },
   async call(input: any, context: ToolContext): Promise<ToolResult> {
+    if (input.replay) {
+      if (typeof input.id !== 'string' || !input.id) {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: 'Agent replay requires an existing background job id.',
+          is_error: true,
+        }
+      }
+
+      const existing = await getAgentJob(input.id, { runtimeNamespace: context.runtimeNamespace })
+      if (!existing) {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: `Agent job not found: ${input.id}`,
+          is_error: true,
+        }
+      }
+      if (!existing.replay) {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: `Agent job is not replayable: ${input.id}`,
+          is_error: true,
+        }
+      }
+
+      const replayInput = existing.replay
+      const replayed = await replayAgentJob(input.id, (signal) => runAgentSubagent({
+        input: replayInput,
+        context,
+        abortSignal: signal,
+        allowedTools: replayInput.allowed_tools,
+        appendSystemPrompt: replayInput.append_system_prompt,
+      }), { runtimeNamespace: context.runtimeNamespace })
+
+      return {
+        type: 'tool_result',
+        tool_use_id: '',
+        content: JSON.stringify({
+          success: true,
+          type: 'clavue.agent.job.replay',
+          version: 1,
+          job_id: input.id,
+          status: replayed?.status,
+          message: `Background subagent job replay queued: ${input.id}`,
+        }),
+      }
+    }
+
+    if (typeof input.prompt !== 'string' || typeof input.description !== 'string') {
+      return {
+        type: 'tool_result',
+        tool_use_id: '',
+        content: 'Agent requires prompt and description unless replaying an existing job.',
+        is_error: true,
+      }
+    }
+
     if (input.run_in_background) {
       const job = await createAgentJob({
         kind: 'subagent',
@@ -239,10 +331,11 @@ export const AgentTool: ToolDefinition = {
         subagent_type: input.subagent_type || 'general-purpose',
         model: input.model,
         allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools : undefined,
+        replay: createReplayableSubagentInput(input),
       }, { runtimeNamespace: context.runtimeNamespace })
 
       runAgentJob(job.id, (signal) => runAgentSubagent({
-        input,
+        input: createReplayableSubagentInput(input),
         context,
         abortSignal: signal,
         allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools : undefined,

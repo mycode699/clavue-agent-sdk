@@ -22,6 +22,15 @@ export const BashTool = defineTool({
     },
     required: ['command'],
   },
+  safety: {
+    read: true,
+    write: true,
+    shell: true,
+    network: true,
+    externalState: true,
+    destructive: true,
+    approvalRequired: true,
+  },
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {

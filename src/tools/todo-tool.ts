@@ -71,6 +71,11 @@ export const TodoWriteTool: ToolDefinition = {
     },
     required: ['action'],
   },
+  safety: {
+    read: true,
+    write: true,
+    externalState: true,
+  },
   isReadOnly: () => false,
   isConcurrencySafe: () => true,
   isEnabled: () => true,

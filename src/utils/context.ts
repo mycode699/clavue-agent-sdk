@@ -9,8 +9,9 @@
  */
 
 import { execFileSync } from 'child_process'
-import { readFile, stat } from 'fs/promises'
-import { join } from 'path'
+import { readFile, realpath, stat } from 'fs/promises'
+import { basename, dirname, join } from 'path'
+import type { ContextPack, ContextPackOptions, ContextPipeline, ContextPipelineTransform } from '../types.js'
 
 // Memoization cache
 let cachedGitStatus: string | null = null
@@ -114,11 +115,17 @@ export async function discoverProjectContextFiles(cwd: string): Promise<string[]
   }
 
   const found: string[] = []
+  const seen = new Set<string>()
   for (const path of candidates) {
     try {
       const s = await stat(path)
-      if (s.isFile()) {
-        found.push(path)
+      if (!s.isFile()) continue
+
+      const canonical = await realpath(path)
+      const key = canonical.toLocaleLowerCase()
+      if (!seen.has(key)) {
+        seen.add(key)
+        found.push(join(dirname(path), basename(canonical)))
       }
     } catch {
       // File doesn't exist
@@ -150,36 +157,84 @@ export async function readProjectContextContent(cwd: string): Promise<string> {
   return parts.join('\n\n')
 }
 
+export async function buildContextPack(cwd: string, options: ContextPackOptions = {}): Promise<ContextPack> {
+  const includeDate = options.includeDate ?? true
+  const includeGit = options.includeGit ?? true
+  const includeProject = options.includeProject ?? true
+  const now = options.now ?? new Date()
+  const sections: ContextPack['sections'] = []
+
+  if (includeDate) {
+    sections.push({
+      kind: 'date',
+      title: 'currentDate',
+      content: `Today's date is ${now.toISOString().split('T')[0]}.`,
+    })
+  }
+
+  if (includeGit) {
+    const gitStatus = await getGitStatus(cwd)
+    if (gitStatus) {
+      sections.push({ kind: 'git', title: 'gitStatus', content: gitStatus })
+    }
+  }
+
+  if (includeProject) {
+    const files = await discoverProjectContextFiles(cwd)
+    for (const file of files) {
+      try {
+        const content = (await readFile(file, 'utf-8')).trim()
+        if (content) {
+          sections.push({ kind: 'project', title: basename(file), source: file, content })
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  }
+
+  return { cwd, created_at: now.toISOString(), sections }
+}
+
+export function renderContextPack(pack: ContextPack): string {
+  return pack.sections
+    .filter((section) => section.content.trim())
+    .map((section) => `# ${section.title}\n${section.content.trim()}`)
+    .join('\n\n')
+}
+
+export function createContextPipeline(transforms: ContextPipelineTransform[] = []): ContextPipeline {
+  return {
+    use(transform: ContextPipelineTransform): ContextPipeline {
+      return createContextPipeline([...transforms, transform])
+    },
+    async run(cwd: string, options: ContextPackOptions = {}): Promise<ContextPack> {
+      let pack = await buildContextPack(cwd, options)
+      for (const transform of transforms) {
+        pack = await transform(pack)
+      }
+      return pack
+    },
+  }
+}
+
 /**
  * Get system context for the system prompt.
  */
 export async function getSystemContext(cwd: string): Promise<string> {
-  const parts: string[] = []
-
-  const gitStatus = await getGitStatus(cwd)
-  if (gitStatus) {
-    parts.push(`gitStatus: ${gitStatus}`)
-  }
-
-  return parts.join('\n\n')
+  const pack = await buildContextPack(cwd, { includeDate: false, includeProject: false })
+  return pack.sections
+    .filter((section) => section.kind === 'git')
+    .map((section) => `${section.title}: ${section.content}`)
+    .join('\n\n')
 }
 
 /**
  * Get user context (AGENT.md, date, etc).
  */
 export async function getUserContext(cwd: string): Promise<string> {
-  const parts: string[] = []
-
-  // Current date
-  parts.push(`# currentDate\nToday's date is ${new Date().toISOString().split('T')[0]}.`)
-
-  // Project context files
-  const projectCtx = await readProjectContextContent(cwd)
-  if (projectCtx) {
-    parts.push(projectCtx)
-  }
-
-  return parts.join('\n\n')
+  const pack = await buildContextPack(cwd, { includeGit: false })
+  return renderContextPack(pack)
 }
 
 /**

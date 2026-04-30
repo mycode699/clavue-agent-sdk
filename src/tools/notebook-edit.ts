@@ -37,6 +37,12 @@ export const NotebookEditTool = defineTool({
     },
     required: ['file_path', 'command', 'cell_number'],
   },
+  safety: {
+    read: true,
+    write: true,
+    destructive: true,
+    approvalRequired: true,
+  },
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {

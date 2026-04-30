@@ -23,6 +23,12 @@ export const FileWriteTool = defineTool({
     },
     required: ['file_path', 'content'],
   },
+  safety: {
+    write: true,
+    destructive: true,
+    idempotent: true,
+    approvalRequired: true,
+  },
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {

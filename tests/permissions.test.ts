@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   Agent,
   AgentTool,
@@ -7,14 +10,24 @@ import {
   AgentJobListTool,
   AgentJobStopTool,
   GlobTool,
+  GrepTool,
+  BashTool,
+  FileEditTool,
+  FileReadTool,
+  FileWriteTool,
+  EnterPlanModeTool,
   EnterWorktreeTool,
   SkillTool,
+  WebFetchTool,
   clearAgents,
   clearAgentJobs,
   clearSkills,
   createAgentJob,
+  getAllSkills,
+  getSkill,
   getAgentJob,
   getRegisteredAgentDefinitions,
+  initBundledSkills,
   listAgentJobs,
   registerAgents,
   registerSkill,
@@ -89,9 +102,13 @@ function captureTool(onInput?: (input: unknown) => void | Promise<void>, options
   }
 }
 
-async function collectEvents(agent: Agent, prompt = 'test permissions'): Promise<SDKMessage[]> {
+async function collectEvents(
+  agent: Agent,
+  prompt = 'test permissions',
+  overrides?: Parameters<Agent['query']>[1],
+): Promise<SDKMessage[]> {
   const events: SDKMessage[] = []
-  for await (const event of agent.query(prompt)) {
+  for await (const event of agent.query(prompt, overrides)) {
     events.push(event)
   }
   return events
@@ -159,6 +176,33 @@ test('allowedTools filtering controls init tools', async () => {
 
     assert.ok(init)
     assert.deepEqual(init.tools, ['capture'])
+  } finally {
+    await agent.close()
+  }
+})
+
+test('workflowMode query override applies profile-expanded tool filters', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [
+      FileReadTool,
+      GlobTool,
+      GrepTool,
+      BashTool,
+      FileWriteTool,
+      EnterPlanModeTool,
+      SkillTool,
+    ],
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('ok')])
+
+  try {
+    const events = await collectEvents(agent, 'verify only', { workflowMode: 'verify' })
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init')
+
+    assert.ok(init)
+    assert.deepEqual(init.tools, ['Read', 'Glob', 'Grep', 'Bash'])
+    assert.equal(init.permission_mode, 'auto')
   } finally {
     await agent.close()
   }
@@ -307,6 +351,99 @@ test('SkillTool prompt uses registry formatter with triggers and enabled skills 
   }
 })
 
+test('skill registry surfaces workflow metadata in skill prompt listings', async () => {
+  const context = { runtimeNamespace: 'skill-metadata-prompt-test' }
+  clearSkills(context)
+
+  registerSkill({
+    name: 'metadata-review',
+    description: 'Review with required evidence metadata',
+    whenToUse: 'metadata review is requested',
+    argumentHint: 'review target',
+    preconditions: [{ name: 'review-target-known' }],
+    artifactsProduced: [{ name: 'review-findings', type: 'text' }],
+    qualityGates: [{ name: 'review-complete', evidence: 'file-line findings' }],
+    userInvocable: true,
+    async getPrompt() {
+      return [{ type: 'text', text: 'metadata review prompt' }]
+    },
+  }, context)
+
+  try {
+    const prompt = await SkillTool.prompt?.({ cwd: process.cwd(), ...context })
+
+    assert.match(prompt || '', /metadata-review: Review with required evidence metadata/)
+    assert.match(prompt || '', /ARGS: review target/)
+    assert.match(prompt || '', /PRE: review-target-known/)
+    assert.match(prompt || '', /ARTIFACTS: review-findings/)
+    assert.match(prompt || '', /GATES: review-complete/)
+  } finally {
+    clearSkills(context)
+  }
+})
+
+test('skill registry validates workflow metadata shape', async () => {
+  const context = { runtimeNamespace: 'skill-metadata-validation-test' }
+  clearSkills(context)
+
+  try {
+    assert.throws(() => registerSkill({
+      name: 'bad metadata',
+      description: 'Invalid name',
+      userInvocable: true,
+      async getPrompt() {
+        return [{ type: 'text', text: 'bad' }]
+      },
+    }, context), /invalid skill name/i)
+
+    assert.throws(() => registerSkill({
+      name: 'invalid-gate',
+      description: 'Invalid gate metadata',
+      qualityGates: [{} as any],
+      userInvocable: true,
+      async getPrompt() {
+        return [{ type: 'text', text: 'bad gate' }]
+      },
+    }, context), /invalid quality gate/i)
+
+    assert.throws(() => registerSkill({
+      name: 'invalid-gate-args',
+      description: 'Invalid gate args metadata',
+      qualityGates: [{ name: 'build', args: 'run build' as any }],
+      userInvocable: true,
+      async getPrompt() {
+        return [{ type: 'text', text: 'bad gate args' }]
+      },
+    }, context), /quality gate "build" args must be an array/i)
+  } finally {
+    clearSkills(context)
+  }
+})
+
+test('bundled lifecycle workflow skills register with required artifacts and gates', async () => {
+  initBundledSkills()
+
+  const names = new Set(getAllSkills().map((skill) => skill.name))
+  for (const name of ['define', 'plan', 'build', 'verify', 'workflow-review', 'ship', 'repair']) {
+    assert.ok(names.has(name), `expected bundled workflow skill ${name}`)
+  }
+
+  const verify = getSkill('verify')
+  const repair = getSkill('repair')
+
+  assert.deepEqual(verify?.artifactsProduced?.map((artifact) => artifact.name), ['verification-output'])
+  assert.deepEqual(verify?.qualityGates?.map((gate) => gate.name), ['verification-passed'])
+  assert.deepEqual(repair?.qualityGates?.map((gate) => gate.name), [
+    'failure-reproduced-or-explained',
+    'repair-verified',
+  ])
+  assert.deepEqual(repair?.allowedTools, ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'])
+
+  clearSkills()
+  initBundledSkills()
+  assert.ok(getSkill('verify'), 'expected bundled workflow skill verify after clearing and reinitializing')
+})
+
 test('inline SkillTool activation injects prompt, model override, and allowed tools', async () => {
   const context = { runtimeNamespace: 'skill-activation-inline-test' }
   clearSkills(context)
@@ -410,6 +547,73 @@ test('inline SkillTool activation enforces allowed tools during execution', asyn
     clearSkills(context)
     await agent.close()
   }
+})
+
+test('inline SkillTool activation applies required skill quality gates to terminal policy', async () => {
+  const context = { runtimeNamespace: 'skill-required-gates-test' }
+  clearSkills(context)
+
+  registerSkill({
+    name: 'gated-skill',
+    description: 'Workflow with required verification gate',
+    qualityGates: [{ name: 'skill-verified' }],
+    userInvocable: true,
+    async getPrompt() {
+      return [{ type: 'text', text: 'run gated workflow' }]
+    },
+  }, context)
+
+  const provider = new StubProvider([
+    toolUseResponse({ skill: 'gated-skill' }, 'Skill'),
+    textResponse('done without gate'),
+  ])
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [SkillTool],
+    runtimeNamespace: context.runtimeNamespace,
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent)
+    const final = events.find((event) => event.type === 'result')
+
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.equal(final.subtype, 'error_quality_gate_failed')
+      assert.equal(final.is_error, true)
+      assert.match(final.errors?.[0] || '', /skill-verified/)
+    }
+  } finally {
+    clearSkills(context)
+    await agent.close()
+  }
+})
+
+test('SkillTool rejects invalid registered skills before activation', async () => {
+  const context = { runtimeNamespace: 'skill-runtime-validation-test' }
+  clearSkills(context)
+
+  registerSkill({
+    name: 'runtime-invalid',
+    description: 'Runtime-invalid skill fixture',
+    allowedTools: ['missing-tool'],
+    userInvocable: true,
+    async getPrompt() {
+      return [{ type: 'text', text: 'should not activate' }]
+    },
+  }, context)
+
+  const result = await SkillTool.call(
+    { skill: 'runtime-invalid' },
+    { cwd: process.cwd(), ...context, availableTools: ['Skill'] } as any,
+  )
+
+  assert.equal(result.is_error, true)
+  assert.match(String(result.content), /Invalid skill "runtime-invalid"/)
+  assert.match(String(result.content), /missing-tool/)
+
+  clearSkills(context)
 })
 
 test('malformed Skill tool output does not activate skill constraints', async () => {
@@ -545,6 +749,113 @@ test('toolsets combine with allowedTools and respect disallowedTools', async () 
   }
 })
 
+test('runtime workflow profiles expand into deterministic agent policy and prompt guidance', async () => {
+  const provider = new StubProvider([textResponse('ok')])
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    workflowMode: 'plan',
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent, 'plan the work')
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init')
+    const final = events.find((event) => event.type === 'result')
+
+    assert.ok(init)
+    assert.equal(init.permission_mode, 'plan')
+    assert.deepEqual(init.tools, ['Read', 'Glob', 'Grep', 'EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoWrite', 'Skill'])
+    const system = provider.calls[0]?.system || ''
+    assert.match(system, /Workflow mode: plan/)
+    assert.match(system, /produce acceptance criteria, risks, and verification gates/)
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.equal(final.trace?.memory?.[0]?.policy, 'brainFirst')
+      assert.equal(final.trace?.memory?.[0]?.retrieved_before_first_model_call, true)
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('runtime workflow profile caller overrides and exported lookups are stable', async () => {
+  const { applyRuntimeProfile, getAllRuntimeProfiles, getRuntimeProfile } = await import('../src/index.ts')
+  const input = {
+    workflowMode: 'verify' as const,
+    permissionMode: 'acceptEdits' as const,
+    memory: { enabled: true, policy: { mode: 'autoInject' as const } },
+    toolsets: ['tasks' as const],
+    allowedTools: ['Write'],
+    appendSystemPrompt: 'CALLER APPEND',
+    maxTurns: 3,
+  }
+
+  const resolved = applyRuntimeProfile(input)
+
+  assert.notEqual(resolved, input)
+  assert.equal(getRuntimeProfile('verify').memory?.policy?.mode, 'off')
+  assert.deepEqual(getAllRuntimeProfiles().map((profile) => profile.name), ['collect', 'organize', 'plan', 'solve', 'build', 'verify', 'review', 'ship'])
+  assert.equal(resolved.permissionMode, 'acceptEdits')
+  assert.equal(resolved.memory?.policy?.mode, 'autoInject')
+  assert.equal(resolved.maxTurns, 3)
+  assert.deepEqual(resolved.toolsets, ['repo-readonly', 'tasks'])
+  assert.deepEqual(resolved.allowedTools, ['Bash', 'Write'])
+  assert.match(resolved.appendSystemPrompt || '', /^Workflow mode: verify\./)
+  assert.match(resolved.appendSystemPrompt || '', /CALLER APPEND$/)
+  assert.deepEqual(input.toolsets, ['tasks'])
+  assert.deepEqual(input.allowedTools, ['Write'])
+})
+
+test('controlled execution contract exports deterministic version and schema surface', async () => {
+  const {
+    CONTROLLED_EXECUTION_CONTRACT_VERSION,
+    CONTROLLED_EXECUTION_CONTRACT_SCHEMA,
+    getControlledExecutionContract,
+    getAllRuntimeProfiles,
+  } = await import('../src/index.ts')
+
+  const first = getControlledExecutionContract()
+  const second = getControlledExecutionContract()
+
+  assert.equal(CONTROLLED_EXECUTION_CONTRACT_VERSION, '1.0.0')
+  assert.equal(first.version, CONTROLLED_EXECUTION_CONTRACT_VERSION)
+  assert.notEqual(first, second)
+  assert.deepEqual(first, second)
+  assert.deepEqual(first.workflowModes, getAllRuntimeProfiles().map((profile) => profile.name))
+  assert.deepEqual(first.messageTypes, CONTROLLED_EXECUTION_CONTRACT_SCHEMA.messageTypes)
+  assert.ok(first.traceFields.includes('permission_denials'))
+  assert.ok(first.resultFields.includes('quality_gates'))
+})
+
+test('every workflow profile declares explicit controlled execution behavior', async () => {
+  const { getAllRuntimeProfiles } = await import('../src/index.ts')
+
+  for (const profile of getAllRuntimeProfiles()) {
+    assert.ok(profile.toolsets?.length || profile.allowedTools?.length, `${profile.name} must constrain tools`)
+    assert.ok(profile.permissionMode, `${profile.name} must declare permission mode`)
+    assert.ok(profile.memory?.policy?.mode, `${profile.name} must declare memory policy`)
+    assert.ok(profile.qualityGatePolicy?.failStatuses?.length, `${profile.name} must declare quality gate failure policy`)
+    assert.match(profile.appendSystemPrompt || '', new RegExp(`Workflow mode: ${profile.name}`))
+  }
+})
+
+test('plan workflow profile remains non-mutating while verify and review require gates', async () => {
+  const { applyRuntimeProfile, getRuntimeProfile } = await import('../src/index.ts')
+
+  const plan = applyRuntimeProfile({ workflowMode: 'plan' as const })
+  assert.equal(plan.permissionMode, 'plan')
+  assert.deepEqual(plan.toolsets, ['repo-readonly', 'planning', 'skills'])
+  assert.equal(plan.allowedTools, undefined)
+  assert.deepEqual(plan.qualityGatePolicy?.required, ['plan-reviewable'])
+
+  const verify = getRuntimeProfile('verify')
+  assert.deepEqual(verify.qualityGatePolicy?.required, ['verification-passed'])
+  assert.equal(verify.memory?.enabled, false)
+
+  const review = getRuntimeProfile('review')
+  assert.deepEqual(review.qualityGatePolicy?.required, ['review-complete'])
+})
+
 test('canUseTool denial returns an error tool result and trace denial', async () => {
   const agent = new Agent({
     model: 'gpt-5.4',
@@ -594,7 +905,76 @@ test('canUseTool updatedInput reaches the tool call', async () => {
   }
 })
 
-test('invalid max tool concurrency falls back to a safe value', async () => {
+test('explicit maxToolConcurrency overrides env and records trace metadata', async () => {
+  const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+  process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = '9'
+
+  let activeCalls = 0
+  let maxActiveCalls = 0
+  const tool = captureTool(async () => {
+    activeCalls += 1
+    maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    activeCalls -= 1
+  }, { isReadOnly: () => true, isConcurrencySafe: () => true })
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [tool],
+    maxToolConcurrency: 2,
+  })
+  ;(agent as any).provider = new StubProvider([
+    multiToolUseResponse([{ value: 'one' }, { value: 'two' }, { value: 'three' }]),
+    textResponse('done'),
+  ])
+
+  try {
+    const run = await agent.run('test explicit concurrency')
+
+    assert.equal(maxActiveCalls, 2)
+    assert.equal(run.trace?.tool_concurrency_limit, 2)
+    assert.equal(run.trace?.tool_concurrency_source, 'option')
+    assert.deepEqual(run.trace?.concurrency_batches, [2, 1])
+  } finally {
+    if (originalConcurrency === undefined) {
+      delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+    } else {
+      process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = originalConcurrency
+    }
+    await agent.close()
+  }
+})
+
+test('env max tool concurrency fallback records source metadata', async () => {
+  const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+  process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = '2'
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [captureTool(undefined, { isReadOnly: () => true, isConcurrencySafe: () => true })],
+  })
+  ;(agent as any).provider = new StubProvider([
+    multiToolUseResponse([{ value: 'one' }, { value: 'two' }, { value: 'three' }]),
+    textResponse('done'),
+  ])
+
+  try {
+    const run = await agent.run('test env concurrency')
+
+    assert.equal(run.trace?.tool_concurrency_limit, 2)
+    assert.equal(run.trace?.tool_concurrency_source, 'env')
+    assert.deepEqual(run.trace?.concurrency_batches, [2, 1])
+  } finally {
+    if (originalConcurrency === undefined) {
+      delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
+    } else {
+      process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = originalConcurrency
+    }
+    await agent.close()
+  }
+})
+
+test('invalid max tool concurrency falls back to default and records source metadata', async () => {
   const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
   process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = '0'
 
@@ -608,11 +988,12 @@ test('invalid max tool concurrency falls back to a safe value', async () => {
   ])
 
   try {
-    const events = await Promise.race([
-      collectEvents(agent),
+    const run = await Promise.race([
+      agent.run('test invalid concurrency'),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timed out')), 500)),
     ])
-    assert.equal(events.at(-1)?.type, 'result')
+    assert.equal(run.trace?.tool_concurrency_limit, 10)
+    assert.equal(run.trace?.tool_concurrency_source, 'default')
   } finally {
     if (originalConcurrency === undefined) {
       delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
@@ -623,7 +1004,7 @@ test('invalid max tool concurrency falls back to a safe value', async () => {
   }
 })
 
-test('non-numeric max tool concurrency falls back to a safe value', async () => {
+test('non-numeric max tool concurrency falls back to default and records source metadata', async () => {
   const originalConcurrency = process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
   process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY = 'not-a-number'
 
@@ -637,11 +1018,12 @@ test('non-numeric max tool concurrency falls back to a safe value', async () => 
   ])
 
   try {
-    const events = await Promise.race([
-      collectEvents(agent),
+    const run = await Promise.race([
+      agent.run('test nonnumeric concurrency'),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timed out')), 500)),
     ])
-    assert.equal(events.at(-1)?.type, 'result')
+    assert.equal(run.trace?.tool_concurrency_limit, 10)
+    assert.equal(run.trace?.tool_concurrency_source, 'default')
   } finally {
     if (originalConcurrency === undefined) {
       delete process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY
@@ -881,6 +1263,56 @@ test('initial evidence and quality gates propagate to final run result', async (
   }
 })
 
+test('required failed quality gate marks run as errored', async () => {
+  const qualityGates = [{ name: 'focused-tests', status: 'failed' as const, summary: 'Focused tests failed' }]
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    quality_gates: qualityGates,
+    qualityGatePolicy: { required: ['focused-tests'] },
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('done')])
+
+  try {
+    const run = await agent.run('test quality gate policy')
+    const final = run.events.find((event) => event.type === 'result')
+
+    assert.equal(run.status, 'errored')
+    assert.equal(run.subtype, 'error_quality_gate_failed')
+    assert.deepEqual(run.quality_gates, qualityGates)
+    assert.match(run.errors?.[0] || '', /Required quality gate failed: focused-tests/)
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.equal(final.subtype, 'error_quality_gate_failed')
+      assert.equal(final.is_error, true)
+      assert.deepEqual(final.quality_gates, qualityGates)
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('failed quality gate remains informational without policy', async () => {
+  const qualityGates = [{ name: 'focused-tests', status: 'failed' as const, summary: 'Focused tests failed' }]
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    quality_gates: qualityGates,
+  })
+  ;(agent as any).provider = new StubProvider([textResponse('done')])
+
+  try {
+    const run = await agent.run('test informational quality gate')
+
+    assert.equal(run.status, 'completed')
+    assert.equal(run.subtype, 'success')
+    assert.deepEqual(run.quality_gates, qualityGates)
+    assert.equal(run.errors, undefined)
+  } finally {
+    await agent.close()
+  }
+})
+
 test('concurrency-safe tool traces preserve requested order', async () => {
   const slow = captureTool(async () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
@@ -990,7 +1422,7 @@ test('subagents inherit parent permission policy and mode', async () => {
         tools: ['Grep'],
       },
     },
-    permissionMode: 'acceptEdits',
+    permissionMode: 'trustedAutomation',
     canUseTool: async (tool) => {
       if (tool.name === 'Grep') {
         deniedSubagentTool = true
@@ -1009,7 +1441,7 @@ test('subagents inherit parent permission policy and mode', async () => {
     const subagentFollowupCall = provider.calls.find((call) => Array.isArray(call.messages.at(-1)?.content))
 
     assert.equal(initEvents.length, 1)
-    assert.equal(initEvents[0]?.permission_mode, 'acceptEdits')
+    assert.equal(initEvents[0]?.permission_mode, 'trustedAutomation')
     assert.ok(subagentCall)
     assert.equal(subagentCall.tools?.some((tool) => tool.name === 'Grep'), true)
     assert.equal(deniedSubagentTool, true)
@@ -1063,6 +1495,11 @@ test('AgentTool run_in_background creates durable job and records completion', a
     const jobs = await listAgentJobs(context)
     assert.equal(jobs.length, 1)
     assert.equal(jobs[0]?.id, payload.job_id)
+    assert.deepEqual(jobs[0]?.replay, {
+      prompt: 'run background task',
+      description: 'background task',
+      subagent_type: 'general-purpose',
+    })
   } finally {
     await clearAgentJobs(context)
     clearAgents(context)
@@ -1129,6 +1566,56 @@ test('Agent job tools list, get, and stop background jobs by namespace', async (
     releaseBackground?.()
     await clearAgentJobs(contextA)
     await clearAgentJobs(contextB)
+  }
+})
+
+test('stale agent jobs can be replayed with persisted input', async () => {
+  const context = { runtimeNamespace: 'background-agent-replay-test', staleAfterMs: 0 }
+  await clearAgentJobs(context)
+
+  const provider = new StubProvider([
+    textResponse('replayed background result'),
+  ])
+
+  try {
+    const job = await createAgentJob({
+      kind: 'subagent',
+      prompt: 'replay this task',
+      description: 'replay task',
+      allowedTools: ['Glob'],
+      replay: {
+        prompt: 'replay this task',
+        description: 'replay task',
+        subagent_type: 'general-purpose',
+        allowed_tools: ['Glob'],
+      },
+    }, context)
+
+    const stale = await getAgentJob(job.id, context)
+    assert.equal(stale?.status, 'stale')
+
+    const result = await AgentTool.call(
+      { id: job.id, replay: true },
+      {
+        cwd: process.cwd(),
+        provider,
+        model: 'gpt-5.4',
+        apiType: 'openai-completions',
+        runtimeNamespace: context.runtimeNamespace,
+      },
+    )
+    const payload = JSON.parse(String(result.content))
+    assert.equal(payload.type, 'clavue.agent.job.replay')
+    assert.equal(payload.job_id, job.id)
+
+    await eventually(async () => {
+      const replayed = await getAgentJob(job.id, { ...context, staleAfterMs: -1 })
+      assert.equal(replayed?.status, 'completed')
+      assert.equal(replayed?.output, 'replayed background result')
+      assert.deepEqual(provider.calls[0]?.tools?.map((tool) => tool.name), ['Glob'])
+    })
+  } finally {
+    await clearAgentJobs(context)
   }
 })
 
@@ -1256,5 +1743,133 @@ test('custom subagent definitions are isolated by runtime namespace', async () =
     clearAgents({ runtimeNamespace: 'agent-registry-b' })
     await first.close()
     await second.close()
+  }
+})
+
+test('default permission mode allows read-only tools and denies mutating tools', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    permissionMode: 'default',
+    tools: [FileReadTool, FileWriteTool],
+  })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({ file_path: 'package.json' }, 'Read'),
+    toolUseResponse({ file_path: 'blocked.txt', content: 'blocked' }, 'Write'),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const writeResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'Write',
+    )
+    const final = events.find((event) => event.type === 'result')
+
+    assert.ok(writeResult)
+    assert.match(writeResult.result.output, /default mode only allows read-only tools/)
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      assert.deepEqual(final.permission_denials, [{
+        tool: 'Write',
+        reason: 'Permission denied for Write: default mode only allows read-only tools unless the host selects a broader permission mode',
+      }])
+    }
+  } finally {
+    await agent.close()
+  }
+})
+
+test('plan permission mode freezes mutating tools but allows planning tools', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    permissionMode: 'plan',
+    tools: [GlobTool, FileEditTool, EnterPlanModeTool],
+  })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({}, 'EnterPlanMode'),
+    toolUseResponse({ pattern: '*.ts' }, 'Glob'),
+    toolUseResponse({ file_path: 'blocked.ts', old_string: 'a', new_string: 'b' }, 'Edit'),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const planResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'EnterPlanMode',
+    )
+    const editResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'Edit',
+    )
+
+    assert.ok(planResult)
+    assert.match(planResult.result.output, /Entered plan mode/)
+    assert.ok(editResult)
+    assert.match(editResult.result.output, /plan mode only allows read-only and planning tools/)
+  } finally {
+    await agent.close()
+  }
+})
+
+test('acceptEdits mode allows local file edits but blocks shell and network tools', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'permissions-accept-edits-'))
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    cwd: dir,
+    permissionMode: 'acceptEdits',
+    tools: [FileWriteTool, BashTool, WebFetchTool],
+  })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({ file_path: 'allowed.txt', content: 'ok' }, 'Write'),
+    toolUseResponse({ command: 'echo blocked' }, 'Bash'),
+    toolUseResponse({ url: 'https://example.test' }, 'WebFetch'),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const bashResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'Bash',
+    )
+    const webResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'WebFetch',
+    )
+
+    assert.ok(bashResult)
+    assert.match(bashResult.result.output, /acceptEdits mode allows local file edits/)
+    assert.ok(webResult)
+    assert.match(webResult.result.output, /acceptEdits mode allows local file edits/)
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('host canUseTool cannot override built-in plan mode denials', async () => {
+  let hostCalled = false
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    permissionMode: 'plan',
+    tools: [FileWriteTool],
+    canUseTool: async () => {
+      hostCalled = true
+      return { behavior: 'allow' }
+    },
+  })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({ file_path: 'blocked.txt', content: 'blocked' }, 'Write'),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const writeResult = events.find(
+      (event) => event.type === 'tool_result' && event.result.tool_name === 'Write',
+    )
+
+    assert.equal(hostCalled, false)
+    assert.ok(writeResult)
+    assert.match(writeResult.result.output, /plan mode only allows read-only and planning tools/)
+  } finally {
+    await agent.close()
   }
 })

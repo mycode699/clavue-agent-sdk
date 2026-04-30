@@ -19,10 +19,15 @@ import type {
   ToolResult,
   ToolContext,
   TokenUsage,
+  QualityGatePolicy,
   AgentRunTrace,
   AgentRunToolTrace,
   Evidence,
   QualityGateResult,
+  MemoryPolicyMode,
+  AgentRunMemoryTrace,
+  AgentRunMemorySelectionTrace,
+  AgentRunToolConcurrencySource,
 } from './types.js'
 import type {
   LLMProvider,
@@ -45,11 +50,14 @@ import {
 import {
   withRetry,
   isPromptTooLongError,
+  isRetryableError,
 } from './utils/retry.js'
+import { abortError } from './utils/abort.js'
 import { getSystemContext, getUserContext } from './utils/context.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
-import { queryMemories, type MemoryEntry } from './memory.js'
+import { queryMemoryMatches, type MemoryEntry, type MemoryQueryResult } from './memory.js'
+import type { SkillQualityGateSpec } from './skills/types.js'
 
 // ============================================================================
 // Tool format conversion
@@ -86,6 +94,7 @@ interface SkillActivation {
   allowedTools?: string[]
   model?: string
   job_id?: string
+  qualityGates?: SkillQualityGateSpec[]
 }
 
 function getMemoryPriority(memory: MemoryEntry): number {
@@ -107,6 +116,25 @@ function getMemoryPriority(memory: MemoryEntry): number {
   }
 }
 
+function toMemorySelectionTrace(match: MemoryQueryResult): AgentRunMemorySelectionTrace {
+  const { entry, score, scoreReasons } = match
+  return {
+    id: entry.id,
+    type: entry.type,
+    scope: entry.scope,
+    title: entry.title,
+    score,
+    score_reasons: [...scoreReasons],
+    validation_state: entry.lastValidatedAt ? 'validated' : 'unvalidated',
+    tags: entry.tags ? [...entry.tags] : undefined,
+    source: entry.source,
+    confidence: entry.confidence,
+    last_validated_at: entry.lastValidatedAt,
+    repo_path: entry.repoPath,
+    session_id: entry.sessionId,
+  }
+}
+
 function formatInjectedMemories(memories: MemoryEntry[]): string {
   const lines: string[] = []
 
@@ -124,13 +152,34 @@ function formatInjectedMemories(memories: MemoryEntry[]): string {
   return lines.join('\n')
 }
 
-function getMaxToolConcurrency(): number {
-  const parsed = Number.parseInt(process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY || '10', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10
+const DEFAULT_TOOL_CONCURRENCY = 10
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : undefined
+  }
+  if (typeof value !== 'string') return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function resolveMaxToolConcurrency(configured?: number): { limit: number; source: AgentRunToolConcurrencySource } {
+  const optionLimit = parsePositiveInteger(configured)
+  if (optionLimit !== undefined) return { limit: optionLimit, source: 'option' }
+
+  const envLimit = parsePositiveInteger(process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY)
+  if (envLimit !== undefined) return { limit: envLimit, source: 'env' }
+
+  return { limit: DEFAULT_TOOL_CONCURRENCY, source: 'default' }
 }
 
 function canRunConcurrently(tool?: ToolDefinition): boolean {
   return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
+}
+
+function shouldUseFallbackModel(err: any): boolean {
+  if (err?.category) return isRetryableError(err)
+  return err?.status === 404 || isRetryableError(err)
 }
 
 function filterToolsForSkill(tools: ToolDefinition[], allowedTools?: string[]): ToolDefinition[] {
@@ -138,6 +187,31 @@ function filterToolsForSkill(tools: ToolDefinition[], allowedTools?: string[]): 
 
   const allowed = new Set([...allowedTools, 'Skill'])
   return tools.filter((tool) => allowed.has(tool.name))
+}
+
+function normalizeSkillQualityGates(value: unknown): SkillQualityGateSpec[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const gates = value.filter((gate): gate is SkillQualityGateSpec => (
+    typeof gate === 'object' &&
+    gate !== null &&
+    typeof (gate as { name?: unknown }).name === 'string'
+  ))
+  return gates.length > 0 ? gates : undefined
+}
+
+function mergeQualityGatePolicy(
+  base: QualityGatePolicy | undefined,
+  gateNames: string[],
+): QualityGatePolicy {
+  const required = [...new Set([...(base?.required ?? []), ...gateNames])]
+  return {
+    ...base,
+    required,
+  }
+}
+
+function isAbortError(err: any): boolean {
+  return err?.name === 'AbortError'
 }
 
 function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
@@ -167,13 +241,14 @@ function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
         : undefined,
       model: typeof parsed.model === 'string' ? parsed.model : undefined,
       job_id: typeof parsed.job_id === 'string' ? parsed.job_id : undefined,
+      qualityGates: normalizeSkillQualityGates(parsed.qualityGates),
     }
   } catch {
     return undefined
   }
 }
 
-function createToolContext(config: QueryEngineConfig): ToolContext {
+function createToolContext(config: QueryEngineConfig, tools: ToolDefinition[] = config.tools): ToolContext {
   return {
     cwd: config.cwd,
     abortSignal: config.abortSignal,
@@ -182,6 +257,7 @@ function createToolContext(config: QueryEngineConfig): ToolContext {
     apiType: config.provider.apiType,
     policy: config.policy,
     runtimeNamespace: config.runtimeNamespace,
+    availableTools: tools.map((tool) => tool.name),
   }
 }
 
@@ -215,17 +291,36 @@ async function collectToolPromptFragments(config: QueryEngineConfig): Promise<st
   return fragments
 }
 
-async function getInjectedMemories(config: QueryEngineConfig): Promise<MemoryEntry[]> {
-  if (!config.memory?.enabled || config.memory.autoInject === false) {
-    return []
+function getMemoryPolicyMode(config: QueryEngineConfig): MemoryPolicyMode {
+  if (!config.memory?.enabled) return 'off'
+  if (config.memory.policy?.mode) return config.memory.policy.mode
+  return config.memory.autoInject === false ? 'off' : 'autoInject'
+}
+
+async function getInjectedMemories(config: QueryEngineConfig): Promise<{ entries: MemoryEntry[]; trace: AgentRunMemoryTrace }> {
+  const policy = getMemoryPolicyMode(config)
+  const repoPath = config.memory?.repoPath || config.cwd
+  const text = typeof config.initialPrompt === 'string' ? config.initialPrompt : undefined
+  const trace: AgentRunMemoryTrace = {
+    policy,
+    query: text,
+    repo_path: repoPath,
+    selected_ids: [],
+    injected_count: 0,
+    injection_status: policy === 'off' || !config.memory?.enabled ? 'off' : 'empty',
+    selection_source: policy === 'off' || !config.memory?.enabled ? 'off' : 'empty',
+    retrieval_steps: [],
+    retrieved_before_first_model_call: true,
   }
 
-  const repoPath = config.memory.repoPath || config.cwd
-  const text = typeof config.initialPrompt === 'string' ? config.initialPrompt : undefined
+  if (policy === 'off' || !config.memory?.enabled) {
+    return { entries: [], trace }
+  }
+
   const limit = config.memory.maxInjectedEntries ?? 5
   const store = { dir: config.memory.dir }
 
-  const targeted = await queryMemories(
+  const targeted = await queryMemoryMatches(
     {
       repoPath,
       text,
@@ -233,30 +328,58 @@ async function getInjectedMemories(config: QueryEngineConfig): Promise<MemoryEnt
     },
     store,
   )
+  trace.retrieval_steps?.push({
+    source: 'targeted',
+    query: text,
+    repo_path: repoPath,
+    candidate_count: targeted.length,
+    selected_count: targeted.length,
+  })
 
-  if (targeted.length > 0) {
-    return targeted
+  let matches = targeted
+  if (matches.length > 0) {
+    trace.selection_source = 'targeted'
+  } else {
+    matches = await queryMemoryMatches(
+      {
+        repoPath,
+        limit,
+      },
+      store,
+    )
+    trace.retrieval_steps?.push({
+      source: 'repo_fallback',
+      repo_path: repoPath,
+      candidate_count: matches.length,
+      selected_count: matches.length,
+    })
+    trace.selection_source = matches.length > 0 ? 'repo_fallback' : 'empty'
   }
 
-  return queryMemories(
-    {
-      repoPath,
-      limit,
-    },
-    store,
-  )
+  const entries = matches.map(({ entry }) => entry)
+  trace.selected_ids = entries.map((entry) => entry.id)
+  trace.selected = matches.map(toMemorySelectionTrace)
+  trace.injected_count = entries.length
+  trace.injection_status = entries.length > 0 ? 'injected' : 'empty'
+  return { entries, trace }
 }
 
 // ============================================================================
 // System Prompt Builder
 // ============================================================================
 
-async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
+async function buildSystemPrompt(config: QueryEngineConfig): Promise<{ systemPrompt: string; memoryTrace: AgentRunMemoryTrace }> {
   if (config.systemPrompt) {
-    const base = config.systemPrompt
-    return config.appendSystemPrompt
-      ? base + '\n\n' + config.appendSystemPrompt
-      : base
+    const parts = [config.systemPrompt]
+    const { entries: injectedMemories, trace: memoryTrace } = await getInjectedMemories(config)
+    if (injectedMemories.length > 0) {
+      parts.push('\n# Relevant Memory\n')
+      parts.push(formatInjectedMemories(injectedMemories))
+    }
+    if (config.appendSystemPrompt) {
+      parts.push('\n' + config.appendSystemPrompt)
+    }
+    return { systemPrompt: parts.join('\n'), memoryTrace }
   }
 
   const parts: string[] = [
@@ -318,7 +441,7 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
     // Context is best-effort
   }
 
-  const injectedMemories = await getInjectedMemories(config)
+  const { entries: injectedMemories, trace: memoryTrace } = await getInjectedMemories(config)
   if (injectedMemories.length > 0) {
     parts.push('\n# Relevant Memory\n')
     parts.push(formatInjectedMemories(injectedMemories))
@@ -331,7 +454,7 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<string> {
     parts.push('\n' + config.appendSystemPrompt)
   }
 
-  return parts.join('\n')
+  return { systemPrompt: parts.join('\n'), memoryTrace }
 }
 
 // ============================================================================
@@ -346,24 +469,32 @@ export class QueryEngine {
   private modelUsage: Record<string, { input_tokens: number; output_tokens: number }> = {}
   private totalCost = 0
   private turnCount = 0
-  private trace: AgentRunTrace = {
-    turns: [],
-    tools: [],
-    concurrency_batches: [],
-    retry_count: 0,
-    compaction_count: 0,
-    permission_denials: [],
-  }
+  private trace: AgentRunTrace
+  private readonly maxToolConcurrency: number
   private compactState: AutoCompactState
   private sessionId: string
   private apiTimeMs = 0
   private hookRegistry?: HookRegistry
   private activeSkill?: SkillActivation
+  private requiredSkillQualityGates: string[] = []
   private evidence: Evidence[] = []
   private qualityGates: QualityGateResult[] = []
 
   constructor(config: QueryEngineConfig) {
     this.config = { ...config, runtimeNamespace: config.runtimeNamespace ?? config.sessionId }
+    const toolConcurrency = resolveMaxToolConcurrency(config.maxToolConcurrency)
+    this.maxToolConcurrency = toolConcurrency.limit
+    this.trace = {
+      turns: [],
+      tools: [],
+      concurrency_batches: [],
+      tool_concurrency_limit: toolConcurrency.limit,
+      tool_concurrency_source: toolConcurrency.source,
+      retry_count: 0,
+      compaction_count: 0,
+      permission_denials: [],
+      memory: [],
+    }
     this.evidence = [...(config.evidence ?? [])]
     this.qualityGates = [...(config.quality_gates ?? [])]
     this.provider = config.provider
@@ -433,7 +564,9 @@ export class QueryEngine {
 
     // Build system prompt
     this.config.initialPrompt = typeof prompt === 'string' ? prompt : undefined
-    let systemPrompt = await buildSystemPrompt(this.config)
+    const builtSystemPrompt = await buildSystemPrompt(this.config)
+    const systemPrompt = builtSystemPrompt.systemPrompt
+    this.trace.memory?.push(builtSystemPrompt.memoryTrace)
 
     // Emit init system message
     yield {
@@ -505,30 +638,50 @@ export class QueryEngine {
       let response: CreateMessageResponse
       let apiAttempts = 0
       const apiStart = performance.now()
+      const fallbackModel = this.config.fallbackModel && this.config.fallbackModel !== requestModel
+        ? this.config.fallbackModel
+        : undefined
+      const createModelMessage = async (model: string) => this.provider.createMessage({
+        model,
+        maxTokens: this.config.maxTokens,
+        system: requestSystemPrompt,
+        messages: apiMessages,
+        tools: providerTools.length > 0 ? providerTools : undefined,
+        thinking:
+          this.config.thinking?.type === 'enabled' &&
+          this.config.thinking.budgetTokens
+            ? {
+                type: 'enabled',
+                budget_tokens: this.config.thinking.budgetTokens,
+              }
+            : undefined,
+        abortSignal: this.config.abortSignal,
+      })
+      let successfulModel = requestModel
       try {
-        response = await withRetry(
-          async () => {
-            apiAttempts += 1
-            return this.provider.createMessage({
-              model: requestModel,
-              maxTokens: this.config.maxTokens,
-              system: requestSystemPrompt,
-              messages: apiMessages,
-              tools: providerTools.length > 0 ? providerTools : undefined,
-              thinking:
-                this.config.thinking?.type === 'enabled' &&
-                this.config.thinking.budgetTokens
-                  ? {
-                      type: 'enabled',
-                      budget_tokens: this.config.thinking.budgetTokens,
-                    }
-                  : undefined,
-              abortSignal: this.config.abortSignal,
-            })
-          },
-          undefined,
-          this.config.abortSignal,
-        )
+        try {
+          response = await withRetry(
+            async () => {
+              apiAttempts += 1
+              return createModelMessage(requestModel)
+            },
+            undefined,
+            this.config.abortSignal,
+          )
+        } catch (primaryErr: any) {
+          if (!fallbackModel || isAbortError(primaryErr) || this.config.abortSignal?.aborted) {
+            throw primaryErr
+          }
+          if (isPromptTooLongError(primaryErr)) {
+            throw primaryErr
+          }
+          if (!shouldUseFallbackModel(primaryErr)) {
+            throw primaryErr
+          }
+          if (this.config.abortSignal?.aborted) throw abortError()
+          response = await createModelMessage(fallbackModel)
+          successfulModel = fallbackModel
+        }
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
       } catch (err: any) {
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
@@ -601,8 +754,8 @@ export class QueryEngine {
             (this.totalUsage.cache_read_input_tokens || 0) +
             response.usage.cache_read_input_tokens
         }
-        this.recordModelUsage(requestModel, response.usage)
-        this.totalCost += estimateCost(requestModel, response.usage)
+        this.recordModelUsage(successfulModel, response.usage)
+        this.totalCost += estimateCost(successfulModel, response.usage)
       }
 
       // Add assistant message to conversation
@@ -638,7 +791,6 @@ export class QueryEngine {
       }
 
       if (toolUseBlocks.length === 0) {
-        this.activeSkill = undefined
         completedNormally = true
         break // No tool calls - agent is done
       }
@@ -693,11 +845,16 @@ export class QueryEngine {
     await this.executeHooks('SessionEnd')
 
     // Yield enriched final result
-    const endSubtype = budgetExceeded
+    const baseSubtype = budgetExceeded
       ? 'error_max_budget_usd'
       : completedNormally
         ? 'success'
         : 'error_max_turns'
+    const gateFailure = baseSubtype === 'success' ? this.getTerminalQualityGateFailure() : undefined
+    const endSubtype = gateFailure ? 'error_quality_gate_failed' : baseSubtype
+    const errors = gateFailure
+      ? [`Required quality gate failed: ${gateFailure.name}${gateFailure.summary ? ` - ${gateFailure.summary}` : ''}`]
+      : undefined
 
     yield {
       type: 'result',
@@ -713,8 +870,44 @@ export class QueryEngine {
       evidence: this.getEvidence(),
       quality_gates: this.getQualityGates(),
       trace: this.getTrace(),
+      errors,
       cost: this.totalCost,
     }
+  }
+
+  private getActiveQualityGatePolicy(): QualityGatePolicy | undefined {
+    const requiredSkillGates = this.requiredSkillQualityGates
+
+    if (requiredSkillGates.length === 0) {
+      return this.config.qualityGatePolicy
+    }
+
+    return mergeQualityGatePolicy(this.config.qualityGatePolicy, requiredSkillGates)
+  }
+
+  private getTerminalQualityGateFailure(): QualityGateResult | undefined {
+    const policy = this.getActiveQualityGatePolicy()
+    if (!policy) return undefined
+
+    const failStatuses = new Set(policy.failStatuses ?? ['failed'])
+    const required = policy.required ? new Set(policy.required) : undefined
+
+    if (required) {
+      for (const name of required) {
+        const gate = this.qualityGates.find((entry) => entry.name === name)
+        if (!gate) {
+          return {
+            name,
+            status: 'pending',
+            summary: 'Required quality gate did not report a result',
+          }
+        }
+        if (failStatuses.has(gate.status)) return gate
+      }
+      return undefined
+    }
+
+    return this.qualityGates.find((gate) => failStatuses.has(gate.status))
   }
 
   /**
@@ -726,16 +919,11 @@ export class QueryEngine {
   private async executeTools(
     toolUseBlocks: ToolUseBlock[],
   ): Promise<(ToolResult & { tool_name?: string })[]> {
-    const context: ToolContext = {
-      ...createToolContext(this.config),
-      provider: this.provider,
-      apiType: this.provider.apiType,
-    }
-
-    const maxConcurrency = getMaxToolConcurrency()
+    const maxConcurrency = this.maxToolConcurrency
     const toolsForThisTurn = this.activeSkill
       ? filterToolsForSkill(this.config.tools, this.activeSkill.allowedTools)
       : this.config.tools
+    const context = createToolContext(this.config, toolsForThisTurn)
     const toolsByName = new Map(toolsForThisTurn.map((tool) => [tool.name, tool]))
     const results: (ToolResult & { tool_name?: string })[] = []
     let concurrentRun: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
@@ -874,6 +1062,12 @@ export class QueryEngine {
         const activation = tool.name === 'Skill' ? parseSkillActivation(toolResult) : undefined
         if (activation?.status === 'inline') {
           this.activeSkill = activation
+          const requiredGateNames = activation.qualityGates
+            ?.filter((gate) => gate.required !== false)
+            .map((gate) => gate.name) ?? []
+          this.requiredSkillQualityGates = [
+            ...new Set([...this.requiredSkillQualityGates, ...requiredGateNames]),
+          ]
         }
 
         // Hook: PostToolUse
@@ -989,9 +1183,21 @@ export class QueryEngine {
       turns: this.trace.turns.map((turn) => ({ ...turn })),
       tools: this.trace.tools.map((tool) => ({ ...tool })),
       concurrency_batches: [...this.trace.concurrency_batches],
+      tool_concurrency_limit: this.trace.tool_concurrency_limit,
+      tool_concurrency_source: this.trace.tool_concurrency_source,
       retry_count: this.trace.retry_count,
       compaction_count: this.trace.compaction_count,
       permission_denials: this.trace.permission_denials.map((denial) => ({ ...denial })),
+      memory: this.trace.memory?.map((entry) => ({
+        ...entry,
+        selected_ids: [...entry.selected_ids],
+        selected: entry.selected?.map((selection) => ({
+          ...selection,
+          score_reasons: selection.score_reasons ? [...selection.score_reasons] : undefined,
+          tags: selection.tags ? [...selection.tags] : undefined,
+        })),
+        retrieval_steps: entry.retrieval_steps?.map((step) => ({ ...step })),
+      })),
     }
   }
 }

@@ -50,8 +50,31 @@ export type { McpSdkServerConfig } from './sdk-mcp-server.js'
 // --------------------------------------------------------------------------
 
 export { QueryEngine } from './engine.js'
+export { doctor } from './doctor.js'
+export { runBenchmarks } from './benchmark.js'
+export {
+  CONTROLLED_EXECUTION_CONTRACT_SCHEMA,
+  CONTROLLED_EXECUTION_CONTRACT_VERSION,
+  applyRuntimeProfile,
+  getControlledExecutionContract,
+  getRuntimeProfile,
+  getAllRuntimeProfiles,
+} from './runtime-profiles.js'
 export { extractRunImprovementCandidates, runSelfImprovement } from './improvement.js'
 export type { ImprovementCandidate, RunSelfImprovementOptions } from './improvement.js'
+export { createEvaluationLoopContract, normalizeEvaluationLoopContract } from './evaluation-loop.js'
+export type {
+  EvaluationLoopBaseline,
+  EvaluationLoopBudget,
+  EvaluationLoopComparator,
+  EvaluationLoopContract,
+  EvaluationLoopContractInput,
+  EvaluationLoopDecision,
+  EvaluationLoopDecisionValue,
+  EvaluationLoopMetric,
+  EvaluationLoopVerification,
+} from './evaluation-loop.js'
+export type { ControlledExecutionContract, RuntimeProfile, WorkflowMode } from './types.js'
 export {
   runRetroEvaluation,
   normalizeFindings,
@@ -123,6 +146,9 @@ export type {
 
 export {
   createProvider,
+  decideModelCapability,
+  getModelCapabilities,
+  normalizeModelId,
   AnthropicProvider,
   OpenAIProvider,
 } from './providers/index.js'
@@ -133,8 +159,17 @@ export type {
   CreateMessageResponse,
   NormalizedMessageParam,
   NormalizedContentBlock,
+  NormalizedImageSource,
   NormalizedTool,
   NormalizedResponseBlock,
+  ModelCapabilities,
+  ModelCapabilityDecision,
+  ModelCapabilityName,
+  ModelCapabilityOptions,
+  ModelCapabilitySupport,
+  ModelTransport,
+  ProviderError,
+  ProviderErrorCategory,
 } from './providers/index.js'
 
 // --------------------------------------------------------------------------
@@ -241,11 +276,31 @@ export {
   unregisterSkill,
   clearSkills,
   formatSkillsForPrompt,
+  validateSkillDefinition,
+  validateSkillManifest,
+  createSkill,
+  skillFromManifest,
+  loadSkillsFromDir,
   initBundledSkills,
 } from './skills/index.js'
 export type {
   SkillDefinition,
   SkillContentBlock,
+  SkillPrecondition,
+  SkillArtifactSpec,
+  SkillQualityGateSpec,
+  SkillPermissionSpec,
+  SkillCompatibilitySpec,
+  SkillValidationIssue,
+  SkillValidationOptions,
+  SkillValidationResult,
+  SkillManifest,
+  SkillPromptSource,
+  LoadedSkill,
+  SkillLoadError,
+  SkillLoadErrorCode,
+  SkillLoaderOptions,
+  SkillLoaderResult,
   SkillResult,
 } from './skills/index.js'
 
@@ -293,6 +348,7 @@ export {
   loadMemory,
   listMemories,
   queryMemories,
+  queryMemoryMatches,
   deleteMemory,
   getMemoryStoreInfo,
 } from './memory.js'
@@ -304,6 +360,7 @@ export type {
   MemoryConfidence,
   MemoryEntry,
   MemoryQuery,
+  MemoryQueryResult,
   MemoryScope,
   MemoryStoreOptions,
   MemoryType,
@@ -318,13 +375,25 @@ export type {
 // --------------------------------------------------------------------------
 
 export {
+  buildContextPack,
+  clearContextCache,
+  createContextPipeline,
+  discoverProjectContextFiles,
+  getGitStatus,
   getSystemContext,
   getUserContext,
-  getGitStatus,
   readProjectContextContent,
-  discoverProjectContextFiles,
-  clearContextCache,
+  renderContextPack,
 } from './utils/context.js'
+
+export type {
+  ContextPack,
+  ContextPackOptions,
+  ContextPackSection,
+  ContextPackSectionKind,
+  ContextPipeline,
+  ContextPipelineTransform,
+} from './types.js'
 
 // --------------------------------------------------------------------------
 // Message Utilities
@@ -437,12 +506,15 @@ export {
   createAgentJob,
   getAgentJob,
   listAgentJobs,
+  replayAgentJob,
   stopAgentJob,
   clearAgentJobs,
 } from './agent-jobs.js'
 export type {
   AgentJobCompletion,
   AgentJobKind,
+  AgentJobReplayInput,
+  AgentJobRunner,
   AgentJobRecord,
   AgentJobStatus,
   AgentJobStoreOptions,
@@ -511,8 +583,12 @@ export type {
   Evidence,
   QualityGateStatus,
   QualityGateResult,
+  QualityGatePolicy,
   AgentRunToolTrace,
   AgentRunTurnTrace,
+  AgentRunMemorySelectionSource,
+  AgentRunMemoryRetrievalStep,
+  AgentRunMemoryTrace,
   AgentRunTrace,
   PermissionBehavior,
   CanUseToolFn,
@@ -555,7 +631,18 @@ export type {
   // Output format
   OutputFormat,
   MemoryConfig,
+  MemoryPolicy,
+  MemoryPolicyMode,
   SessionConfig,
+  DoctorCheck,
+  DoctorCheckCategory,
+  DoctorCheckStatus,
+  DoctorOptions,
+  DoctorReport,
+  BenchmarkMetricName,
+  BenchmarkMetric,
+  BenchmarkReport,
+  BenchmarkOptions,
 
   // Setting sources
   SettingSource,

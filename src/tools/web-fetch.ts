@@ -22,6 +22,12 @@ export const WebFetchTool = defineTool({
     },
     required: ['url'],
   },
+  safety: {
+    read: true,
+    network: true,
+    externalState: true,
+    approvalRequired: true,
+  },
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {

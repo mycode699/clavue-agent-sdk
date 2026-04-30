@@ -42,6 +42,10 @@ export const LSPTool: ToolDefinition = {
     },
     required: ['operation'],
   },
+  safety: {
+    read: true,
+    idempotent: true,
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   isEnabled: () => true,

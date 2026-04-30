@@ -49,12 +49,272 @@ test('query injects relevant memory into the system prompt', async () => {
       repoPath: '/tmp/repo-a',
       tags: ['workflow', 'autonomy'],
       confidence: 'high',
+      source: 'explicit user preference',
+      lastValidatedAt: '2026-04-28',
     }, { dir })
 
-    await agent.prompt('continue workflow autonomy improvements')
+    const result = await agent.run('continue workflow autonomy improvements')
     assert.match(provider.lastSystem, /# Relevant Memory/)
     assert.match(provider.lastSystem, /Minimize confirmations/)
     assert.match(provider.lastSystem, /autonomy, workflow/)
+    assert.deepEqual(result.trace?.memory?.[0]?.selected_ids, ['pref-1'])
+    assert.deepEqual(result.trace?.memory?.[0]?.selected, [{
+      id: 'pref-1',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Minimize confirmations',
+      score: 12,
+      score_reasons: ['repo_path', 'text:workflow', 'text:autonomy', 'confidence:high', 'validated'],
+      validation_state: 'validated',
+      tags: ['autonomy', 'workflow'],
+      source: 'explicit user preference',
+      confidence: 'high',
+      last_validated_at: '2026-04-28',
+      repo_path: '/tmp/repo-a',
+      session_id: undefined,
+    }])
+    assert.equal(result.trace?.memory?.[0]?.policy, 'autoInject')
+    assert.equal(result.trace?.memory?.[0]?.injected_count, 1)
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('memory policy off skips injection and traces retrieval policy', async () => {
+  const dir = await createMemoryDir()
+  const { Agent, saveMemory } = await import('../src/index.ts')
+
+  class StubProvider {
+    readonly apiType = 'openai-completions' as const
+    public lastSystem = ''
+
+    async createMessage(params: { system?: string }) {
+      this.lastSystem = params.system || ''
+      return {
+        content: [{ type: 'text', text: 'memory-off response' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 8, output_tokens: 4 },
+      }
+    }
+  }
+
+  const provider = new StubProvider()
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    memory: {
+      enabled: true,
+      dir,
+      repoPath: '/tmp/repo-a',
+      policy: { mode: 'off' },
+    },
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    await saveMemory({
+      id: 'pref-off',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Hidden preference',
+      content: 'This memory should not be injected when policy is off.',
+      repoPath: '/tmp/repo-a',
+      confidence: 'high',
+    }, { dir })
+
+    const result = await agent.run('continue workflow autonomy improvements')
+    assert.doesNotMatch(provider.lastSystem, /# Relevant Memory/)
+    assert.doesNotMatch(provider.lastSystem, /Hidden preference/)
+    assert.equal(result.trace?.memory?.[0]?.policy, 'off')
+    assert.equal(result.trace?.memory?.[0]?.injected_count, 0)
+    assert.deepEqual(result.trace?.memory?.[0]?.selected_ids, [])
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('brainFirst memory policy injects before the first provider call and traces retrieval', async () => {
+  const dir = await createMemoryDir()
+  const { Agent, saveMemory } = await import('../src/index.ts')
+
+  class StubProvider {
+    readonly apiType = 'openai-completions' as const
+    public calls = 0
+    public firstSystem = ''
+
+    async createMessage(params: { system?: string }) {
+      this.calls++
+      if (this.calls === 1) this.firstSystem = params.system || ''
+      return {
+        content: [{ type: 'text', text: 'brain-first response' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 9, output_tokens: 4 },
+      }
+    }
+  }
+
+  const provider = new StubProvider()
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    memory: {
+      enabled: true,
+      dir,
+      repoPath: '/tmp/repo-a',
+      policy: { mode: 'brainFirst' },
+    },
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    await saveMemory({
+      id: 'pref-brain-first',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Brain-first preference',
+      content: 'Retrieve memory before the first model call.',
+      repoPath: '/tmp/repo-a',
+      tags: ['memory'],
+      confidence: 'high',
+    }, { dir })
+
+    const result = await agent.run('use brain-first memory preference')
+    assert.equal(provider.calls, 1)
+    assert.match(provider.firstSystem, /# Relevant Memory/)
+    assert.match(provider.firstSystem, /Brain-first preference/)
+    assert.equal(result.trace?.memory?.[0]?.policy, 'brainFirst')
+    assert.equal(result.trace?.memory?.[0]?.retrieved_before_first_model_call, true)
+    assert.deepEqual(result.trace?.memory?.[0]?.selected_ids, ['pref-brain-first'])
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('memory trace records retrieval reasons, validation state, injection status, and selection source', async () => {
+  const dir = await createMemoryDir()
+  const { Agent, saveMemory } = await import('../src/index.ts')
+
+  class StubProvider {
+    readonly apiType = 'openai-completions' as const
+
+    async createMessage() {
+      return {
+        content: [{ type: 'text', text: 'memory trace response' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 9, output_tokens: 4 },
+      }
+    }
+  }
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    memory: {
+      enabled: true,
+      dir,
+      repoPath: '/tmp/repo-a',
+      policy: { mode: 'brainFirst' },
+    },
+  })
+  ;(agent as any).provider = new StubProvider()
+
+  try {
+    await saveMemory({
+      id: 'pref-trace-details',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Validated memory reasons',
+      content: 'Use score reason trace fields.',
+      repoPath: '/tmp/repo-a',
+      tags: ['memory'],
+      confidence: 'high',
+      source: 'explicit user preference',
+      lastValidatedAt: '2026-04-30',
+    }, { dir })
+
+    const result = await agent.run('use validated memory reasons')
+    const memoryTrace = result.trace?.memory?.[0]
+
+    assert.equal(memoryTrace?.injection_status, 'injected')
+    assert.equal(memoryTrace?.selection_source, 'targeted')
+    assert.deepEqual(memoryTrace?.retrieval_steps, [
+      {
+        source: 'targeted',
+        query: 'use validated memory reasons',
+        repo_path: '/tmp/repo-a',
+        candidate_count: 1,
+        selected_count: 1,
+      },
+    ])
+    assert.deepEqual(memoryTrace?.selected?.[0]?.score_reasons, [
+      'repo_path',
+      'text:use',
+      'text:validated',
+      'text:memory',
+      'text:reasons',
+      'confidence:high',
+      'validated',
+    ])
+    assert.equal(memoryTrace?.selected?.[0]?.validation_state, 'validated')
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('brainFirst memory policy still injects when a custom system prompt is supplied', async () => {
+  const dir = await createMemoryDir()
+  const { Agent, saveMemory } = await import('../src/index.ts')
+
+  class StubProvider {
+    readonly apiType = 'openai-completions' as const
+    public firstSystem = ''
+
+    async createMessage(params: { system?: string }) {
+      this.firstSystem = params.system || ''
+      return {
+        content: [{ type: 'text', text: 'custom prompt memory response' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 9, output_tokens: 4 },
+      }
+    }
+  }
+
+  const provider = new StubProvider()
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    systemPrompt: 'Custom host instructions.',
+    memory: {
+      enabled: true,
+      dir,
+      repoPath: '/tmp/repo-a',
+      policy: { mode: 'brainFirst' },
+    },
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    await saveMemory({
+      id: 'pref-custom-system',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Custom prompt memory',
+      content: 'Custom system prompts still need memory context.',
+      repoPath: '/tmp/repo-a',
+      confidence: 'high',
+    }, { dir })
+
+    const result = await agent.run('use custom prompt memory')
+    assert.match(provider.firstSystem, /Custom host instructions\./)
+    assert.match(provider.firstSystem, /# Relevant Memory/)
+    assert.match(provider.firstSystem, /Custom prompt memory/)
+    assert.equal(result.trace?.memory?.[0]?.policy, 'brainFirst')
+    assert.equal(result.trace?.memory?.[0]?.injection_status, 'injected')
+    assert.equal(result.trace?.memory?.[0]?.retrieved_before_first_model_call, true)
   } finally {
     await agent.close()
     await rm(dir, { recursive: true, force: true })

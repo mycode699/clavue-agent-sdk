@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
 const execFileAsync = promisify(execFile)
@@ -68,9 +68,31 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   assert.ok(paths.has('dist/agent-jobs.d.ts'), 'expected durable AgentJob types to be published')
   assert.ok(paths.has('dist/tools/agent-job-tools.js'), 'expected AgentJob tools to be published')
   assert.ok(paths.has('dist/tools/agent-job-tools.d.ts'), 'expected AgentJob tool types to be published')
+  assert.ok(paths.has('docs/agent-sdk-capability-upgrade-program.md'), 'expected referenced capability docs to be published')
+  assert.ok(paths.has('dist/skills/bundled/workflow.js'), 'expected bundled lifecycle workflow skills to be published')
+  assert.ok(paths.has('dist/skills/bundled/workflow.d.ts'), 'expected bundled lifecycle workflow skill types to be published')
   assert.equal(packageJson.bin?.['clavue-agent-sdk'], 'dist/cli.js')
   assert.equal(packageJson.bin?.['clavue-agent'], 'dist/cli.js')
   assert.ok(paths.has('dist/cli.js'), 'expected CLI entrypoint to be published')
+  const indexTypes = await readFile(resolve(packageRoot, 'dist/index.d.ts'), 'utf-8')
+  assert.match(indexTypes, /SkillPrecondition/, 'expected lifecycle skill precondition type to be exported')
+  assert.match(indexTypes, /SkillArtifactSpec/, 'expected lifecycle skill artifact type to be exported')
+  assert.match(indexTypes, /SkillQualityGateSpec/, 'expected lifecycle skill quality gate type to be exported')
+  assert.match(indexTypes, /validateSkillDefinition/, 'expected skill validation helper to be exported')
+  assert.match(indexTypes, /validateSkillManifest/, 'expected manifest validation helper to be exported')
+  assert.match(indexTypes, /SkillValidationResult/, 'expected skill validation result type to be exported')
+  assert.match(indexTypes, /SkillValidationIssue/, 'expected skill validation issue type to be exported')
+  assert.match(indexTypes, /createSkill/, 'expected skill authoring helper to be exported')
+  assert.match(indexTypes, /skillFromManifest/, 'expected manifest skill helper to be exported')
+  assert.match(indexTypes, /loadSkillsFromDir/, 'expected filesystem skill loader to be exported')
+  assert.match(indexTypes, /SkillLoaderResult/, 'expected skill loader result type to be exported')
+  assert.match(indexTypes, /getRuntimeProfile/, 'expected runtime profile lookup to be exported')
+  assert.match(indexTypes, /CONTROLLED_EXECUTION_CONTRACT_VERSION/, 'expected controlled execution contract version to be exported')
+  assert.match(indexTypes, /getControlledExecutionContract/, 'expected controlled execution contract lookup to be exported')
+  assert.match(indexTypes, /ControlledExecutionContract/, 'expected controlled execution contract type to be exported')
+  assert.match(indexTypes, /WorkflowMode/, 'expected workflow mode type to be exported')
+  assert.match(indexTypes, /createEvaluationLoopContract/, 'expected evaluation loop helper to be exported')
+  assert.match(indexTypes, /EvaluationLoopContract/, 'expected evaluation loop contract type to be exported')
   assert.ok(
     [...paths].every((path) => !path.startsWith('.tmp-retro-ledger/')),
     'expected temp retro ledger artifacts to be excluded',
@@ -119,6 +141,23 @@ test('agent reads CLAVUE_AGENT env settings', async () => {
     assert.equal((agent as any).apiCredentials.baseUrl, 'https://example.test/v1')
   } finally {
     await agent.close()
+  }
+})
+
+test('agent infers API type from shared model capabilities', async () => {
+  const {
+    createAgent,
+  } = await import('../src/index.ts')
+
+  const openaiAgent = createAgent({ model: 'openai/gpt-5.4' })
+  const anthropicAgent = createAgent({ model: 'anthropic/claude-sonnet-4-6' })
+
+  try {
+    assert.equal(openaiAgent.getApiType(), 'openai-completions')
+    assert.equal(anthropicAgent.getApiType(), 'anthropic-messages')
+  } finally {
+    await openaiAgent.close()
+    await anthropicAgent.close()
   }
 })
 

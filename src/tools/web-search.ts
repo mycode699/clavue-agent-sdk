@@ -22,6 +22,12 @@ export const WebSearchTool = defineTool({
     },
     required: ['query'],
   },
+  safety: {
+    read: true,
+    network: true,
+    externalState: true,
+    approvalRequired: true,
+  },
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {

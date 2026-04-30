@@ -59,6 +59,20 @@ There is currently no dedicated lint script in `package.json`.
 - If you are updating user-facing behavior, check both the corresponding numbered example and the exported surface in `src/index.ts`; the examples show intended usage, while `src/index.ts` shows what is actually public.
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files are present in this repository right now.
 
+## Current execution directive
+
+- Treat the current working tree as a release-candidate stabilization batch.
+- Verified on 2026-04-28: `npm run build` passes; `npm test` passes 151/151; focused gate `npx tsx --test tests/permissions.test.ts tests/memory-integration.test.ts tests/doctor.test.ts tests/package-payload.test.ts` passes 56/56.
+- Current batch includes built-in permission semantics, tool safety annotations, lifecycle workflow skill metadata, skill activation constraints, quality-gate terminal failure policy, brain-first memory trace, `doctor()`, `runBenchmarks()`, and package/CLI symlink regression coverage.
+- Current ownership split: Codex owns README/docs public API guidance and final docs verification. Clavue should avoid README/doc overlap unless explicitly asked.
+- New controlling program: `docs/agent-sdk-capability-upgrade-program.md`. The product goal is broader than coding automation: support collection, organization, planning, problem solving, verification, review, shipping, memory intelligence, skill creation, and self-learning.
+- Clavue immediate code-side slice remains model capability registry and provider fallback/error policy, scoped to `src/providers/*`, provider-related types/exports, and provider tests such as `tests/openai-provider.test.ts`.
+- Do not touch docs/README in this slice. If docs are needed, leave a TODO or handoff note for Codex.
+- Required behavior: expose deterministic model capability lookup; keep existing provider behavior compatible; add tests for GPT/OpenAI-compatible capability detection, unsupported capability/fallback decisions, and normalized provider error categories where feasible.
+- After provider/model capability is green, next implementation order is: reusable runtime profiles and startup/context benchmark, `ContextPack` / `ContextPipeline`, richer memory retrieval trace and `brainFirst`, exported skill validation and skill-gate enforcement, skill authoring/scaffolding APIs, skill-aware self-improvement, then reusable agents and workflow templates.
+- Stop conditions: if `npm test`, `npm run build`, or `npx tsx --test tests/openai-provider.test.ts` fails, stop feature expansion and fix the gate first. If the API shape is unclear, add a minimal failing test before implementation.
+- If build or tests fail, stop feature work and restore the gate before continuing.
+
 <!-- CLAVUE_INIT_DETECTED_CONTEXT_START -->
 <!-- This section is maintained by /init. Keep custom guidance outside these markers. -->
 ## Repository

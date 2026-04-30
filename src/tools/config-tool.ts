@@ -61,6 +61,12 @@ export const ConfigTool: ToolDefinition = {
     },
     required: ['action'],
   },
+  safety: {
+    read: true,
+    write: true,
+    externalState: true,
+    approvalRequired: true,
+  },
   isReadOnly: () => false,
   isConcurrencySafe: () => true,
   isEnabled: () => true,

@@ -40,6 +40,10 @@ export const EnterPlanModeTool: ToolDefinition = {
     type: 'object',
     properties: {},
   },
+  safety: {
+    write: true,
+    externalState: true,
+  },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
   isEnabled: () => true,
@@ -74,6 +78,10 @@ export const ExitPlanModeTool: ToolDefinition = {
       plan: { type: 'string', description: 'The completed plan' },
       approved: { type: 'boolean', description: 'Whether the plan is approved for execution' },
     },
+  },
+  safety: {
+    write: true,
+    externalState: true,
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
