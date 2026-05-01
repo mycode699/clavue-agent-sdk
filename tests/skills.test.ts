@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   clearSkills,
+  createSkillManifest,
   registerSkill,
   validateSkillDefinition,
   validateSkillManifest,
@@ -126,4 +127,27 @@ test('validateSkillManifest validates authoring manifests without a prompt funct
 
   assert.equal(result.valid, true)
   assert.deepEqual(result.issues, [])
+})
+
+test('createSkillManifest normalizes authoring metadata with default lifecycle gates', () => {
+  const manifest = createSkillManifest({
+    name: ' Author Review Skill ',
+    description: 'Create review findings for a target change.',
+    allowedTools: ['Read', 'Grep'],
+    qualityGates: ['focused-tests', { name: 'build', command: 'npm', args: ['run', 'build'] }],
+    artifactsProduced: ['review-findings'],
+  })
+
+  assert.deepEqual(manifest, {
+    name: 'author-review-skill',
+    description: 'Create review findings for a target change.',
+    allowedTools: ['Read', 'Grep'],
+    permissions: { allowedTools: ['Read', 'Grep'] },
+    artifactsProduced: [{ name: 'review-findings' }],
+    qualityGates: [
+      { name: 'focused-tests' },
+      { name: 'build', command: 'npm', args: ['run', 'build'] },
+    ],
+  })
+  assert.equal(validateSkillManifest(manifest, { availableTools: ['Read', 'Grep'] }).valid, true)
 })

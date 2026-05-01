@@ -105,6 +105,7 @@ export async function runRetroLoop(input: RetroLoopInput): Promise<RetroLoopResu
       target: input.target,
       evaluators: input.evaluators,
       gates: input.gates,
+      skillTargetCount: input.skillTargetCount,
       runAt: input.runAt,
       runId,
       cycleId,

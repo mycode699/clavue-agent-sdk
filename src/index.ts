@@ -62,6 +62,22 @@ export {
 } from './runtime-profiles.js'
 export { extractRunImprovementCandidates, runSelfImprovement } from './improvement.js'
 export type { ImprovementCandidate, RunSelfImprovementOptions } from './improvement.js'
+export { createIssueWorkflowRun, listIssueWorkflowRuns, loadIssueWorkflowRun, loadLocalIssues, normalizeIssueInput, runIssueWorkflow, stopIssueWorkflowRun } from './issue-workflow.js'
+export type {
+  CreateIssueWorkflowRunInput,
+  IssueWorkflowFinding,
+  IssueWorkflowJobRef,
+  IssueWorkflowRecord,
+  IssueWorkflowResult,
+  IssueWorkflowRole,
+  IssueWorkflowRoleEvaluation,
+  IssueWorkflowRunRecord,
+  IssueWorkflowSource,
+  IssueWorkflowSourceType,
+  IssueWorkflowStatus,
+  LoadLocalIssuesOptions,
+  RunIssueWorkflowInput,
+} from './issue-workflow.js'
 export { createEvaluationLoopContract, normalizeEvaluationLoopContract } from './evaluation-loop.js'
 export type {
   EvaluationLoopBaseline,
@@ -74,13 +90,21 @@ export type {
   EvaluationLoopMetric,
   EvaluationLoopVerification,
 } from './evaluation-loop.js'
-export type { ControlledExecutionContract, RuntimeProfile, WorkflowMode } from './types.js'
+export {
+  SDK_EVENT_SCHEMA_VERSION,
+  AGENT_RUN_RESULT_SCHEMA_VERSION,
+  AGENT_RUN_TRACE_SCHEMA_VERSION,
+  AGENT_JOB_RECORD_SCHEMA_VERSION,
+  MEMORY_TRACE_SCHEMA_VERSION,
+} from './types.js'
+export type { AgentAutonomyMode, ControlledExecutionContract, PublicSchemaVersions, RuntimeProfile, WorkflowMode } from './types.js'
 export {
   runRetroEvaluation,
   normalizeFindings,
   scoreFindings,
   planUpgrades,
   createDefaultRetroEvaluators,
+  createSkillRetroEvaluators,
   compareRetroRuns,
   decideRetroAction,
   runRetroVerification,
@@ -135,6 +159,7 @@ export type {
   RetroScore,
   RetroScores,
   RetroSeverity,
+  SkillRetroTarget,
   RetroTarget,
   RetroWorkstream,
   RetroWorkstreamBucket,
@@ -279,6 +304,7 @@ export {
   validateSkillDefinition,
   validateSkillManifest,
   createSkill,
+  createSkillManifest,
   skillFromManifest,
   loadSkillsFromDir,
   initBundledSkills,
@@ -294,8 +320,11 @@ export type {
   SkillValidationIssue,
   SkillValidationOptions,
   SkillValidationResult,
+  SkillArtifactInput,
   SkillManifest,
+  SkillManifestInput,
   SkillPromptSource,
+  SkillQualityGateInput,
   LoadedSkill,
   SkillLoadError,
   SkillLoadErrorCode,
@@ -504,13 +533,17 @@ export {
 
 export {
   createAgentJob,
+  createAgentJobBatch,
   getAgentJob,
   listAgentJobs,
   replayAgentJob,
   stopAgentJob,
+  summarizeAgentJobs,
   clearAgentJobs,
 } from './agent-jobs.js'
 export type {
+  AgentJobBatchResult,
+  AgentJobBatchSummary,
   AgentJobCompletion,
   AgentJobKind,
   AgentJobReplayInput,
@@ -518,11 +551,17 @@ export type {
   AgentJobRecord,
   AgentJobStatus,
   AgentJobStoreOptions,
+  AgentJobStatusSummary,
+  AgentJobSummary,
+  AgentJobSummaryError,
+  CreateAgentJobBatchInput,
+  CreateAgentJobBatchTask,
   CreateAgentJobInput,
 } from './agent-jobs.js'
 
 export {
   setQuestionHandler,
+  setPendingInputHandler,
   clearQuestionHandler,
 } from './tools/ask-user.js'
 
@@ -576,6 +615,10 @@ export type {
   ToolInputSchema,
   ToolContext,
   ToolResult,
+  PendingInputAnswer,
+  PendingInputDefaultBehavior,
+  PendingInputQuestion,
+  SDKPendingInputMessage,
 
   // Permission, evidence, quality gate, and trace types
   PermissionMode,
@@ -586,6 +629,11 @@ export type {
   QualityGatePolicy,
   AgentRunToolTrace,
   AgentRunTurnTrace,
+  AgentRunPolicyDecisionSource,
+  AgentRunToolInputSummaryType,
+  AgentRunToolInputSummary,
+  AgentRunToolSafetySummary,
+  AgentRunPolicyDecisionTrace,
   AgentRunMemorySelectionSource,
   AgentRunMemoryRetrievalStep,
   AgentRunMemoryTrace,

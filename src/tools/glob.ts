@@ -6,6 +6,7 @@ import { spawn } from 'child_process'
 import { stat } from 'fs/promises'
 import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveWorkspacePath } from './workspace.js'
 
 async function sortByModifiedTime(searchDir: string, matches: string[]): Promise<string[]> {
   const entries = await Promise.all(
@@ -47,7 +48,8 @@ export const GlobTool = defineTool({
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {
-    const searchDir = input.path ? resolve(context.cwd, input.path) : context.cwd
+    const searchDir = input.path ? resolveWorkspacePath(context, input.path) : resolveWorkspacePath(context, '.')
+    if (typeof searchDir !== 'string') return searchDir
     const { pattern } = input
 
     try {

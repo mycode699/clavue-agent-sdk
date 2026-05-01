@@ -44,7 +44,7 @@ export function isRetryableError(err: any, config: RetryConfig = DEFAULT_RETRY_C
     return true
   }
 
-  if (err?.category === 'rate_limit' || err?.category === 'timeout' || err?.category === 'provider_error') {
+  if (err?.category === 'rate_limit' || err?.category === 'timeout' || err?.category === 'network' || err?.category === 'provider_error') {
     return true
   }
 

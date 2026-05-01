@@ -12,15 +12,18 @@ export function normalizeModelId(model: string): string {
   return segments[segments.length - 1] || trimmed
 }
 
+function modelMatchesAny(model: string, prefixes: string[]): boolean {
+  return prefixes.some((prefix) => model === prefix || model.startsWith(`${prefix}-`))
+}
+
 function inferApiType(model: string, requested?: ApiType): ApiType {
   if (requested) return requested
 
   const normalized = normalizeModelId(model)
   if (
     normalized.startsWith('gpt-') ||
-    normalized.startsWith('o1') ||
-    normalized.startsWith('o3') ||
-    normalized.startsWith('o4') ||
+    normalized.startsWith('chatgpt-') ||
+    modelMatchesAny(normalized, ['o1', 'o3', 'o4']) ||
     normalized.startsWith('deepseek') ||
     normalized.startsWith('qwen') ||
     normalized.startsWith('yi-') ||
@@ -47,9 +50,7 @@ function getContextWindow(model: string, apiType: ApiType): number | undefined {
   if (model.includes('gpt-4-turbo')) return 128_000
   if (model.includes('gpt-4')) return 128_000
   if (model.includes('gpt-3.5')) return 16_385
-  if (model.startsWith('o1')) return 200_000
-  if (model.startsWith('o3')) return 200_000
-  if (model.startsWith('o4')) return 200_000
+  if (modelMatchesAny(model, ['o1', 'o3', 'o4'])) return 200_000
   if (model.startsWith('deepseek')) return 128_000
 
   return apiType === 'anthropic-messages' && model.includes('claude') ? 200_000 : undefined
@@ -67,9 +68,9 @@ function getKnownPricing(model: string): ModelCapabilities['pricing'] | undefine
   if (model.includes('gpt-4o')) return { inputPerMillionUsd: 2.5, outputPerMillionUsd: 10 }
   if (model.includes('gpt-4-turbo')) return { inputPerMillionUsd: 10, outputPerMillionUsd: 30 }
   if (model.includes('gpt-4.1') || model.includes('gpt-4-1')) return { inputPerMillionUsd: 2, outputPerMillionUsd: 8 }
-  if (model.startsWith('o1')) return { inputPerMillionUsd: 15, outputPerMillionUsd: 60 }
-  if (model.startsWith('o3')) return { inputPerMillionUsd: 10, outputPerMillionUsd: 40 }
-  if (model.startsWith('o4-mini')) return { inputPerMillionUsd: 1.1, outputPerMillionUsd: 4.4 }
+  if (modelMatchesAny(model, ['o1'])) return { inputPerMillionUsd: 15, outputPerMillionUsd: 60 }
+  if (modelMatchesAny(model, ['o3'])) return { inputPerMillionUsd: 10, outputPerMillionUsd: 40 }
+  if (model === 'o4-mini' || model.startsWith('o4-mini-')) return { inputPerMillionUsd: 1.1, outputPerMillionUsd: 4.4 }
   if (model.includes('deepseek-chat')) return { inputPerMillionUsd: 0.27, outputPerMillionUsd: 1.1 }
   if (model.includes('deepseek-reasoner')) return { inputPerMillionUsd: 0.55, outputPerMillionUsd: 2.19 }
 
@@ -99,14 +100,14 @@ export function getModelCapabilities(
   const apiType = inferApiType(model, options.apiType)
   const isOpenAI = apiType === 'openai-completions'
   const isAnthropic = apiType === 'anthropic-messages'
-  const isClaude = normalizedModel.includes('claude')
-  const isGpt = normalizedModel.startsWith('gpt-')
-  const isGpt5 = isGpt && normalizedModel.includes('gpt-5')
+  const isClaude = isAnthropic && normalizedModel.includes('claude')
+  const isGpt = isOpenAI && (normalizedModel.startsWith('gpt-') || normalizedModel.startsWith('chatgpt-'))
+  const isGpt5 = isGpt && (normalizedModel.includes('gpt-5') || normalizedModel.includes('chatgpt-5'))
   const isChatSpecificGpt5 = isGpt5 && normalizedModel.includes('chat')
   const isGpt5Responses = isGpt5 && !isChatSpecificGpt5
   const isGpt4Family = isGpt && (normalizedModel.includes('gpt-4') || normalizedModel.includes('gpt-4o'))
-  const isReasoning = normalizedModel.startsWith('o1') || normalizedModel.startsWith('o3') || normalizedModel.startsWith('o4') || normalizedModel.includes('reasoner')
-  const known = isClaude || isGpt || isReasoning || normalizedModel.startsWith('deepseek')
+  const isReasoning = isOpenAI && (modelMatchesAny(normalizedModel, ['o1', 'o3', 'o4']) || normalizedModel.includes('reasoner'))
+  const known = isClaude || isGpt || isReasoning || (isOpenAI && normalizedModel.startsWith('deepseek'))
 
   const supportsTools = isAnthropic
     ? isClaude

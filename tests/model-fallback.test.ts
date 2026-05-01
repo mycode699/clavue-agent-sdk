@@ -114,21 +114,25 @@ test('Agent retries fallbackModel after normalized retryable provider errors are
 })
 
 test('Agent does not use fallbackModel after cancellation', async () => {
-  const err = new Error('Aborted')
-  err.name = 'AbortError'
-  const provider = new StubProvider([err])
-  const agent = new Agent({
-    model: 'gpt-primary',
-    fallbackModel: 'gpt-fallback',
-    tools: [],
-    persistSession: false,
-  })
-  ;(agent as any).provider = provider
+  const abortErr = new Error('Aborted')
+  abortErr.name = 'AbortError'
+  const normalizedAbortErr = providerError('response cancelled', 'aborted')
 
-  const result = await agent.run('hello')
+  for (const err of [abortErr, normalizedAbortErr]) {
+    const provider = new StubProvider([err])
+    const agent = new Agent({
+      model: 'gpt-primary',
+      fallbackModel: 'gpt-fallback',
+      tools: [],
+      persistSession: false,
+    })
+    ;(agent as any).provider = provider
 
-  assert.equal(result.status, 'errored')
-  assert.deepEqual(provider.calls.map((call) => call.model), ['gpt-primary'])
+    const result = await agent.run('hello')
+
+    assert.equal(result.status, 'errored')
+    assert.deepEqual(provider.calls.map((call) => call.model), ['gpt-primary'])
+  }
 })
 
 test('Agent preserves prompt-too-long recovery instead of using fallbackModel', async () => {
@@ -150,4 +154,12 @@ test('Agent preserves prompt-too-long recovery instead of using fallbackModel', 
   assert.equal(result.status, 'completed')
   assert.equal(result.text, 'compacted ok')
   assert.deepEqual(provider.calls.map((call) => call.model), ['gpt-primary', 'gpt-primary', 'gpt-primary'])
+  assert.equal(result.trace?.compaction_count, 1)
+  assert.equal(result.trace?.compactions?.length, 1)
+  assert.equal(result.trace?.compactions?.[0]?.trigger, 'prompt_too_long')
+  assert.equal(result.trace?.compactions?.[0]?.status, 'succeeded')
+  assert.equal(result.trace?.compactions?.[0]?.message_count_before, 1)
+  assert.equal(result.trace?.compactions?.[0]?.message_count_after, 2)
+  assert.equal(result.trace?.compactions?.[0]?.summary_chars, 'summary'.length)
+  assert.ok((result.trace?.compactions?.[0]?.estimated_tokens_before ?? 0) > 0)
 })

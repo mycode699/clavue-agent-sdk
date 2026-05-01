@@ -142,6 +142,7 @@ test('default permission mode is trustedAutomation in init event', async () => {
 
     assert.ok(init)
     assert.equal(init.permission_mode, 'trustedAutomation')
+    assert.equal(init.autonomy_mode, 'autonomous')
   } finally {
     await agent.close()
   }
@@ -157,6 +158,7 @@ test('custom permission mode is reflected in init event', async () => {
 
     assert.ok(init)
     assert.equal(init.permission_mode, 'acceptEdits')
+    assert.equal(init.autonomy_mode, 'proactive')
   } finally {
     await agent.close()
   }
@@ -796,6 +798,7 @@ test('runtime workflow profile caller overrides and exported lookups are stable'
   assert.equal(getRuntimeProfile('verify').memory?.policy?.mode, 'off')
   assert.deepEqual(getAllRuntimeProfiles().map((profile) => profile.name), ['collect', 'organize', 'plan', 'solve', 'build', 'verify', 'review', 'ship'])
   assert.equal(resolved.permissionMode, 'acceptEdits')
+  assert.equal(resolved.autonomyMode, 'proactive')
   assert.equal(resolved.memory?.policy?.mode, 'autoInject')
   assert.equal(resolved.maxTurns, 3)
   assert.deepEqual(resolved.toolsets, ['repo-readonly', 'tasks'])
@@ -824,6 +827,7 @@ test('controlled execution contract exports deterministic version and schema sur
   assert.deepEqual(first.workflowModes, getAllRuntimeProfiles().map((profile) => profile.name))
   assert.deepEqual(first.messageTypes, CONTROLLED_EXECUTION_CONTRACT_SCHEMA.messageTypes)
   assert.ok(first.traceFields.includes('permission_denials'))
+  assert.ok(first.traceFields.includes('policy_decisions'))
   assert.ok(first.resultFields.includes('quality_gates'))
 })
 
@@ -844,16 +848,91 @@ test('plan workflow profile remains non-mutating while verify and review require
 
   const plan = applyRuntimeProfile({ workflowMode: 'plan' as const })
   assert.equal(plan.permissionMode, 'plan')
+  assert.equal(plan.autonomyMode, 'supervised')
   assert.deepEqual(plan.toolsets, ['repo-readonly', 'planning', 'skills'])
   assert.equal(plan.allowedTools, undefined)
   assert.deepEqual(plan.qualityGatePolicy?.required, ['plan-reviewable'])
 
   const verify = getRuntimeProfile('verify')
+  assert.equal(verify.autonomyMode, 'proactive')
   assert.deepEqual(verify.qualityGatePolicy?.required, ['verification-passed'])
   assert.equal(verify.memory?.enabled, false)
 
   const review = getRuntimeProfile('review')
+  assert.equal(review.autonomyMode, 'proactive')
   assert.deepEqual(review.qualityGatePolicy?.required, ['review-complete'])
+})
+
+test('autonomous mode injects proactive development calibration without changing tool policy', async () => {
+  const provider = new StubProvider([textResponse('ok')])
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [FileWriteTool],
+    permissionMode: 'default',
+    autonomyMode: 'autonomous',
+  })
+  ;(agent as any).provider = provider
+
+  try {
+    const events = await collectEvents(agent, 'Fix the todo list')
+    const init = events.find((event) => event.type === 'system' && event.subtype === 'init')
+    const system = provider.calls[0]?.system || ''
+
+    assert.equal(init?.type, 'system')
+    assert.equal(init?.permission_mode, 'default')
+    assert.equal(init?.autonomy_mode, 'autonomous')
+    assert.match(system, /Autonomy mode: autonomous development/)
+    assert.match(system, /Default to action/)
+    assert.match(system, /Stop and ask only/)
+  } finally {
+    await agent.close()
+  }
+})
+
+test('tool policy decisions trace allowed and denied tools without raw input', async () => {
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [captureTool()],
+    autonomyMode: 'autonomous',
+    canUseTool: async (_tool, input) => {
+      if ((input as { value?: string }).value === 'blocked-secret') {
+        return { behavior: 'deny', message: 'blocked by host guard' }
+      }
+      return { behavior: 'allow', updatedInput: { value: 'rewritten-secret' } }
+    },
+  })
+  ;(agent as any).provider = new StubProvider([
+    toolUseResponse({ value: 'allowed-secret' }),
+    toolUseResponse({ value: 'blocked-secret' }),
+    textResponse('done'),
+  ])
+
+  try {
+    const events = await collectEvents(agent)
+    const final = events.find((event) => event.type === 'result')
+
+    assert.equal(final?.type, 'result')
+    if (final?.type === 'result') {
+      const decisions = final.trace?.policy_decisions ?? []
+      assert.equal(decisions.length, 2)
+      assert.equal(decisions[0]?.behavior, 'allow')
+      assert.equal(decisions[0]?.source, 'host_canUseTool')
+      assert.equal(decisions[0]?.permission_mode, 'trustedAutomation')
+      assert.equal(decisions[0]?.autonomy_mode, 'autonomous')
+      assert.equal(decisions[0]?.input_rewritten, true)
+      assert.deepEqual(decisions[0]?.input_summary.keys, ['value'])
+      assert.deepEqual(decisions[0]?.updated_input_summary?.keys, ['value'])
+      assert.equal(JSON.stringify(decisions).includes('allowed-secret'), false)
+      assert.equal(JSON.stringify(decisions).includes('rewritten-secret'), false)
+      assert.equal(decisions[1]?.behavior, 'deny')
+      assert.equal(decisions[1]?.source, 'host_canUseTool')
+      assert.equal(decisions[1]?.reason, 'blocked by host guard')
+      assert.equal(decisions[1]?.input_rewritten, false)
+      assert.deepEqual(final.permission_denials, [{ tool: 'capture', reason: 'blocked by host guard' }])
+    }
+  } finally {
+    await agent.close()
+  }
 })
 
 test('canUseTool denial returns an error tool result and trace denial', async () => {
@@ -879,6 +958,8 @@ test('canUseTool denial returns an error tool result and trace denial', async ()
     if (final?.type === 'result') {
       assert.deepEqual(final.permission_denials, [{ tool: 'capture', reason: 'blocked for test' }])
       assert.deepEqual(final.trace?.permission_denials, [{ tool: 'capture', reason: 'blocked for test' }])
+      assert.equal(final.trace?.policy_decisions?.[0]?.behavior, 'deny')
+      assert.equal(final.trace?.policy_decisions?.[0]?.source, 'host_canUseTool')
     }
   } finally {
     await agent.close()
@@ -1461,6 +1542,7 @@ test('AgentTool run_in_background creates durable job and records completion', a
   clearAgents(context)
 
   const provider = new StubProvider([
+    toolUseResponse({ pattern: '*.ts', path: '.' }, 'Glob'),
     textResponse('background result'),
   ])
 
@@ -1470,6 +1552,7 @@ test('AgentTool run_in_background creates durable job and records completion', a
         prompt: 'run background task',
         description: 'background task',
         run_in_background: true,
+        allowed_tools: ['Glob'],
       },
       {
         cwd: process.cwd(),
@@ -1477,6 +1560,7 @@ test('AgentTool run_in_background creates durable job and records completion', a
         model: 'gpt-5.4',
         apiType: 'openai-completions',
         runtimeNamespace: context.runtimeNamespace,
+        autonomyMode: 'supervised',
       },
     )
     const payload = JSON.parse(String(result.content))
@@ -1488,8 +1572,11 @@ test('AgentTool run_in_background creates durable job and records completion', a
     await eventually(async () => {
       const job = await getAgentJob(payload.job_id, context)
       assert.equal(job?.status, 'completed')
-      assert.equal(job?.output, 'background result')
-      assert.equal(job?.trace?.turns.length, 1)
+      assert.match(job?.output || '', /background result/)
+      assert.equal(job?.trace?.turns.length, 2)
+      assert.equal(job?.trace?.policy_decisions?.[0]?.tool_name, 'Glob')
+      assert.equal(job?.trace?.policy_decisions?.[0]?.behavior, 'allow')
+      assert.equal(job?.trace?.policy_decisions?.[0]?.autonomy_mode, 'supervised')
     })
 
     const jobs = await listAgentJobs(context)
@@ -1499,6 +1586,7 @@ test('AgentTool run_in_background creates durable job and records completion', a
       prompt: 'run background task',
       description: 'background task',
       subagent_type: 'general-purpose',
+      allowed_tools: ['Glob'],
     })
   } finally {
     await clearAgentJobs(context)
@@ -1646,6 +1734,7 @@ test('forked skills create background agent jobs with allowed built-in tools', a
   clearAgents(context)
 
   const provider = new StubProvider([
+    toolUseResponse({ pattern: '*.ts', path: '.' }, 'Glob'),
     textResponse('forked skill result'),
   ])
 
@@ -1679,6 +1768,7 @@ test('forked skills create background agent jobs with allowed built-in tools', a
         model: 'base-model',
         apiType: 'openai-completions',
         runtimeNamespace: context.runtimeNamespace,
+        autonomyMode: 'supervised',
       },
     )
     const payload = JSON.parse(String(result.content))
@@ -1693,7 +1783,10 @@ test('forked skills create background agent jobs with allowed built-in tools', a
       assert.deepEqual(job?.allowedTools, ['Glob'])
       assert.match(job?.prompt || '', /FORKED_SKILL_PROMPT src\/engine\.ts/)
       assert.match(job?.output || '', /forked skill result/)
-      assert.equal(job?.trace?.turns.length, 1)
+      assert.equal(job?.trace?.turns.length, 2)
+      assert.equal(job?.trace?.policy_decisions?.[0]?.tool_name, 'Glob')
+      assert.equal(job?.trace?.policy_decisions?.[0]?.behavior, 'allow')
+      assert.equal(job?.trace?.policy_decisions?.[0]?.autonomy_mode, 'supervised')
     })
 
     assert.equal(provider.calls[0]?.model, 'skill-model')
@@ -1773,6 +1866,11 @@ test('default permission mode allows read-only tools and denies mutating tools',
         tool: 'Write',
         reason: 'Permission denied for Write: default mode only allows read-only tools unless the host selects a broader permission mode',
       }])
+      assert.deepEqual(final.trace?.policy_decisions?.map((decision) => [decision.tool_name, decision.behavior, decision.source]), [
+        ['Read', 'allow', 'permission_mode'],
+        ['Write', 'deny', 'permission_mode'],
+      ])
+      assert.equal(final.trace?.policy_decisions?.[1]?.safety.write, true)
     }
   } finally {
     await agent.close()

@@ -83,6 +83,8 @@ npx clavue-agent-sdk "Review this repo for release risks" \
 # Focused code change with explicit tools / 明确授权工具的定向修改
 npx clavue-agent-sdk "Fix the failing package payload test" \
   --allow Read,Glob,Grep,Edit,Bash \
+  --permission-mode trustedAutomation \
+  --autonomy autonomous \
   --max-turns 10
 
 # CI-friendly JSON output / 适合 CI 的 JSON 输出
@@ -868,6 +870,42 @@ Tool access is controlled in layers: `toolsets` and `allowedTools` choose the av
 
 `permissionMode` 也有内置语义。`default` 只允许只读工具。`plan` 会冻结修改型工具，同时允许规划和读取工具。`acceptEdits` 允许本地文件编辑，但会阻止 shell、网络、外部状态、破坏性或需要审批的工具。`trustedAutomation` 和 `bypassPermissions` 是高信任模式；生产环境仍建议配合 `allowedTools`、`disallowedTools` 和 `canUseTool` 做最小权限控制。
 
+### Low-confirmation development mode
+
+Use `autonomyMode: "autonomous"` when the user has already authorized a development task and wants the agent to inspect, edit, verify, and repair without routine confirmation prompts. This changes initiative and question-asking behavior only; it does not bypass `permissionMode`, tool filters, hooks, or host `canUseTool`.
+
+```typescript
+import { run } from "clavue-agent-sdk";
+
+const result = await run({
+  prompt: "Resolve the P0-P3 todo list, fix failures, and run verification.",
+  options: {
+    cwd: process.cwd(),
+    model: "gpt-5.5",
+    toolsets: ["repo-edit"],
+    allowedTools: ["Bash"],
+    permissionMode: "trustedAutomation",
+    autonomyMode: "autonomous",
+    maxTurns: 16,
+  },
+});
+
+console.log(result.trace?.policy_decisions);
+```
+
+CLI equivalent:
+
+```bash
+CLAVUE_AGENT_AUTONOMY=autonomous \
+CLAVUE_AGENT_PERMISSION_MODE=trustedAutomation \
+npx clavue-agent-sdk "Fix the P0-P3 todo list and verify" \
+  --toolset repo-edit \
+  --allow Bash \
+  --json
+```
+
+For safer local-edit-only automation, combine `autonomyMode: "autonomous"` with `permissionMode: "acceptEdits"` and omit shell/network tools. Run traces include `policy_decisions` for both allows and denials, with a safe input summary instead of raw tool input, plus the backward-compatible `permission_denials` list.
+
 The engine only parallelizes tool calls when a tool declares both `isReadOnly()` and `isConcurrencySafe()`. Mutating tools and read-only tools that are not concurrency-safe run serially. Set `maxToolConcurrency` per run to cap safe parallel batches; when omitted, `AGENT_SDK_MAX_TOOL_CONCURRENCY` is used as the fallback. Invalid, zero, or negative values fall back to `10` so runs do not hang. Run traces include `tool_concurrency_limit`, `tool_concurrency_source`, and the existing `concurrency_batches`.
 
 引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。可通过每次运行的 `maxToolConcurrency` 限制安全并行批次；未设置时回退使用 `AGENT_SDK_MAX_TOOL_CONCURRENCY`。无效、零或负数会回退到 `10`，避免运行卡住。运行 trace 会包含 `tool_concurrency_limit`、`tool_concurrency_source` 和已有的 `concurrency_batches`。
@@ -983,6 +1021,7 @@ npx tsx examples/web/server.ts
 | `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
 | `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
 | `permissionMode`     | `string`                                | `trustedAutomation`    | `trustedAutomation` / `auto` / `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
+| `autonomyMode`       | `string`                                | inferred from permission/profile | `supervised` / `proactive` / `autonomous`; controls initiative and confirmations without bypassing permissions |
 | `canUseTool`         | `function`                              | allow all              | Custom tool guard or input modifier                                  |
 | `qualityGatePolicy`  | `QualityGatePolicy`                     | —                      | Mark a successful run as failed when required quality gates fail or are missing |
 | `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |

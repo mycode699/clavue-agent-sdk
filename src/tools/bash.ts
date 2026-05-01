@@ -5,6 +5,26 @@
 import { spawn } from 'child_process'
 import { defineTool } from './types.js'
 
+function classifyShellCommand(command: string): { blocked: boolean; reason?: string; pattern?: string } {
+  const destructivePatterns = [
+    /(?:^|[\s;&|()])rm\s+[^\n;&|]*-[^\n;&|]*r[^\n;&|]*f[^\n;&|]*/i,
+    /(?:^|[\s;&|()])rm\s+[^\n;&|]*-[^\n;&|]*f[^\n;&|]*r[^\n;&|]*/i,
+  ]
+
+  for (const pattern of destructivePatterns) {
+    const match = command.match(pattern)
+    if (match) {
+      return {
+        blocked: true,
+        reason: 'destructive command',
+        pattern: match[0].trim(),
+      }
+    }
+  }
+
+  return { blocked: false }
+}
+
 export const BashTool = defineTool({
   name: 'Bash',
   description: 'Execute a bash command and return its output. Use for running shell commands, scripts, and system operations.',
@@ -35,6 +55,14 @@ export const BashTool = defineTool({
   isConcurrencySafe: false,
   async call(input, context) {
     const { command, timeout: userTimeout } = input
+    const classification = classifyShellCommand(command)
+    if (classification.blocked) {
+      return {
+        data: `Error: blocked ${classification.reason}: ${classification.pattern}`,
+        is_error: true,
+      }
+    }
+
     const timeoutMs = Math.min(userTimeout || 120000, 600000)
 
     return new Promise<string>((resolve) => {

@@ -48,7 +48,7 @@ import { createHookRegistry, type HookRegistry } from './hooks.js'
 import { initBundledSkills } from './skills/index.js'
 import { createProvider, getModelCapabilities, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
-import { createDefaultToolPolicy } from './types.js'
+import { AGENT_RUN_RESULT_SCHEMA_VERSION, createDefaultToolPolicy } from './types.js'
 import { extractTextFromContent } from './utils/messages.js'
 
 // --------------------------------------------------------------------------
@@ -281,10 +281,11 @@ export class Agent {
         if (builtInDecision.behavior === 'deny') return builtInDecision
 
         const hostDecision = await opts.canUseTool!(tool, builtInDecision.updatedInput ?? input)
+        const hostSource = hostDecision.source ?? 'host_canUseTool'
         if (hostDecision.updatedInput === undefined && builtInDecision.updatedInput !== undefined) {
-          return { ...hostDecision, updatedInput: builtInDecision.updatedInput }
+          return { ...hostDecision, source: hostSource, updatedInput: builtInDecision.updatedInput }
         }
-        return hostDecision
+        return { ...hostDecision, source: hostSource }
       }
     }
 
@@ -325,6 +326,7 @@ export class Agent {
       thinking: opts.thinking,
       jsonSchema: opts.jsonSchema,
       policy,
+      autonomyMode: opts.autonomyMode,
       includePartialMessages: opts.includePartialMessages ?? false,
       abortSignal: this.abortCtrl.signal,
       agents: opts.agents,
@@ -426,6 +428,7 @@ export class Agent {
     const completedAt = new Date().toISOString()
     const durationMs = Math.round(performance.now() - t0)
     const result: AgentRunResult = {
+      schema_version: AGENT_RUN_RESULT_SCHEMA_VERSION,
       id: runId,
       session_id: this.sid,
       status: finalSubtype === 'success' ? 'completed' : 'errored',

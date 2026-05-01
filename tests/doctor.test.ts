@@ -86,14 +86,35 @@ test('doctor provider check uses model capability metadata for gpt-4.1', async (
 
 test('doctor reports stale agent jobs as actionable storage warnings', async () => {
   const dirs = await createDoctorDirs()
-  const { createAgentJob, doctor } = await import('../src/index.ts')
+  const { createAgentJob, doctor, stopAgentJob, summarizeAgentJobs } = await import('../src/index.ts')
 
   try {
     const stale = await createAgentJob({
       kind: 'subagent',
       prompt: 'stale work',
       description: 'stale worker',
+      replay: { prompt: 'stale work' },
     }, { dir: dirs.jobs, runtimeNamespace: 'doctor-stale' })
+    await createAgentJob({
+      kind: 'subagent',
+      prompt: 'failed work',
+      description: 'failed worker',
+      replay: { prompt: 'failed work' },
+    }, { dir: dirs.jobs, runtimeNamespace: 'doctor-stale' })
+    const cancelled = await createAgentJob({
+      kind: 'subagent',
+      prompt: 'cancelled work',
+      description: 'cancelled worker',
+    }, { dir: dirs.jobs, runtimeNamespace: 'doctor-stale' })
+    await stopAgentJob(cancelled.id, 'not needed', { dir: dirs.jobs, runtimeNamespace: 'doctor-stale', staleAfterMs: -1 })
+
+    const summary = await summarizeAgentJobs({ dir: dirs.jobs, runtimeNamespace: 'doctor-stale', staleAfterMs: 0 })
+    assert.equal(summary.total, 3)
+    assert.equal(summary.by_status.stale, 2)
+    assert.equal(summary.stale_count, 2)
+    assert.equal(summary.replayable_count, 2)
+    assert.equal(summary.cancelled_count, 1)
+    assert.equal(summary.error_summaries.length, 3)
 
     const report = await doctor({
       env: {
@@ -110,9 +131,10 @@ test('doctor reports stale agent jobs as actionable storage warnings', async () 
     assert.equal(report.status, 'warn')
     const jobCheck = report.checks.find((check) => check.name === 'storage.agentJobs')
     assert.equal(jobCheck?.status, 'warn')
-    assert.equal(jobCheck?.details?.stale_count, 1)
-    assert.equal((jobCheck?.details?.stale_jobs as any[])?.[0]?.id, stale.id)
-    assert.equal((jobCheck?.details?.stale_jobs as any[])?.[0]?.status, 'stale')
+    assert.equal(jobCheck?.details?.summary?.stale_count, 2)
+    assert.equal(jobCheck?.details?.summary?.replayable_count, 2)
+    assert.equal((jobCheck?.details?.summary?.stale_jobs as any[])?.[0]?.id, stale.id)
+    assert.equal((jobCheck?.details?.summary?.stale_jobs as any[])?.[0]?.status, 'stale')
   } finally {
     await rm(dirs.root, { recursive: true, force: true })
   }

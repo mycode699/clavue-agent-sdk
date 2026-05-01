@@ -11,6 +11,32 @@ const baseParams: CreateMessageParams = {
   messages: [{ role: 'user', content: 'hello' }],
 }
 
+test('AnthropicProvider normalizes transport failures with provider metadata', async () => {
+  const cases = [
+    { error: Object.assign(new Error('fetch failed'), { code: 'ENOTFOUND' }), category: 'network' },
+    { error: Object.assign(new Error('headers timeout'), { code: 'UND_ERR_HEADERS_TIMEOUT' }), category: 'timeout' },
+    { error: Object.assign(new Error('aborted'), { name: 'AbortError' }), category: 'aborted' },
+  ]
+
+  for (const { error, category } of cases) {
+    const provider = new AnthropicProvider({ apiKey: 'test-key' })
+    ;(provider as any).client.messages.create = async () => {
+      throw error
+    }
+
+    await assert.rejects(
+      provider.createMessage(baseParams),
+      (err: unknown) => {
+        const providerError = err as ProviderError
+        assert.equal(providerError.provider, 'anthropic')
+        assert.equal(providerError.category, category)
+        assert.equal(providerError.message, error.message)
+        return true
+      },
+    )
+  }
+})
+
 test('AnthropicProvider normalizes API errors with provider metadata', async () => {
   const provider = new AnthropicProvider({ apiKey: 'test-key' })
   const apiError = Object.assign(new Error('too many requests'), {

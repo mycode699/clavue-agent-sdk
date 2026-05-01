@@ -40,6 +40,7 @@ export interface ContextPackOptions {
   includeDate?: boolean
   includeGit?: boolean
   includeProject?: boolean
+  includeUser?: boolean
   now?: Date
 }
 
@@ -48,6 +49,24 @@ export type ContextPipelineTransform = (pack: ContextPack) => ContextPack | Prom
 export interface ContextPipeline {
   use(transform: ContextPipelineTransform): ContextPipeline
   run(cwd: string, options?: ContextPackOptions): Promise<ContextPack>
+}
+
+// --------------------------------------------------------------------------
+// Public Schema Version Constants
+// --------------------------------------------------------------------------
+
+export const SDK_EVENT_SCHEMA_VERSION = '1.0.0'
+export const AGENT_RUN_RESULT_SCHEMA_VERSION = '1.0.0'
+export const AGENT_RUN_TRACE_SCHEMA_VERSION = '1.0.0'
+export const AGENT_JOB_RECORD_SCHEMA_VERSION = '1.0.0'
+export const MEMORY_TRACE_SCHEMA_VERSION = '1.0.0'
+
+export interface PublicSchemaVersions {
+  sdk_event: string
+  agent_run_result: string
+  agent_run_trace: string
+  agent_job_record: string
+  memory_trace: string
 }
 
 // --------------------------------------------------------------------------
@@ -92,10 +111,21 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKPartialMessage
   | SDKSystemMessage
+  | SDKPhaseMessage
+  | SDKPendingInputMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
   | SDKTaskNotificationMessage
   | SDKRateLimitEvent
+
+export type SDKRunPhase =
+  | 'intake'
+  | 'context'
+  | 'model_request'
+  | 'model_response'
+  | 'tool_execution'
+  | 'verification'
+  | 'finalize'
 
 export interface SDKAssistantMessage {
   type: 'assistant'
@@ -121,6 +151,7 @@ export interface SDKToolResultMessage {
 
 export interface SDKResultMessage {
   type: 'result'
+  schema_version: string
   subtype: 'success' | 'error_max_turns' | 'error_during_execution' | 'error_max_budget_usd' | string
   uuid?: string
   session_id?: string
@@ -167,6 +198,41 @@ export interface SDKSystemMessage {
   cwd: string
   mcp_servers: Array<{ name: string; status: string }>
   permission_mode: PermissionMode
+  autonomy_mode?: AgentAutonomyMode
+}
+
+export type PendingInputDefaultBehavior = 'continue_without_answer' | 'decline' | 'timeout'
+
+export interface PendingInputAnswer {
+  value: string | string[]
+}
+
+export interface PendingInputQuestion {
+  id: string
+  prompt: string
+  options?: string[]
+  allow_multiselect: boolean
+  default_behavior: PendingInputDefaultBehavior
+  timeout_ms?: number
+}
+
+export interface SDKPhaseMessage {
+  type: 'system'
+  subtype: 'phase'
+  phase: SDKRunPhase
+  run_id: string
+  session_id: string
+  turn?: number
+  tool_use_id?: string
+}
+
+export interface SDKPendingInputMessage {
+  type: 'system'
+  subtype: 'pending_input'
+  run_id: string
+  session_id: string
+  tool_use_id: string
+  question: PendingInputQuestion
 }
 
 /** Marks a compaction boundary in the conversation. */
@@ -289,6 +355,8 @@ export interface ToolInputSchema {
 
 export interface ToolContext {
   cwd: string
+  /** Root directory that filesystem tools must stay within. Defaults to cwd. */
+  workspaceRoot?: string
   abortSignal?: AbortSignal
   /** Isolates module-level tool state for hosts running multiple SDK instances in one process. */
   runtimeNamespace?: string
@@ -302,6 +370,8 @@ export interface ToolContext {
   apiType?: import('./providers/types.js').ApiType
   /** Query engine policy inherited by nested agents */
   policy?: ToolPolicy
+  /** Parent agent autonomy mode inherited by nested agents */
+  autonomyMode?: AgentAutonomyMode
 }
 
 export interface ToolResult {
@@ -309,6 +379,7 @@ export interface ToolResult {
   tool_use_id: string
   content: string | any[]
   is_error?: boolean
+  pending_input?: PendingInputQuestion
   evidence?: Evidence[]
   quality_gates?: QualityGateResult[]
 }
@@ -334,6 +405,54 @@ export interface AgentRunToolTrace {
   concurrency_safe: boolean
 }
 
+export type AgentRunPolicyDecisionSource =
+  | 'permission_mode'
+  | 'host_canUseTool'
+  | 'policy_error'
+  | 'hook'
+
+export type AgentRunToolInputSummaryType =
+  | 'object'
+  | 'array'
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'null'
+  | 'undefined'
+  | 'unknown'
+
+export interface AgentRunToolInputSummary {
+  type: AgentRunToolInputSummaryType
+  keys?: string[]
+  size_bytes?: number
+}
+
+export interface AgentRunToolSafetySummary {
+  read: boolean
+  write: boolean
+  shell: boolean
+  network: boolean
+  external_state: boolean
+  destructive: boolean
+  approval_required: boolean
+  idempotent?: boolean
+}
+
+export interface AgentRunPolicyDecisionTrace {
+  tool_use_id: string
+  tool_name: string
+  timestamp: string
+  behavior: PermissionBehavior
+  source: AgentRunPolicyDecisionSource
+  permission_mode: PermissionMode
+  autonomy_mode: AgentAutonomyMode
+  reason?: string
+  input_summary: AgentRunToolInputSummary
+  updated_input_summary?: AgentRunToolInputSummary
+  input_rewritten: boolean
+  safety: AgentRunToolSafetySummary
+}
+
 export interface AgentRunTurnTrace {
   turn: number
   duration_api_ms: number
@@ -344,6 +463,25 @@ export interface AgentRunTurnTrace {
 
 export type AgentRunMemoryValidationState = 'validated' | 'unvalidated'
 export type AgentRunMemoryInjectionStatus = 'off' | 'empty' | 'injected'
+export type AgentRunMemoryRedactionStatus = 'not_required' | 'redacted'
+
+export interface AgentRunMemoryScoreComponent {
+  reason: string
+  score: number
+}
+
+export interface AgentRunMemoryTraceFilters {
+  repo_path?: string
+  session_id?: string
+  text?: string
+  tags?: string[]
+  limit?: number
+}
+
+export interface AgentRunMemoryStoreTrace {
+  configured: boolean
+  dir?: string
+}
 
 export interface AgentRunMemorySelectionTrace {
   id: string
@@ -352,7 +490,11 @@ export interface AgentRunMemorySelectionTrace {
   title: string
   score: number
   score_reasons?: string[]
+  score_components?: AgentRunMemoryScoreComponent[]
+  matched_fields?: string[]
   validation_state?: AgentRunMemoryValidationState
+  stale?: boolean
+  redaction_status?: AgentRunMemoryRedactionStatus
   tags?: string[]
   source?: string
   confidence?: import('./memory.js').MemoryConfidence
@@ -365,16 +507,27 @@ export type AgentRunMemorySelectionSource = 'targeted' | 'repo_fallback' | 'off'
 
 export interface AgentRunMemoryRetrievalStep {
   source: 'targeted' | 'repo_fallback'
+  strategy?: AgentRunMemoryRetrievalStrategy
   query?: string
   repo_path?: string
+  filters?: AgentRunMemoryTraceFilters
   candidate_count: number
   selected_count: number
+  duration_ms?: number
 }
 
+export type AgentRunMemoryRetrievalStrategy = 'auto_inject' | 'brain_first'
+
 export interface AgentRunMemoryTrace {
+  schema_version?: string
+  retrieval_id?: string
   policy: MemoryPolicyMode
+  strategy?: AgentRunMemoryRetrievalStrategy
   query?: string
   repo_path?: string
+  filters?: AgentRunMemoryTraceFilters
+  store?: AgentRunMemoryStoreTrace
+  duration_ms?: number
   selected_ids: string[]
   selected?: AgentRunMemorySelectionTrace[]
   injected_count: number
@@ -386,7 +539,23 @@ export interface AgentRunMemoryTrace {
 
 export type AgentRunToolConcurrencySource = 'option' | 'env' | 'default'
 
+export type AgentRunCompactionTrigger = 'auto_threshold' | 'prompt_too_long'
+export type AgentRunCompactionStatus = 'succeeded' | 'failed'
+
+export interface AgentRunCompactionTrace {
+  trigger: AgentRunCompactionTrigger
+  status: AgentRunCompactionStatus
+  message_count_before: number
+  message_count_after: number
+  estimated_tokens_before: number
+  estimated_tokens_after: number
+  summary_chars: number
+  dropped_chars: number
+  failure_reason?: string
+}
+
 export interface AgentRunTrace {
+  schema_version: string
   turns: AgentRunTurnTrace[]
   tools: AgentRunToolTrace[]
   concurrency_batches: number[]
@@ -394,7 +563,9 @@ export interface AgentRunTrace {
   tool_concurrency_source: AgentRunToolConcurrencySource
   retry_count: number
   compaction_count: number
+  compactions?: AgentRunCompactionTrace[]
   permission_denials: Array<{ tool: string; reason: string }>
+  policy_decisions?: AgentRunPolicyDecisionTrace[]
   memory?: AgentRunMemoryTrace[]
 }
 
@@ -404,6 +575,7 @@ export type CanUseToolResult = {
   behavior: PermissionBehavior
   updatedInput?: unknown
   message?: string
+  source?: AgentRunPolicyDecisionSource
 }
 
 export type CanUseToolFn = (
@@ -417,10 +589,11 @@ export interface ToolPolicy {
 }
 
 export function createDefaultToolPolicy(permissionMode: PermissionMode = 'trustedAutomation'): ToolPolicy {
-  const allow = (): CanUseToolResult => ({ behavior: 'allow' })
+  const allow = (): CanUseToolResult => ({ behavior: 'allow', source: 'permission_mode' })
   const deny = (tool: ToolDefinition, reason: string): CanUseToolResult => ({
     behavior: 'deny',
     message: `Permission denied for ${tool.name}: ${reason}`,
+    source: 'permission_mode',
   })
 
   return {
@@ -742,6 +915,7 @@ export interface SelfImprovementRetroConfig {
   policy?: import('./retro/types.js').RetroPolicy
   ledger?: import('./retro/types.js').RetroLedgerOptions
   loop?: SelfImprovementRetroLoopConfig
+  skills?: import('./retro/skill-evaluators.js').SkillRetroTarget[]
 }
 
 export interface SelfImprovementConfig {
@@ -798,6 +972,11 @@ export type WorkflowMode =
   | 'review'
   | 'ship'
 
+export type AgentAutonomyMode =
+  | 'supervised'
+  | 'proactive'
+  | 'autonomous'
+
 export interface RuntimeProfile {
   name: WorkflowMode
   description: string
@@ -805,6 +984,7 @@ export interface RuntimeProfile {
   allowedTools?: string[]
   disallowedTools?: string[]
   permissionMode?: PermissionMode
+  autonomyMode?: AgentAutonomyMode
   memory?: MemoryConfig
   qualityGatePolicy?: QualityGatePolicy
   appendSystemPrompt?: string
@@ -813,6 +993,7 @@ export interface RuntimeProfile {
 
 export interface ControlledExecutionContract {
   version: string
+  schemaVersions: PublicSchemaVersions
   workflowModes: WorkflowMode[]
   messageTypes: string[]
   resultFields: string[]
@@ -827,7 +1008,7 @@ export interface AgentOptions {
   model?: string
   /**
    * API type: 'anthropic-messages' or 'openai-completions'.
-   * Falls back to CLAVUE_AGENT_API_TYPE env var. Default: 'anthropic-messages'.
+   * Falls back to CLAVUE_AGENT_API_TYPE, then deterministic model capability inference.
    */
   apiType?: import('./providers/types.js').ApiType
   /** API key. Falls back to CLAVUE_AGENT_API_KEY env var. */
@@ -860,6 +1041,8 @@ export interface AgentOptions {
   canUseTool?: CanUseToolFn
   /** Permission mode reported in metadata and prompts. Defaults to trustedAutomation. Tool policy is enforced by canUseTool, allowedTools, and disallowedTools. */
   permissionMode?: PermissionMode
+  /** Controls how proactively the agent proceeds before asking the user. Does not bypass tool permissions. */
+  autonomyMode?: AgentAutonomyMode
   /** Abort controller for cancellation */
   abortController?: AbortController
   /** Abort signal for cancellation */
@@ -947,6 +1130,7 @@ export interface AgentOptions {
 export type AgentRunStatus = 'completed' | 'errored'
 
 export interface AgentRunResult {
+  schema_version: string
   /** Unique ID for this run artifact */
   id: string
   /** Session ID the run belongs to */
@@ -1025,6 +1209,7 @@ export interface QueryEngineConfig {
   thinking?: ThinkingConfig
   jsonSchema?: Record<string, unknown>
   policy: ToolPolicy
+  autonomyMode?: AgentAutonomyMode
   includePartialMessages: boolean
   abortSignal?: AbortSignal
   agents?: Record<string, AgentDefinition>

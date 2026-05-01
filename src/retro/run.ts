@@ -98,6 +98,7 @@ export async function runRetroEvaluation(input: RetroRunInput): Promise<RetroRun
       durationMs: Date.now() - startedAt,
       evaluators: evaluatorMetadata,
       sourceRun: input.sourceRun,
+      skillTargetCount: input.skillTargetCount,
     },
   }
 }

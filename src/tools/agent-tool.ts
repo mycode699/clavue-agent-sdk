@@ -14,6 +14,7 @@ import { createProvider, type ApiType } from '../providers/index.js'
 import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 import {
   createAgentJob,
+  createAgentJobBatch,
   getAgentJob,
   replayAgentJob,
   runAgentJob,
@@ -82,13 +83,22 @@ interface SubagentRunOptions {
   appendSystemPrompt?: string
 }
 
-function createReplayableSubagentInput(input: any): any {
+function narrowAllowedTools(requested: unknown, availableTools?: string[]): string[] | undefined {
+  const requestedTools = Array.isArray(requested)
+    ? requested.filter((name): name is string => typeof name === 'string')
+    : undefined
+  if (!availableTools) return requestedTools
+  if (!requestedTools) return [...availableTools]
+  return requestedTools.filter((name) => availableTools.includes(name))
+}
+
+function createReplayableSubagentInput(input: any, allowedTools?: string[]): any {
   return {
     prompt: input.prompt,
     description: input.description,
     subagent_type: input.subagent_type || 'general-purpose',
     model: input.model,
-    allowed_tools: Array.isArray(input.allowed_tools) ? [...input.allowed_tools] : undefined,
+    allowed_tools: allowedTools,
     append_system_prompt: typeof input.append_system_prompt === 'string'
       ? input.append_system_prompt
       : undefined,
@@ -141,6 +151,7 @@ export async function runAgentSubagent({
     maxTurns: agentDef?.maxTurns || 10,
     maxTokens: 16384,
     policy,
+    autonomyMode: context.autonomyMode,
     includePartialMessages: false,
     agents: registeredAgents,
     runtimeNamespace: context.runtimeNamespace,
@@ -244,6 +255,33 @@ export const AgentTool: ToolDefinition = {
         type: 'string',
         description: 'Optional additional system prompt for this subagent run',
       },
+      batch: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string' },
+            description: { type: 'string' },
+            subagent_type: { type: 'string' },
+            model: { type: 'string' },
+            allowed_tools: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            append_system_prompt: { type: 'string' },
+          },
+          required: ['prompt', 'description'],
+        },
+        description: 'Optional batch of background subagent tasks to launch together',
+      },
+      batch_id: {
+        type: 'string',
+        description: 'Optional batch id to apply to background jobs',
+      },
+      correlation_id: {
+        type: 'string',
+        description: 'Optional caller correlation id to apply to background jobs',
+      },
     },
     required: [],
   },
@@ -314,6 +352,63 @@ export const AgentTool: ToolDefinition = {
       }
     }
 
+    if (input.run_in_background && Array.isArray(input.batch)) {
+      const tasks = input.batch.filter((task: any) => (
+        task && typeof task.prompt === 'string' && typeof task.description === 'string'
+      ))
+      if (tasks.length !== input.batch.length || tasks.length === 0) {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: 'Agent background batch requires at least one task with prompt and description.',
+          is_error: true,
+        }
+      }
+
+      const batch = await createAgentJobBatch({
+        batch_id: typeof input.batch_id === 'string' ? input.batch_id : undefined,
+        correlation_id: typeof input.correlation_id === 'string' ? input.correlation_id : undefined,
+        tasks: tasks.map((task: any) => {
+          const allowedTools = narrowAllowedTools(task.allowed_tools, context.availableTools)
+          return {
+            prompt: task.prompt,
+            description: task.description,
+            subagent_type: task.subagent_type || 'general-purpose',
+            model: task.model || input.model,
+            allowedTools,
+            replay: createReplayableSubagentInput(task, allowedTools),
+          }
+        }),
+      }, { runtimeNamespace: context.runtimeNamespace })
+
+      for (const job of batch.jobs) {
+        const replayInput = job.replay || createReplayableSubagentInput(job, job.allowedTools)
+        runAgentJob(job.id, (signal) => runAgentSubagent({
+          input: replayInput,
+          context,
+          abortSignal: signal,
+          allowedTools: job.allowedTools,
+          appendSystemPrompt: replayInput.append_system_prompt,
+        }), { runtimeNamespace: context.runtimeNamespace })
+      }
+
+      return {
+        type: 'tool_result',
+        tool_use_id: '',
+        content: JSON.stringify({
+          success: true,
+          type: 'clavue.agent.job.batch',
+          version: 1,
+          batch_id: batch.batch_id,
+          correlation_id: batch.correlation_id,
+          status: 'queued',
+          job_ids: batch.jobs.map((job) => job.id),
+          summary: batch.summary,
+          message: `Background subagent batch started: ${batch.batch_id}`,
+        }),
+      }
+    }
+
     if (typeof input.prompt !== 'string' || typeof input.description !== 'string') {
       return {
         type: 'tool_result',
@@ -324,21 +419,24 @@ export const AgentTool: ToolDefinition = {
     }
 
     if (input.run_in_background) {
+      const allowedTools = narrowAllowedTools(input.allowed_tools, context.availableTools)
       const job = await createAgentJob({
         kind: 'subagent',
         prompt: input.prompt,
         description: input.description,
         subagent_type: input.subagent_type || 'general-purpose',
         model: input.model,
-        allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools : undefined,
-        replay: createReplayableSubagentInput(input),
+        batch_id: typeof input.batch_id === 'string' ? input.batch_id : undefined,
+        correlation_id: typeof input.correlation_id === 'string' ? input.correlation_id : undefined,
+        allowedTools,
+        replay: createReplayableSubagentInput(input, allowedTools),
       }, { runtimeNamespace: context.runtimeNamespace })
 
       runAgentJob(job.id, (signal) => runAgentSubagent({
-        input: createReplayableSubagentInput(input),
+        input: createReplayableSubagentInput(input, allowedTools),
         context,
         abortSignal: signal,
-        allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools : undefined,
+        allowedTools,
         appendSystemPrompt: typeof input.append_system_prompt === 'string'
           ? input.append_system_prompt
           : undefined,

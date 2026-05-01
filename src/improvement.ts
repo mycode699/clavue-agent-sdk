@@ -3,6 +3,7 @@ import process from 'node:process'
 
 import { saveMemory, type MemoryEntry, type MemoryStoreOptions } from './memory.js'
 import { runRetroCycle } from './retro/cycle.js'
+import { createSkillRetroEvaluators } from './retro/skill-evaluators.js'
 import { runRetroLoop } from './retro/loop.js'
 import type { RetroLoopAttemptHook, RetroSourceRun } from './retro/types.js'
 import type {
@@ -196,11 +197,15 @@ export async function runSelfImprovement(
         cwd: config.retro.cwd || options.cwd || process.cwd(),
       }
       const sourceRun = toRetroSourceRun(run)
+      const skillTargets = config.retro.skills ?? []
+      const skillEvaluators = skillTargets.length > 0 ? createSkillRetroEvaluators(skillTargets) : []
 
       if (config.retro.loop?.enabled) {
         retroLoop = await runRetroLoop({
           target,
+          evaluators: skillEvaluators.length > 0 ? skillEvaluators : undefined,
           gates: config.retro.gates,
+          skillTargetCount: skillTargets.length || undefined,
           policy: config.retro.policy,
           ledger: config.retro.ledger,
           sourceRun,
@@ -211,7 +216,9 @@ export async function runSelfImprovement(
       } else {
         retroCycle = await runRetroCycle({
           target,
+          evaluators: skillEvaluators.length > 0 ? skillEvaluators : undefined,
           gates: config.retro.gates,
+          skillTargetCount: skillTargets.length || undefined,
           policy: config.retro.policy,
           ledger: config.retro.ledger,
           sourceRun,

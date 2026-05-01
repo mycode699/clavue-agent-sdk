@@ -101,6 +101,7 @@ export interface RetroRunMetadata {
   durationMs?: number
   evaluators?: RetroEvaluatorRunMetadata[]
   sourceRun?: RetroSourceRun
+  skillTargetCount?: number
 }
 
 export interface RetroLedgerOptions {
@@ -130,12 +131,14 @@ export interface RetroRunInput {
   evaluators: RetroEvaluator[]
   runAt?: string
   sourceRun?: RetroSourceRun
+  skillTargetCount?: number
 }
 
 export interface RetroCycleInput {
   target: RetroTarget
   evaluators?: RetroEvaluator[]
   gates?: RetroQualityGate[]
+  skillTargetCount?: number
   runAt?: string
   runId?: string
   cycleId?: string
@@ -171,6 +174,7 @@ export interface RetroCycleTrace {
   previousRunId?: string
   sourceRunId?: string
   sourceSessionId?: string
+  skillTargetCount?: number
   attemptCount: number
   attemptNumber: number
   maxAttempts: number

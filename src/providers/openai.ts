@@ -17,8 +17,9 @@ import type {
   NormalizedResponseBlock,
   ProviderError,
   ProviderErrorCategory,
+  ModelCapabilityName,
 } from './types.js'
-import { getModelCapabilities } from './capabilities.js'
+import { decideModelCapability, getModelCapabilities } from './capabilities.js'
 
 // --------------------------------------------------------------------------
 // OpenAI-specific types (minimal, just what we need)
@@ -143,6 +144,36 @@ function headersToRecord(headers: Headers): Record<string, string> {
   return Object.fromEntries(headers.entries())
 }
 
+function getOpenAIErrorField(error: unknown, field: 'message' | 'type' | 'code' | 'param'): string {
+  if (!error || typeof error !== 'object') return ''
+  const root = error as Record<string, any>
+  const nested = root.error && typeof root.error === 'object' ? root.error as Record<string, any> : root
+  const value = nested[field]
+  return typeof value === 'string' ? value : ''
+}
+
+function categorizeOpenAIErrorBody(error: unknown): ProviderErrorCategory | undefined {
+  const message = getOpenAIErrorField(error, 'message').toLowerCase()
+  const type = getOpenAIErrorField(error, 'type').toLowerCase()
+  const code = getOpenAIErrorField(error, 'code').toLowerCase()
+  const param = getOpenAIErrorField(error, 'param').toLowerCase()
+  const signature = `${message} ${type} ${code} ${param}`
+
+  if (signature.includes('content_filter') || signature.includes('content filter') || signature.includes('filtered')) {
+    return 'content_filter'
+  }
+
+  if (signature.includes('context_length') || signature.includes('context length') || signature.includes('maximum context')) {
+    return 'context_overflow'
+  }
+
+  if (signature.includes('tool_call') || signature.includes('tool call') || signature.includes('tool_call_id')) {
+    return 'tool_protocol_error'
+  }
+
+  return undefined
+}
+
 function categorizeOpenAIStatus(status?: number): ProviderErrorCategory {
   switch (status) {
     case 400:
@@ -172,14 +203,18 @@ function createOpenAIProviderError(input: {
   headers?: Record<string, string>
   body?: string
   error?: unknown
+  model?: string
+  capability?: ModelCapabilityName
 }): OpenAIError {
   const err = new Error(input.message) as OpenAIError
   err.provider = 'openai'
-  err.category = input.category ?? categorizeOpenAIStatus(input.status)
+  err.category = input.category ?? categorizeOpenAIErrorBody(input.error) ?? categorizeOpenAIStatus(input.status)
   if (input.status !== undefined) err.status = input.status
   if (input.headers) err.headers = input.headers
   if (input.body !== undefined) err.body = input.body
   if (input.error !== undefined) err.error = input.error
+  if (input.model !== undefined) err.model = input.model
+  if (input.capability !== undefined) err.capability = input.capability
   return err
 }
 
@@ -201,6 +236,30 @@ async function createOpenAIError(response: Response): Promise<OpenAIError> {
   })
 }
 
+function categorizeOpenAIFetchError(error: unknown): ProviderErrorCategory {
+  const source = error as { name?: string; code?: string; cause?: { code?: string } }
+  const code = source?.code ?? source?.cause?.code
+
+  if (source?.name === 'AbortError' || code === 'ABORT_ERR') {
+    return 'aborted'
+  }
+
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') {
+    return 'timeout'
+  }
+
+  return 'network'
+}
+
+function createOpenAIFetchError(error: unknown): OpenAIError {
+  const message = error instanceof Error ? error.message : String(error)
+  return createOpenAIProviderError({
+    message: `OpenAI API request failed: ${message}`,
+    category: categorizeOpenAIFetchError(error),
+    error,
+  })
+}
+
 // --------------------------------------------------------------------------
 // Provider
 // --------------------------------------------------------------------------
@@ -216,11 +275,44 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResponse> {
+    this.preflightCapabilities(params)
+
     if (this.shouldUseResponsesApi(params.model)) {
       return this.createResponsesMessage(params)
     }
 
     return this.createChatCompletionsMessage(params)
+  }
+
+  private preflightCapabilities(params: CreateMessageParams): void {
+    if (params.tools && params.tools.length > 0) {
+      this.assertCapability(params.model, 'tools')
+    }
+
+    if (params.thinking?.type === 'enabled') {
+      this.assertCapability(params.model, 'thinking')
+    }
+
+    if (this.hasImageContent(params.messages)) {
+      this.assertCapability(params.model, 'images')
+    }
+  }
+
+  private assertCapability(model: string, capability: ModelCapabilityName): void {
+    const decision = decideModelCapability(model, capability, { apiType: this.apiType })
+    if (decision.support !== 'unsupported') return
+
+    throw createOpenAIProviderError({
+      message: `OpenAI model ${decision.normalizedModel} does not support ${capability}: ${decision.reason}`,
+      category: 'unsupported_capability',
+      model,
+      capability,
+    })
+  }
+
+  private hasImageContent(messages: NormalizedMessageParam[]): boolean {
+    return messages.some((message) => Array.isArray(message.content)
+      && message.content.some((block) => block.type === 'image'))
   }
 
   private shouldUseResponsesApi(model: string): boolean {
@@ -243,21 +335,26 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
-    const response = await fetch(`${this.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: params.abortSignal,
-    })
+    let response: Response
+    try {
+      response = await fetch(`${this.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: params.abortSignal,
+      })
+    } catch (error) {
+      throw createOpenAIFetchError(error)
+    }
 
     if (!response.ok) {
       throw await createOpenAIError(response)
     }
 
-    const data = (await response.json()) as OpenAIChatResponse
+    const data = await this.parseJsonResponse<OpenAIChatResponse>(response, 'OpenAI Chat Completions')
     return this.convertChatCompletionsResponse(data)
   }
 
@@ -277,30 +374,50 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
-    const response = await fetch(`${this.baseURL}/responses`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: params.abortSignal,
-    })
+    let response: Response
+    try {
+      response = await fetch(`${this.baseURL}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: params.abortSignal,
+      })
+    } catch (error) {
+      throw createOpenAIFetchError(error)
+    }
 
     if (!response.ok) {
-      if (!params.abortSignal?.aborted && this.shouldFallbackToChatCompletions(params.model, response.status)) {
+      const error = await createOpenAIError(response)
+      if (!params.abortSignal?.aborted && this.shouldFallbackToChatCompletions(params.model, error)) {
         return this.createChatCompletionsMessage(params)
       }
 
-      throw await createOpenAIError(response)
+      throw error
     }
 
-    const data = (await response.json()) as OpenAIResponsesResponse
+    const data = await this.parseJsonResponse<OpenAIResponsesResponse>(response, 'OpenAI Responses')
     return this.convertResponsesResponse(data)
   }
 
-  private shouldFallbackToChatCompletions(model: string, status: number): boolean {
-    return getModelCapabilities(model, { apiType: this.apiType }).fallback?.responsesToChatCompletionsStatuses?.includes(status) === true
+  private async parseJsonResponse<T>(response: Response, label: string): Promise<T> {
+    try {
+      return await response.json() as T
+    } catch (error) {
+      throw createOpenAIProviderError({
+        message: `Failed to parse ${label} response JSON`,
+        category: 'provider_conversion_error',
+        error,
+      })
+    }
+  }
+
+  private shouldFallbackToChatCompletions(model: string, error: OpenAIError): boolean {
+    if (error.category !== 'unsupported' && error.category !== 'invalid_request') return false
+
+    return getModelCapabilities(model, { apiType: this.apiType }).fallback?.responsesToChatCompletionsStatuses?.includes(error.status ?? 0) === true
   }
 
   // --------------------------------------------------------------------------

@@ -10,6 +10,7 @@
 
 import type { LLMProvider } from '../providers/types.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
+import type { AgentRunCompactionTrace, AgentRunCompactionTrigger } from '../types.js'
 import {
   estimateMessagesTokens,
   getAutoCompactThreshold,
@@ -23,6 +24,10 @@ export interface AutoCompactState {
   compacted: boolean
   turnCounter: number
   consecutiveFailures: number
+}
+
+export interface CompactConversationOptions {
+  trigger?: AgentRunCompactionTrigger
 }
 
 /**
@@ -64,11 +69,18 @@ export async function compactConversation(
   messages: any[],
   state: AutoCompactState,
   abortSignal?: AbortSignal,
+  options: CompactConversationOptions = {},
 ): Promise<{
   compactedMessages: NormalizedMessageParam[]
   summary: string
   state: AutoCompactState
+  trace: AgentRunCompactionTrace
 }> {
+  const trigger = options.trigger ?? 'auto_threshold'
+  const estimatedTokensBefore = estimateMessagesTokens(messages)
+  const messageCountBefore = messages.length
+  const charsBefore = estimateMessageChars(messages)
+
   try {
     // Replace bulky image data with compact placeholders before summarizing.
     const strippedMessages = stripImagesFromMessages(messages)
@@ -106,6 +118,8 @@ export async function compactConversation(
       },
     ]
 
+    const charsAfter = estimateMessageChars(compactedMessages)
+
     return {
       compactedMessages,
       summary,
@@ -113,6 +127,16 @@ export async function compactConversation(
         compacted: true,
         turnCounter: state.turnCounter,
         consecutiveFailures: 0,
+      },
+      trace: {
+        trigger,
+        status: 'succeeded',
+        message_count_before: messageCountBefore,
+        message_count_after: compactedMessages.length,
+        estimated_tokens_before: estimatedTokensBefore,
+        estimated_tokens_after: estimateMessagesTokens(compactedMessages),
+        summary_chars: summary.length,
+        dropped_chars: Math.max(0, charsBefore - charsAfter),
       },
     }
   } catch (err: any) {
@@ -123,8 +147,31 @@ export async function compactConversation(
         ...state,
         consecutiveFailures: state.consecutiveFailures + 1,
       },
+      trace: {
+        trigger,
+        status: 'failed',
+        message_count_before: messageCountBefore,
+        message_count_after: messages.length,
+        estimated_tokens_before: estimatedTokensBefore,
+        estimated_tokens_after: estimateMessagesTokens(messages),
+        summary_chars: 0,
+        dropped_chars: 0,
+        failure_reason: err?.message || String(err),
+      },
     }
   }
+}
+
+function estimateMessageChars(messages: Array<{ content: any }>): number {
+  return messages.reduce((total, message) => total + estimateContentChars(message.content), 0)
+}
+
+function estimateContentChars(content: any): number {
+  if (typeof content === 'string') return content.length
+  if (Array.isArray(content)) {
+    return content.reduce((total, block) => total + estimateContentChars(block?.text ?? block?.content ?? block), 0)
+  }
+  return JSON.stringify(content ?? '').length
 }
 
 /**

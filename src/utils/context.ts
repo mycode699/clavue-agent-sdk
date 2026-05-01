@@ -98,7 +98,7 @@ function detectMainBranch(cwd: string): string | null {
 /**
  * Discover project context files (AGENT.md, CLAVUE.md) in the project.
  */
-export async function discoverProjectContextFiles(cwd: string): Promise<string[]> {
+export async function discoverProjectContextFiles(cwd: string, options: Pick<ContextPackOptions, 'includeUser'> = {}): Promise<string[]> {
   const candidates = [
     join(cwd, 'AGENT.md'),
     join(cwd, 'CLAVUE.md'),
@@ -107,8 +107,9 @@ export async function discoverProjectContextFiles(cwd: string): Promise<string[]
   ]
 
   // Also check home directory
+  const includeUser = options.includeUser ?? true
   const home = process.env.HOME || process.env.USERPROFILE || ''
-  if (home) {
+  if (includeUser && home) {
     candidates.push(
       join(home, '.clavue', 'CLAVUE.md'),
     )
@@ -180,7 +181,7 @@ export async function buildContextPack(cwd: string, options: ContextPackOptions 
   }
 
   if (includeProject) {
-    const files = await discoverProjectContextFiles(cwd)
+    const files = await discoverProjectContextFiles(cwd, { includeUser: options.includeUser })
     for (const file of files) {
       try {
         const content = (await readFile(file, 'utf-8')).trim()

@@ -71,10 +71,20 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   assert.ok(paths.has('docs/agent-sdk-capability-upgrade-program.md'), 'expected referenced capability docs to be published')
   assert.ok(paths.has('dist/skills/bundled/workflow.js'), 'expected bundled lifecycle workflow skills to be published')
   assert.ok(paths.has('dist/skills/bundled/workflow.d.ts'), 'expected bundled lifecycle workflow skill types to be published')
+  assert.ok(paths.has('dist/providers/capabilities.js'), 'expected model capability registry to be published')
+  assert.ok(paths.has('dist/providers/capabilities.d.ts'), 'expected model capability registry types to be published')
   assert.equal(packageJson.bin?.['clavue-agent-sdk'], 'dist/cli.js')
   assert.equal(packageJson.bin?.['clavue-agent'], 'dist/cli.js')
+  const packageLock = JSON.parse(
+    await import('node:fs/promises').then(({ readFile }) =>
+      readFile(resolve(packageRoot, 'package-lock.json'), 'utf-8'),
+    ),
+  ) as { packages?: { '': { bin?: Record<string, string> } } }
+  assert.equal(packageLock.packages?.[''].bin?.['clavue-agent-sdk'], 'dist/cli.js')
+  assert.equal(packageLock.packages?.[''].bin?.['clavue-agent'], 'dist/cli.js')
   assert.ok(paths.has('dist/cli.js'), 'expected CLI entrypoint to be published')
   const indexTypes = await readFile(resolve(packageRoot, 'dist/index.d.ts'), 'utf-8')
+  const providerTypes = await readFile(resolve(packageRoot, 'dist/providers/types.d.ts'), 'utf-8')
   assert.match(indexTypes, /SkillPrecondition/, 'expected lifecycle skill precondition type to be exported')
   assert.match(indexTypes, /SkillArtifactSpec/, 'expected lifecycle skill artifact type to be exported')
   assert.match(indexTypes, /SkillQualityGateSpec/, 'expected lifecycle skill quality gate type to be exported')
@@ -86,13 +96,36 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   assert.match(indexTypes, /skillFromManifest/, 'expected manifest skill helper to be exported')
   assert.match(indexTypes, /loadSkillsFromDir/, 'expected filesystem skill loader to be exported')
   assert.match(indexTypes, /SkillLoaderResult/, 'expected skill loader result type to be exported')
+  assert.match(indexTypes, /createSkillRetroEvaluators/, 'expected skill retro evaluator helper to be exported')
+  assert.match(indexTypes, /SkillRetroTarget/, 'expected skill retro evaluator target type to be exported')
   assert.match(indexTypes, /getRuntimeProfile/, 'expected runtime profile lookup to be exported')
   assert.match(indexTypes, /CONTROLLED_EXECUTION_CONTRACT_VERSION/, 'expected controlled execution contract version to be exported')
   assert.match(indexTypes, /getControlledExecutionContract/, 'expected controlled execution contract lookup to be exported')
   assert.match(indexTypes, /ControlledExecutionContract/, 'expected controlled execution contract type to be exported')
   assert.match(indexTypes, /WorkflowMode/, 'expected workflow mode type to be exported')
+  assert.match(indexTypes, /AgentAutonomyMode/, 'expected autonomy mode type to be exported')
+  assert.match(indexTypes, /AgentRunPolicyDecisionTrace/, 'expected policy decision trace type to be exported')
+  assert.match(indexTypes, /SDK_EVENT_SCHEMA_VERSION/, 'expected SDK event schema version to be exported')
+  assert.match(indexTypes, /AGENT_RUN_RESULT_SCHEMA_VERSION/, 'expected run result schema version to be exported')
+  assert.match(indexTypes, /AGENT_RUN_TRACE_SCHEMA_VERSION/, 'expected run trace schema version to be exported')
+  assert.match(indexTypes, /AGENT_JOB_RECORD_SCHEMA_VERSION/, 'expected agent job schema version to be exported')
+  assert.match(indexTypes, /MEMORY_TRACE_SCHEMA_VERSION/, 'expected memory trace schema version to be exported')
+  assert.match(indexTypes, /PublicSchemaVersions/, 'expected public schema version type to be exported')
+  const publicTypes = await readFile(resolve(packageRoot, 'dist/types.d.ts'), 'utf-8')
+  assert.match(publicTypes, /schema_version/, 'expected public run artifacts to expose schema metadata')
   assert.match(indexTypes, /createEvaluationLoopContract/, 'expected evaluation loop helper to be exported')
   assert.match(indexTypes, /EvaluationLoopContract/, 'expected evaluation loop contract type to be exported')
+  assert.match(indexTypes, /summarizeAgentJobs/, 'expected AgentJob summary helper to be exported')
+  assert.match(indexTypes, /createAgentJobBatch/, 'expected AgentJob batch helper to be exported')
+  assert.match(indexTypes, /AgentJobBatchResult/, 'expected AgentJob batch result type to be exported')
+  assert.match(indexTypes, /AgentJobBatchSummary/, 'expected AgentJob batch summary type to be exported')
+  assert.match(indexTypes, /AgentJobSummary/, 'expected AgentJob summary type to be exported')
+  assert.match(indexTypes, /AgentJobStatusSummary/, 'expected AgentJob status summary type to be exported')
+  assert.match(providerTypes, /unsupported_capability/, 'expected normalized unsupported capability provider errors to be exported')
+  assert.match(providerTypes, /content_filter/, 'expected normalized content filter provider errors to be exported')
+  assert.match(providerTypes, /context_overflow/, 'expected normalized context overflow provider errors to be exported')
+  assert.match(providerTypes, /tool_protocol_error/, 'expected normalized tool protocol provider errors to be exported')
+  assert.match(providerTypes, /provider_conversion_error/, 'expected normalized provider conversion errors to be exported')
   assert.ok(
     [...paths].every((path) => !path.startsWith('.tmp-retro-ledger/')),
     'expected temp retro ledger artifacts to be excluded',
@@ -114,6 +147,7 @@ test('compiled CLI runs through an npm-style bin symlink', async () => {
     })
 
     assert.match(stdout, /Clavue Agent SDK CLI/)
+    assert.match(stdout, /CLAVUE_AGENT_AUTH_TOKEN/)
     assert.match(stdout, /npx clavue-agent-sdk/)
   } finally {
     await rm(dir, { recursive: true, force: true })

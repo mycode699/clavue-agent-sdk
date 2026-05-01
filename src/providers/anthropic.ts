@@ -14,6 +14,25 @@ import type {
   ProviderErrorCategory,
 } from './types.js'
 
+function categorizeAnthropicTransportError(err: unknown): ProviderErrorCategory | undefined {
+  const source = err as { name?: string; code?: string; cause?: { code?: string } }
+  const code = source?.code ?? source?.cause?.code
+
+  if (source?.name === 'AbortError' || code === 'ABORT_ERR') {
+    return 'aborted'
+  }
+
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') {
+    return 'timeout'
+  }
+
+  if (code || err instanceof TypeError) {
+    return 'network'
+  }
+
+  return undefined
+}
+
 function categorizeAnthropicStatus(status?: number): ProviderErrorCategory {
   switch (status) {
     case 400:
@@ -46,7 +65,7 @@ function normalizeAnthropicError(err: unknown): ProviderError {
     : new Error(String(err)) as ProviderError
 
   normalized.provider = 'anthropic'
-  normalized.category = categorizeAnthropicStatus(source?.status)
+  normalized.category = categorizeAnthropicTransportError(err) ?? categorizeAnthropicStatus(source?.status)
   if (source?.status !== undefined) normalized.status = source.status
   if (source?.headers) normalized.headers = source.headers
   if (source?.body !== undefined) normalized.body = source.body

@@ -3,8 +3,8 @@
  */
 
 import { readFile, writeFile } from 'fs/promises'
-import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveWorkspacePath } from './workspace.js'
 
 export const FileEditTool = defineTool({
   name: 'Edit',
@@ -40,7 +40,8 @@ export const FileEditTool = defineTool({
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {
-    const filePath = resolve(context.cwd, input.file_path)
+    const filePath = resolveWorkspacePath(context, input.file_path)
+    if (typeof filePath !== 'string') return filePath
     const { old_string, new_string, replace_all } = input
 
     if (old_string === new_string) {

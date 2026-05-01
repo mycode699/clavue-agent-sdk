@@ -12,22 +12,34 @@
  * 8. Retry with exponential backoff on transient errors
  */
 
-import type {
-  SDKMessage,
-  QueryEngineConfig,
-  ToolDefinition,
-  ToolResult,
-  ToolContext,
-  TokenUsage,
-  QualityGatePolicy,
-  AgentRunTrace,
-  AgentRunToolTrace,
-  Evidence,
-  QualityGateResult,
-  MemoryPolicyMode,
-  AgentRunMemoryTrace,
-  AgentRunMemorySelectionTrace,
-  AgentRunToolConcurrencySource,
+import { randomUUID } from 'node:crypto'
+
+import {
+  AGENT_RUN_TRACE_SCHEMA_VERSION,
+  MEMORY_TRACE_SCHEMA_VERSION,
+  SDK_EVENT_SCHEMA_VERSION,
+  type AgentAutonomyMode,
+  type SDKMessage,
+  type QueryEngineConfig,
+  type ToolDefinition,
+  type ToolResult,
+  type ToolContext,
+  type TokenUsage,
+  type QualityGatePolicy,
+  type AgentRunTrace,
+  type AgentRunToolTrace,
+  type Evidence,
+  type QualityGateResult,
+  type MemoryPolicyMode,
+  type AgentRunMemoryTrace,
+  type AgentRunMemorySelectionTrace,
+  type AgentRunToolConcurrencySource,
+  type AgentRunPolicyDecisionTrace,
+  type AgentRunToolInputSummary,
+  type AgentRunToolSafetySummary,
+  type SDKPendingInputMessage,
+  type SDKPhaseMessage,
+  type SDKRunPhase,
 } from './types.js'
 import type {
   LLMProvider,
@@ -116,9 +128,52 @@ function getMemoryPriority(memory: MemoryEntry): number {
   }
 }
 
-function toMemorySelectionTrace(match: MemoryQueryResult): AgentRunMemorySelectionTrace {
+function toMemoryScoreComponents(scoreReasons: string[]): AgentRunMemorySelectionTrace['score_components'] {
+  return scoreReasons.map((reason) => {
+    if (reason === 'repo_path') return { reason, score: 6 }
+    if (reason === 'session_id') return { reason, score: 4 }
+    if (reason.startsWith('tag:')) return { reason, score: 3 }
+    if (reason.startsWith('text:')) return { reason, score: 2 }
+    return { reason, score: 1 }
+  })
+}
+
+function getMatchedMemoryFields(entry: MemoryEntry, queryText?: string): string[] {
+  if (!queryText) return []
+
+  const terms = queryText
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean)
+  if (terms.length === 0) return []
+
+  const fields: string[] = []
+  const title = entry.title.toLowerCase()
+  const content = entry.content.toLowerCase()
+  const tags = (entry.tags || []).join(' ').toLowerCase()
+
+  if (terms.some((term) => title.includes(term))) fields.push('title')
+  if (terms.some((term) => content.includes(term))) fields.push('content')
+  if (tags && terms.some((term) => tags.includes(term))) fields.push('tags')
+
+  return fields
+}
+
+function isStaleMemory(entry: MemoryEntry): boolean {
+  if (!entry.lastValidatedAt) return false
+  const validated = Date.parse(entry.lastValidatedAt)
+  if (!Number.isFinite(validated)) return false
+  const staleAfterMs = 30 * 24 * 60 * 60 * 1000
+  return Date.now() - validated >= staleAfterMs
+}
+
+function toMemorySelectionTrace(
+  match: MemoryQueryResult,
+  options: { includeRichFields?: boolean; queryText?: string } = {},
+): AgentRunMemorySelectionTrace {
   const { entry, score, scoreReasons } = match
-  return {
+  const trace: AgentRunMemorySelectionTrace = {
     id: entry.id,
     type: entry.type,
     scope: entry.scope,
@@ -133,6 +188,15 @@ function toMemorySelectionTrace(match: MemoryQueryResult): AgentRunMemorySelecti
     repo_path: entry.repoPath,
     session_id: entry.sessionId,
   }
+
+  if (options.includeRichFields) {
+    trace.score_components = toMemoryScoreComponents(scoreReasons)
+    trace.matched_fields = getMatchedMemoryFields(entry, options.queryText)
+    trace.stale = isStaleMemory(entry)
+    trace.redaction_status = 'not_required'
+  }
+
+  return trace
 }
 
 function formatInjectedMemories(memories: MemoryEntry[]): string {
@@ -175,6 +239,58 @@ function resolveMaxToolConcurrency(configured?: number): { limit: number; source
 
 function canRunConcurrently(tool?: ToolDefinition): boolean {
   return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
+}
+
+function summarizeToolInput(input: unknown): AgentRunToolInputSummary {
+  if (input === null) return { type: 'null', size_bytes: 4 }
+  if (input === undefined) return { type: 'undefined' }
+  if (Array.isArray(input)) {
+    return {
+      type: 'array',
+      size_bytes: estimateJsonSize(input),
+    }
+  }
+  if (typeof input === 'object') {
+    return {
+      type: 'object',
+      keys: Object.keys(input as Record<string, unknown>).slice(0, 20),
+      size_bytes: estimateJsonSize(input),
+    }
+  }
+  if (typeof input === 'string') {
+    return {
+      type: 'string',
+      size_bytes: Buffer.byteLength(input, 'utf8'),
+    }
+  }
+  if (typeof input === 'number') return { type: 'number', size_bytes: Buffer.byteLength(String(input), 'utf8') }
+  if (typeof input === 'boolean') return { type: 'boolean', size_bytes: input ? 4 : 5 }
+  return { type: 'unknown' }
+}
+
+function estimateJsonSize(input: unknown): number | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(input), 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+function summarizeToolSafety(tool: ToolDefinition): AgentRunToolSafetySummary {
+  const safety = tool.safety ?? {}
+  const read = safety.read ?? tool.isReadOnly?.() === true
+  const write = safety.write ?? !read
+
+  return {
+    read,
+    write,
+    shell: safety.shell ?? false,
+    network: safety.network ?? false,
+    external_state: safety.externalState ?? false,
+    destructive: safety.destructive ?? false,
+    approval_required: safety.approvalRequired ?? false,
+    idempotent: safety.idempotent,
+  }
 }
 
 function shouldUseFallbackModel(err: any): boolean {
@@ -251,6 +367,7 @@ function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
 function createToolContext(config: QueryEngineConfig, tools: ToolDefinition[] = config.tools): ToolContext {
   return {
     cwd: config.cwd,
+    workspaceRoot: config.cwd,
     abortSignal: config.abortSignal,
     provider: config.provider,
     model: config.model,
@@ -258,6 +375,7 @@ function createToolContext(config: QueryEngineConfig, tools: ToolDefinition[] = 
     policy: config.policy,
     runtimeNamespace: config.runtimeNamespace,
     availableTools: tools.map((tool) => tool.name),
+    autonomyMode: config.autonomyMode,
   }
 }
 
@@ -297,14 +415,68 @@ function getMemoryPolicyMode(config: QueryEngineConfig): MemoryPolicyMode {
   return config.memory.autoInject === false ? 'off' : 'autoInject'
 }
 
+function getAutonomyMode(config: QueryEngineConfig): AgentAutonomyMode {
+  if (config.autonomyMode) return config.autonomyMode
+  return config.policy.permissionMode === 'trustedAutomation'
+    ? 'autonomous'
+    : 'proactive'
+}
+
+function getAutonomyPrompt(mode: AgentAutonomyMode): string {
+  switch (mode) {
+    case 'supervised':
+      return [
+        'Autonomy mode: supervised.',
+        'Proceed with analysis and low-risk read-only work, but ask the user before choosing between materially different product directions, making broad edits, or taking externally visible actions.',
+        'Still avoid low-value confirmations: if the next step is obvious, safe, and within granted tools, do it.',
+      ].join('\n')
+
+    case 'autonomous':
+      return [
+        'Autonomy mode: autonomous development.',
+        'Default to action. Do not pause for routine confirmations, implementation choices, dependency-free refactors, test runs, focused fixes, or P0-P3 todo execution when the request and allowed tools already authorize the work.',
+        'Choose the best technical solution yourself using current code context, tests, product goals, and risk. When multiple viable approaches exist, select the smallest high-quality path that preserves public compatibility and maximizes verification evidence.',
+        'Use a tight loop: inspect, hypothesize, edit, verify, repair, and summarize. Keep moving until the task is complete, blocked by tool policy, or a defined stop condition is reached.',
+        'Stop and ask only for irreversible or externally visible actions, credential/secret decisions, destructive data loss, publishing/deployment/tagging, legal/compliance ambiguity, spending real money, or mutually exclusive product choices that cannot be inferred from local context.',
+        'Human review is the final acceptance gate; during development, provide evidence-backed progress rather than asking the user to make routine engineering decisions.',
+      ].join('\n')
+
+    case 'proactive':
+    default:
+      return [
+        'Autonomy mode: proactive.',
+        'Prefer proceeding over asking. Ask at most one concise question only when missing information would create a real risk or materially change the solution.',
+        'For ambiguous engineering choices, inspect the codebase, choose a defensible default, document the assumption, and verify the result.',
+        'For todo lists and P0-P3 fixes, execute the next highest-priority safe slice instead of returning only a plan.',
+        'Never claim completion without concrete evidence when verification is available.',
+      ].join('\n')
+  }
+}
+
 async function getInjectedMemories(config: QueryEngineConfig): Promise<{ entries: MemoryEntry[]; trace: AgentRunMemoryTrace }> {
+  const started = performance.now()
   const policy = getMemoryPolicyMode(config)
   const repoPath = config.memory?.repoPath || config.cwd
   const text = typeof config.initialPrompt === 'string' ? config.initialPrompt : undefined
+  const limit = config.memory?.maxInjectedEntries ?? 5
+  const strategy = policy === 'brainFirst' ? 'brain_first' : 'auto_inject'
+  const filters = {
+    repo_path: repoPath,
+    text,
+    limit,
+  }
   const trace: AgentRunMemoryTrace = {
+    schema_version: MEMORY_TRACE_SCHEMA_VERSION,
+    retrieval_id: `memret_${randomUUID()}`,
     policy,
+    strategy,
     query: text,
     repo_path: repoPath,
+    filters,
+    store: {
+      configured: Boolean(config.memory?.dir),
+      dir: config.memory?.dir,
+    },
     selected_ids: [],
     injected_count: 0,
     injection_status: policy === 'off' || !config.memory?.enabled ? 'off' : 'empty',
@@ -313,55 +485,72 @@ async function getInjectedMemories(config: QueryEngineConfig): Promise<{ entries
     retrieved_before_first_model_call: true,
   }
 
-  if (policy === 'off' || !config.memory?.enabled) {
-    return { entries: [], trace }
-  }
+  try {
+    if (policy === 'off' || !config.memory?.enabled) {
+      return { entries: [], trace }
+    }
 
-  const limit = config.memory.maxInjectedEntries ?? 5
-  const store = { dir: config.memory.dir }
-
-  const targeted = await queryMemoryMatches(
-    {
-      repoPath,
-      text,
-      limit,
-    },
-    store,
-  )
-  trace.retrieval_steps?.push({
-    source: 'targeted',
-    query: text,
-    repo_path: repoPath,
-    candidate_count: targeted.length,
-    selected_count: targeted.length,
-  })
-
-  let matches = targeted
-  if (matches.length > 0) {
-    trace.selection_source = 'targeted'
-  } else {
-    matches = await queryMemoryMatches(
+    const store = { dir: config.memory.dir }
+    const targetedStarted = performance.now()
+    const targeted = await queryMemoryMatches(
       {
         repoPath,
+        text,
         limit,
       },
       store,
     )
     trace.retrieval_steps?.push({
-      source: 'repo_fallback',
+      source: 'targeted',
+      strategy,
+      query: text,
       repo_path: repoPath,
-      candidate_count: matches.length,
-      selected_count: matches.length,
+      filters,
+      candidate_count: targeted.length,
+      selected_count: targeted.length,
+      duration_ms: Math.round(performance.now() - targetedStarted),
     })
-    trace.selection_source = matches.length > 0 ? 'repo_fallback' : 'empty'
-  }
 
-  const entries = matches.map(({ entry }) => entry)
-  trace.selected_ids = entries.map((entry) => entry.id)
-  trace.selected = matches.map(toMemorySelectionTrace)
-  trace.injected_count = entries.length
-  trace.injection_status = entries.length > 0 ? 'injected' : 'empty'
-  return { entries, trace }
+    let matches = targeted
+    if (matches.length > 0) {
+      trace.selection_source = 'targeted'
+    } else {
+      const fallbackFilters = {
+        repo_path: repoPath,
+        limit,
+      }
+      const fallbackStarted = performance.now()
+      matches = await queryMemoryMatches(
+        {
+          repoPath,
+          limit,
+        },
+        store,
+      )
+      trace.retrieval_steps?.push({
+        source: 'repo_fallback',
+        strategy,
+        repo_path: repoPath,
+        filters: fallbackFilters,
+        candidate_count: matches.length,
+        selected_count: matches.length,
+        duration_ms: Math.round(performance.now() - fallbackStarted),
+      })
+      trace.selection_source = matches.length > 0 ? 'repo_fallback' : 'empty'
+    }
+
+    const entries = matches.map(({ entry }) => entry)
+    trace.selected_ids = entries.map((entry) => entry.id)
+    trace.selected = matches.map((match) => toMemorySelectionTrace(match, {
+      includeRichFields: policy === 'brainFirst',
+      queryText: text,
+    }))
+    trace.injected_count = entries.length
+    trace.injection_status = entries.length > 0 ? 'injected' : 'empty'
+    return { entries, trace }
+  } finally {
+    trace.duration_ms = Math.round(performance.now() - started)
+  }
 }
 
 // ============================================================================
@@ -389,8 +578,11 @@ async function buildSystemPrompt(config: QueryEngineConfig): Promise<{ systemPro
     'Use the available tools to complete the user\'s task. Inspect the project, make focused changes, and verify concrete results before claiming completion.',
   ]
 
+  parts.push('\n# Autonomy And Calibration\n')
+  parts.push(getAutonomyPrompt(getAutonomyMode(config)))
+
   if (config.policy.permissionMode === 'trustedAutomation') {
-    parts.push('Prefer direct execution over asking for confirmation. Ask the user only when requirements are genuinely ambiguous or an action is destructive, hard to reverse, or affects shared external state.')
+    parts.push('Tool permissions are high trust, but this does not authorize publishing, deployment, credential exposure, destructive data loss, or irreversible external-state changes unless the user explicitly requested them.')
   } else {
     parts.push('Tool access is governed by the host application\'s available tool set, canUseTool policy, and hooks.')
   }
@@ -485,6 +677,7 @@ export class QueryEngine {
     const toolConcurrency = resolveMaxToolConcurrency(config.maxToolConcurrency)
     this.maxToolConcurrency = toolConcurrency.limit
     this.trace = {
+      schema_version: AGENT_RUN_TRACE_SCHEMA_VERSION,
       turns: [],
       tools: [],
       concurrency_batches: [],
@@ -492,7 +685,9 @@ export class QueryEngine {
       tool_concurrency_source: toolConcurrency.source,
       retry_count: 0,
       compaction_count: 0,
+      compactions: [],
       permission_denials: [],
+      policy_decisions: [],
       memory: [],
     }
     this.evidence = [...(config.evidence ?? [])]
@@ -531,6 +726,50 @@ export class QueryEngine {
     this.modelUsage[model] = current
   }
 
+  private createPhaseMessage(
+    runId: string,
+    phase: SDKRunPhase,
+    turn?: number,
+    toolUseId?: string,
+  ): SDKPhaseMessage {
+    return {
+      type: 'system',
+      subtype: 'phase',
+      phase,
+      run_id: runId,
+      session_id: this.sessionId,
+      ...(turn === undefined ? {} : { turn }),
+      ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
+    }
+  }
+
+  private createPendingInputMessage(
+    runId: string,
+    result: ToolResult & { tool_name?: string },
+  ): SDKPendingInputMessage | undefined {
+    if (!result.pending_input) return undefined
+    return {
+      type: 'system',
+      subtype: 'pending_input',
+      run_id: runId,
+      session_id: this.sessionId,
+      tool_use_id: result.tool_use_id,
+      question: result.pending_input,
+    }
+  }
+
+  private recordPolicyDecision(input: Omit<AgentRunPolicyDecisionTrace, 'timestamp' | 'permission_mode' | 'autonomy_mode' | 'safety'> & { tool: ToolDefinition }): void {
+    const { tool, ...entry } = input
+    this.trace.policy_decisions ??= []
+    this.trace.policy_decisions.push({
+      ...entry,
+      timestamp: new Date().toISOString(),
+      permission_mode: this.config.policy.permissionMode,
+      autonomy_mode: getAutonomyMode(this.config),
+      safety: summarizeToolSafety(tool),
+    })
+  }
+
   /**
    * Submit a user message and run the agentic loop.
    * Yields SDKMessage events as the agent works.
@@ -538,6 +777,8 @@ export class QueryEngine {
   async *submitMessage(
     prompt: string | any[],
   ): AsyncGenerator<SDKMessage> {
+    const runId = crypto.randomUUID()
+
     // Hook: SessionStart
     await this.executeHooks('SessionStart')
 
@@ -549,6 +790,7 @@ export class QueryEngine {
     if (userHookResults.some((r) => r.block)) {
       yield {
         type: 'result',
+        schema_version: SDK_EVENT_SCHEMA_VERSION,
         subtype: 'error_during_execution',
         is_error: true,
         usage: this.totalUsage,
@@ -578,7 +820,11 @@ export class QueryEngine {
       cwd: this.config.cwd,
       mcp_servers: [],
       permission_mode: this.config.policy.permissionMode,
+      autonomy_mode: getAutonomyMode(this.config),
     } as SDKMessage
+
+    yield this.createPhaseMessage(runId, 'intake')
+    yield this.createPhaseMessage(runId, 'context')
 
     // Agentic loop
     let turnsRemaining = this.config.maxTurns
@@ -606,10 +852,12 @@ export class QueryEngine {
             this.messages as any[],
             this.compactState,
             this.config.abortSignal,
+            { trigger: 'auto_threshold' },
           )
           this.messages = result.compactedMessages as NormalizedMessageParam[]
           this.compactState = result.state
           this.trace.compaction_count += 1
+          this.trace.compactions?.push(result.trace)
           await this.executeHooks('PostCompact')
         } catch {
           // Continue with uncompacted messages
@@ -658,6 +906,7 @@ export class QueryEngine {
         abortSignal: this.config.abortSignal,
       })
       let successfulModel = requestModel
+      yield this.createPhaseMessage(runId, 'model_request', this.turnCount)
       try {
         try {
           response = await withRetry(
@@ -683,6 +932,7 @@ export class QueryEngine {
           successfulModel = fallbackModel
         }
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
+        yield this.createPhaseMessage(runId, 'model_response', this.turnCount)
       } catch (err: any) {
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
         // Handle prompt-too-long by compacting
@@ -694,10 +944,12 @@ export class QueryEngine {
               this.messages as any[],
               this.compactState,
               this.config.abortSignal,
+              { trigger: 'prompt_too_long' },
             )
             this.messages = result.compactedMessages as NormalizedMessageParam[]
             this.compactState = result.state
             this.trace.compaction_count += 1
+            this.trace.compactions?.push(result.trace)
             turnsRemaining++ // Retry this turn
             this.turnCount--
             continue
@@ -708,6 +960,7 @@ export class QueryEngine {
 
         yield {
           type: 'result',
+          schema_version: SDK_EVENT_SCHEMA_VERSION,
           subtype: 'error',
           session_id: this.sessionId,
           is_error: true,
@@ -798,11 +1051,17 @@ export class QueryEngine {
       // Reset max_output recovery counter on successful tool use
       maxOutputRecoveryAttempts = 0
 
+      for (const block of toolUseBlocks) {
+        yield this.createPhaseMessage(runId, 'tool_execution', this.turnCount, block.id)
+      }
+
       // Execute tools while preserving model-requested ordering around mutations.
       const toolResults = await this.executeTools(toolUseBlocks)
 
       // Yield tool results
       for (const result of toolResults) {
+        const pendingInputMessage = this.createPendingInputMessage(runId, result)
+        if (pendingInputMessage) yield pendingInputMessage
         yield {
           type: 'tool_result',
           result: {
@@ -856,8 +1115,12 @@ export class QueryEngine {
       ? [`Required quality gate failed: ${gateFailure.name}${gateFailure.summary ? ` - ${gateFailure.summary}` : ''}`]
       : undefined
 
+    yield this.createPhaseMessage(runId, 'verification')
+    yield this.createPhaseMessage(runId, 'finalize')
+
     yield {
       type: 'result',
+      schema_version: SDK_EVENT_SCHEMA_VERSION,
       subtype: endSubtype,
       session_id: this.sessionId,
       is_error: endSubtype !== 'success',
@@ -1002,9 +1265,20 @@ export class QueryEngine {
       // Check permissions
       try {
         const permission = await this.config.policy.canUseTool(tool, block.input)
+        const source = permission.source ?? 'host_canUseTool'
         if (permission.behavior === 'deny') {
           const reason = permission.message || `Permission denied for tool "${block.name}"`
           this.trace.permission_denials.push({ tool: block.name, reason })
+          this.recordPolicyDecision({
+            tool,
+            tool_use_id: block.id,
+            tool_name: block.name,
+            behavior: 'deny',
+            source,
+            reason,
+            input_summary: summarizeToolInput(block.input),
+            input_rewritten: false,
+          })
           result = {
             type: 'tool_result',
             tool_use_id: block.id,
@@ -1014,12 +1288,33 @@ export class QueryEngine {
           }
           return result
         }
+        this.recordPolicyDecision({
+          tool,
+          tool_use_id: block.id,
+          tool_name: block.name,
+          behavior: 'allow',
+          source,
+          reason: permission.message,
+          input_summary: summarizeToolInput(block.input),
+          updated_input_summary: permission.updatedInput === undefined ? undefined : summarizeToolInput(permission.updatedInput),
+          input_rewritten: permission.updatedInput !== undefined,
+        })
         if (permission.updatedInput !== undefined) {
           block = { ...block, input: permission.updatedInput }
         }
       } catch (err: any) {
         const reason = `Permission check error: ${err.message}`
         this.trace.permission_denials.push({ tool: block.name, reason })
+        this.recordPolicyDecision({
+          tool,
+          tool_use_id: block.id,
+          tool_name: block.name,
+          behavior: 'deny',
+          source: 'policy_error',
+          reason,
+          input_summary: summarizeToolInput(block.input),
+          input_rewritten: false,
+        })
         result = {
           type: 'tool_result',
           tool_use_id: block.id,
@@ -1039,6 +1334,16 @@ export class QueryEngine {
       // Check if any hook blocks this tool
       if (preHookResults.some((r) => r.block)) {
         const msg = preHookResults.find((r) => r.message)?.message || 'Blocked by PreToolUse hook'
+        this.recordPolicyDecision({
+          tool,
+          tool_use_id: block.id,
+          tool_name: block.name,
+          behavior: 'deny',
+          source: 'hook',
+          reason: msg,
+          input_summary: summarizeToolInput(block.input),
+          input_rewritten: false,
+        })
         result = {
           type: 'tool_result',
           tool_use_id: block.id,
@@ -1180,6 +1485,7 @@ export class QueryEngine {
    */
   getTrace(): AgentRunTrace {
     return {
+      schema_version: this.trace.schema_version,
       turns: this.trace.turns.map((turn) => ({ ...turn })),
       tools: this.trace.tools.map((tool) => ({ ...tool })),
       concurrency_batches: [...this.trace.concurrency_batches],
@@ -1187,17 +1493,45 @@ export class QueryEngine {
       tool_concurrency_source: this.trace.tool_concurrency_source,
       retry_count: this.trace.retry_count,
       compaction_count: this.trace.compaction_count,
+      compactions: this.trace.compactions?.map((compaction) => ({ ...compaction })),
       permission_denials: this.trace.permission_denials.map((denial) => ({ ...denial })),
-      memory: this.trace.memory?.map((entry) => ({
-        ...entry,
-        selected_ids: [...entry.selected_ids],
-        selected: entry.selected?.map((selection) => ({
-          ...selection,
-          score_reasons: selection.score_reasons ? [...selection.score_reasons] : undefined,
-          tags: selection.tags ? [...selection.tags] : undefined,
-        })),
-        retrieval_steps: entry.retrieval_steps?.map((step) => ({ ...step })),
+      policy_decisions: (this.trace.policy_decisions ?? []).map((decision) => ({
+        ...decision,
+        input_summary: { ...decision.input_summary, keys: decision.input_summary.keys ? [...decision.input_summary.keys] : undefined },
+        updated_input_summary: decision.updated_input_summary ? {
+          ...decision.updated_input_summary,
+          keys: decision.updated_input_summary.keys ? [...decision.updated_input_summary.keys] : undefined,
+        } : undefined,
+        safety: { ...decision.safety },
       })),
+      memory: this.trace.memory?.map((entry) => {
+        const memoryEntry: AgentRunMemoryTrace = {
+          ...entry,
+          selected_ids: [...entry.selected_ids],
+          selected: entry.selected?.map((selection) => {
+            const selectionCopy: AgentRunMemorySelectionTrace = { ...selection }
+            if (selection.score_reasons) selectionCopy.score_reasons = [...selection.score_reasons]
+            if (selection.score_components) selectionCopy.score_components = selection.score_components.map((component) => ({ ...component }))
+            if (selection.matched_fields) selectionCopy.matched_fields = [...selection.matched_fields]
+            if (selection.tags) selectionCopy.tags = [...selection.tags]
+            return selectionCopy
+          }),
+          retrieval_steps: entry.retrieval_steps?.map((step) => {
+            const stepCopy = { ...step }
+            if (step.filters) {
+              stepCopy.filters = { ...step.filters }
+              if (step.filters.tags) stepCopy.filters.tags = [...step.filters.tags]
+            }
+            return stepCopy
+          }),
+        }
+        if (entry.filters) {
+          memoryEntry.filters = { ...entry.filters }
+          if (entry.filters.tags) memoryEntry.filters.tags = [...entry.filters.tags]
+        }
+        if (entry.store) memoryEntry.store = { ...entry.store }
+        return memoryEntry
+      }),
     }
   }
 }

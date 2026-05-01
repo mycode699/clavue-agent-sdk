@@ -92,9 +92,8 @@ export interface SkillValidationOptions {
 /**
  * Bundled skill definition.
  *
- * Inspired by Claude Code's skill system. Skills provide specialized
- * capabilities by injecting context-specific prompts with optional
- * tool restrictions and model overrides.
+ * Skills provide specialized capabilities by injecting context-specific
+ * prompts with optional tool restrictions and model overrides.
  */
 export interface SkillDefinition {
   /** Skill manifest version. */

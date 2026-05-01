@@ -7,6 +7,7 @@ import { createAgentJob, listAgentJobs } from './agent-jobs.js'
 import { saveMemory, queryMemories } from './memory.js'
 import { applyRuntimeProfile, getAllRuntimeProfiles } from './runtime-profiles.js'
 import { FileReadTool, FileWriteTool } from './tools/index.js'
+import { buildContextPack, renderContextPack } from './utils/context.js'
 import { estimateMessagesTokens, estimateSystemPromptTokens } from './utils/tokens.js'
 import type { AgentOptions, BenchmarkMetric, BenchmarkOptions, BenchmarkReport, ToolContext } from './types.js'
 
@@ -108,10 +109,20 @@ export async function runBenchmarks(options: BenchmarkOptions = {}): Promise<Ben
       return { writes: 3 }
     }))
 
-    metrics.push(await measureMetric('contextBuild', iterations, () => {
+    metrics.push(await measureMetric('contextBuild', iterations, async () => {
       const messageTokens = estimateMessagesTokens(messages)
       const systemTokens = estimateSystemPromptTokens(systemPrompt)
-      return { messages: messages.length, estimated_tokens: messageTokens + systemTokens }
+      const pack = await buildContextPack(cwd, { includeGit: false, includeUser: false })
+      const renderedContext = renderContextPack(pack)
+
+      return {
+        messages: messages.length,
+        estimated_tokens: messageTokens + systemTokens,
+        sections: pack.sections.length,
+        project_sources: pack.sections.filter((section) => section.kind === 'project' && section.source).length,
+        rendered_context_included: renderedContext.length > 0,
+        rendered_context_bytes: Buffer.byteLength(renderedContext, 'utf-8'),
+      }
     }))
 
     metrics.push(await measureMetric('runtimeProfileResolve', iterations, () => {

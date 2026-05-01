@@ -2,7 +2,17 @@
 import { realpathSync } from 'node:fs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
+import { readFile } from 'node:fs/promises'
+
 import { query, run } from './agent.js'
+import {
+  createIssueWorkflowRun,
+  listIssueWorkflowRuns,
+  loadIssueWorkflowRun,
+  normalizeIssueInput,
+  runIssueWorkflow,
+  stopIssueWorkflowRun,
+} from './issue-workflow.js'
 import type { AgentOptions, ToolsetName } from './types.js'
 import { formatImageBlockForText } from './utils/messages.js'
 import { isToolsetName } from './tools/index.js'
@@ -18,11 +28,13 @@ Usage:
 Options:
   -p, --prompt <text>       Prompt to send to the agent
   -m, --model <id>          Model ID (defaults to CLAVUE_AGENT_MODEL or claude-sonnet-4-6)
-  --api-type <type>         anthropic-messages or openai-completions
-  --api-key <key>           API key (defaults to CLAVUE_AGENT_API_KEY)
+  --api-type <type>         anthropic-messages or openai-completions (defaults to model inference)
+  --api-key <key>           API key (defaults to CLAVUE_AGENT_API_KEY or CLAVUE_AGENT_AUTH_TOKEN)
   --base-url <url>          API base URL (defaults to CLAVUE_AGENT_BASE_URL)
   --cwd <path>              Working directory (defaults to current directory)
   --max-turns <number>      Maximum agentic turns (default: 10)
+  --autonomy <mode>         supervised, proactive, or autonomous
+  --permission-mode <mode>  trustedAutomation, auto, default, acceptEdits, dontAsk, bypassPermissions, or plan
   --allow <tools>           Comma-separated allow-list, e.g. Read,Glob,Grep
   --toolset <names>         Comma-separated toolsets, e.g. repo-readonly,research
   --deny <tools>            Comma-separated deny-list, e.g. Bash,Write,Edit
@@ -32,9 +44,12 @@ Options:
 
 Environment:
   CLAVUE_AGENT_API_KEY      API key
+  CLAVUE_AGENT_AUTH_TOKEN   API key fallback
   CLAVUE_AGENT_API_TYPE     anthropic-messages or openai-completions
   CLAVUE_AGENT_MODEL        Default model
   CLAVUE_AGENT_BASE_URL     Custom API endpoint
+  CLAVUE_AGENT_AUTONOMY     supervised, proactive, or autonomous
+  CLAVUE_AGENT_PERMISSION_MODE  trustedAutomation, auto, default, acceptEdits, dontAsk, bypassPermissions, or plan
   CLAVUE_AGENT_SELF_IMPROVEMENT  Set to 1/true/yes to enable run learning
 `)
 }
@@ -54,9 +69,39 @@ function readApiType(value: string): AgentOptions['apiType'] {
   throw new Error('--api-type must be anthropic-messages or openai-completions')
 }
 
+function readAutonomyMode(value: string): AgentOptions['autonomyMode'] {
+  if (value === 'supervised' || value === 'proactive' || value === 'autonomous') {
+    return value
+  }
+  throw new Error('--autonomy must be supervised, proactive, or autonomous')
+}
+
+function readPermissionMode(value: string): AgentOptions['permissionMode'] {
+  if (
+    value === 'trustedAutomation' ||
+    value === 'auto' ||
+    value === 'default' ||
+    value === 'acceptEdits' ||
+    value === 'dontAsk' ||
+    value === 'bypassPermissions' ||
+    value === 'plan'
+  ) {
+    return value
+  }
+  throw new Error('--permission-mode must be trustedAutomation, auto, default, acceptEdits, dontAsk, bypassPermissions, or plan')
+}
+
 function envFlagEnabled(value: string | undefined): boolean {
   const normalized = value?.toLowerCase()
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+function readPositiveInteger(value: string, flag: string): number {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${flag} must be a positive integer`)
+  }
+  return parsed
 }
 
 function readToolsets(value: string): ToolsetName[] {
@@ -81,16 +126,48 @@ function applySelfImprovementDefaults(options: AgentOptions): void {
   }
 }
 
+export interface ParsedIssueCommand {
+  action: string
+  input: string
+  maxIterations?: number
+  passingScore?: number
+  requiredGates?: string[]
+}
+
+export interface ParsedCliArgs {
+  prompt: string
+  options: AgentOptions
+  json: boolean
+  help: boolean
+  command?: 'issue'
+  issue?: ParsedIssueCommand
+}
+
+export interface IssueCommandOptions {
+  dir?: string
+  runtimeNamespace?: string
+}
+
 export function parseArgs(
   argv: string[],
   env: Record<string, string | undefined> = process.env,
-): { prompt: string; options: AgentOptions; json: boolean; help: boolean } {
+): ParsedCliArgs {
   const options: AgentOptions = {
     selfImprovement: envFlagEnabled(env.CLAVUE_AGENT_SELF_IMPROVEMENT) || undefined,
+    autonomyMode: env.CLAVUE_AGENT_AUTONOMY ? readAutonomyMode(env.CLAVUE_AGENT_AUTONOMY) : undefined,
+    permissionMode: env.CLAVUE_AGENT_PERMISSION_MODE ? readPermissionMode(env.CLAVUE_AGENT_PERMISSION_MODE) : undefined,
   }
   const promptParts: string[] = []
   let json = false
   let help = false
+  let issue: ParsedIssueCommand | undefined
+
+  if (argv[0] === 'issue') {
+    const action = argv[1]
+    if (!action) throw new Error('Missing issue subcommand')
+    issue = { action, input: '' }
+    argv = argv.slice(2)
+  }
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -127,14 +204,18 @@ export function parseArgs(
         i++
         break
       case '--max-turns': {
-        const value = Number(readValue(argv, i, arg))
-        if (!Number.isInteger(value) || value < 1) {
-          throw new Error('--max-turns must be a positive integer')
-        }
-        options.maxTurns = value
+        options.maxTurns = readPositiveInteger(readValue(argv, i, arg), arg)
         i++
         break
       }
+      case '--autonomy':
+        options.autonomyMode = readAutonomyMode(readValue(argv, i, arg))
+        i++
+        break
+      case '--permission-mode':
+        options.permissionMode = readPermissionMode(readValue(argv, i, arg))
+        i++
+        break
       case '--allow':
         options.allowedTools = parseCommaSeparatedList(readValue(argv, i, arg))
         i++
@@ -145,6 +226,21 @@ export function parseArgs(
         break
       case '--deny':
         options.disallowedTools = parseCommaSeparatedList(readValue(argv, i, arg))
+        i++
+        break
+      case '--max-iterations':
+        if (!issue) throw new Error('Unknown option: --max-iterations')
+        issue.maxIterations = readPositiveInteger(readValue(argv, i, arg), arg)
+        i++
+        break
+      case '--passing-score':
+        if (!issue) throw new Error('Unknown option: --passing-score')
+        issue.passingScore = readPositiveInteger(readValue(argv, i, arg), arg)
+        i++
+        break
+      case '--require-gate':
+        if (!issue) throw new Error('Unknown option: --require-gate')
+        issue.requiredGates = parseCommaSeparatedList(readValue(argv, i, arg))
         i++
         break
       case '--self-improvement':
@@ -164,16 +260,89 @@ export function parseArgs(
 
   applySelfImprovementDefaults(options)
 
+  const prompt = promptParts.join(' ').trim()
+  if (issue) issue.input = prompt
+
   return {
-    prompt: promptParts.join(' ').trim(),
+    prompt: issue ? '' : prompt,
     options,
     json,
     help,
+    command: issue ? 'issue' : undefined,
+    issue,
+  }
+}
+
+async function readIssueInput(input: string): Promise<{ content: string; path?: string }> {
+  try {
+    return { content: await readFile(input, 'utf-8'), path: input }
+  } catch (error: any) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENAMETOOLONG') return { content: input }
+    throw error
+  }
+}
+
+function requireIssueInput(parsed: ParsedCliArgs): string {
+  const input = parsed.issue?.input.trim()
+  if (!input) throw new Error(`issue ${parsed.issue?.action || ''} requires an input`)
+  return input
+}
+
+export async function handleIssueCommand(
+  parsed: ParsedCliArgs,
+  options?: IssueCommandOptions,
+): Promise<any> {
+  if (!parsed.issue) throw new Error('Missing issue command')
+
+  switch (parsed.issue.action) {
+    case 'run': {
+      const input = await readIssueInput(requireIssueInput(parsed))
+      const issue = normalizeIssueInput(input.content, input.path ? { type: 'local-file', path: input.path } : { type: 'inline' })
+      return createIssueWorkflowRun({
+        issue,
+        cwd: parsed.options.cwd || process.cwd(),
+        requiredGates: parsed.issue.requiredGates,
+        passingScore: parsed.issue.passingScore,
+      }, options)
+    }
+    case 'execute': {
+      const input = await readIssueInput(requireIssueInput(parsed))
+      const issue = normalizeIssueInput(input.content, input.path ? { type: 'local-file', path: input.path } : { type: 'inline' })
+      return runIssueWorkflow({
+        issue,
+        cwd: parsed.options.cwd || process.cwd(),
+        requiredGates: parsed.issue.requiredGates,
+        passingScore: parsed.issue.passingScore,
+        maxIterations: parsed.issue.maxIterations,
+      }, options)
+    }
+    case 'list':
+      return listIssueWorkflowRuns(options)
+    case 'get': {
+      const run = await loadIssueWorkflowRun(requireIssueInput(parsed), options)
+      if (!run) throw new Error(`Issue workflow run not found: ${parsed.issue.input}`)
+      return run
+    }
+    case 'replay':
+      throw new Error('issue replay requires an external runner and is not available from the local CLI yet')
+    case 'stop': {
+      const run = await stopIssueWorkflowRun(requireIssueInput(parsed), 'cli stop', options)
+      if (!run) throw new Error(`Issue workflow run not found: ${parsed.issue.input}`)
+      return run
+    }
+    default:
+      throw new Error(`Unknown issue subcommand: ${parsed.issue.action}`)
   }
 }
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2))
+
+  if (parsed.command === 'issue') {
+    const result = await handleIssueCommand(parsed)
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
 
   if (parsed.help || !parsed.prompt) {
     printHelp()

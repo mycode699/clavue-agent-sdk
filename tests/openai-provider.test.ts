@@ -5,6 +5,10 @@ import { OpenAIProvider } from '../src/providers/openai.ts'
 import { decideModelCapability, getModelCapabilities } from '../src/providers/index.ts'
 
 test('model capability registry returns conservative deterministic metadata', async () => {
+  assert.deepEqual(getModelCapabilities('openai/chatgpt-5.4', { apiType: 'openai-completions' }).known, true)
+  assert.deepEqual(getModelCapabilities('anthropic/gpt-4.1', { apiType: 'anthropic-messages' }).known, false)
+  assert.deepEqual(getModelCapabilities('foo/o123-model', { apiType: 'openai-completions' }).known, false)
+
   assert.deepEqual(getModelCapabilities('openai/gpt-5.4', { apiType: 'openai-completions' }), {
     model: 'openai/gpt-5.4',
     normalizedModel: 'gpt-5.4',
@@ -108,6 +112,160 @@ test('top-level package exports model capability helpers', async () => {
   assert.equal(sdk.getModelCapabilities('gpt-5.4').transport, 'responses')
 })
 
+test('OpenAI provider allows unknown compatible models to prove capabilities at the gateway', async () => {
+  const calls: Array<{ url: string; body: any }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    })
+
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl_123',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'ok' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+
+    await provider.createMessage({
+      model: 'vendor/custom-model',
+      maxTokens: 256,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'Hello' }],
+      tools: [{
+        name: 'lookup',
+        description: 'Lookup information.',
+        input_schema: { type: 'object', properties: {} },
+      }],
+    })
+
+    await provider.createMessage({
+      model: 'gpt-4.1',
+      maxTokens: 256,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'Hello' }],
+      thinking: { type: 'disabled' },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0]?.url, 'https://example.test/v1/chat/completions')
+  assert.equal(calls[0]?.body?.tools?.[0]?.function?.name, 'lookup')
+  assert.equal(calls[1]?.url, 'https://example.test/v1/chat/completions')
+})
+
+test('OpenAI provider normalizes network fetch failures', async () => {
+  const originalFetch = globalThis.fetch
+  const networkError = new TypeError('fetch failed')
+  globalThis.fetch = (async () => {
+    throw networkError
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-4o',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'network')
+        assert.equal(err.error, networkError)
+        assert.match(err.message, /fetch failed/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('OpenAI provider normalizes fetch abort failures', async () => {
+  const originalFetch = globalThis.fetch
+  const abortError = new Error('The operation was aborted')
+  abortError.name = 'AbortError'
+  globalThis.fetch = (async () => {
+    throw abortError
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-4o',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'aborted')
+        assert.equal(err.error, abortError)
+        assert.match(err.message, /aborted/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('OpenAI provider preflights unsupported thinking and image requests', async () => {
+  const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+
+  await assert.rejects(
+    provider.createMessage({
+      model: 'gpt-4.1',
+      maxTokens: 256,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'Hello' }],
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+    }),
+    (err: any) => {
+      assert.equal(err.provider, 'openai')
+      assert.equal(err.category, 'unsupported_capability')
+      assert.equal(err.capability, 'thinking')
+      assert.match(err.message, /thinking support is not enabled/)
+      return true
+    },
+  )
+
+  await assert.rejects(
+    provider.createMessage({
+      model: 'deepseek-chat',
+      maxTokens: 256,
+      system: 'You are helpful.',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } }],
+      }],
+    }),
+    (err: any) => {
+      assert.equal(err.provider, 'openai')
+      assert.equal(err.category, 'unsupported_capability')
+      assert.equal(err.capability, 'images')
+      assert.match(err.message, /images support is not enabled/)
+      return true
+    },
+  )
+})
+
 test('OpenAI provider errors expose stable categories by status', async () => {
   const cases = [
     { status: 400, category: 'invalid_request' },
@@ -143,6 +301,79 @@ test('OpenAI provider errors expose stable categories by status', async () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  }
+})
+
+test('OpenAI provider errors expose semantic categories from provider bodies', async () => {
+  const cases = [
+    {
+      body: { error: { message: 'content filtered', code: 'content_filter' } },
+      category: 'content_filter',
+    },
+    {
+      body: { error: { message: 'maximum context length exceeded', type: 'context_length_exceeded' } },
+      category: 'context_overflow',
+    },
+    {
+      body: { error: { message: 'missing tool response message', param: 'messages.[3].tool_call_id' } },
+      category: 'tool_protocol_error',
+    },
+  ]
+
+  for (const { body, category } of cases) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify(body),
+      { status: 400, statusText: 'Rejected', headers: { 'Content-Type': 'application/json' } },
+    )) as typeof fetch
+
+    try {
+      const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+      await assert.rejects(
+        provider.createMessage({
+          model: 'gpt-4o',
+          maxTokens: 256,
+          system: 'You are helpful.',
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+        (err: any) => {
+          assert.equal(err.provider, 'openai')
+          assert.equal(err.category, category)
+          assert.equal(err.status, 400)
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('OpenAI provider wraps invalid provider JSON as conversion errors', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    '{not json',
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-4o',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'provider_conversion_error')
+        assert.match(err.message, /parse OpenAI Chat Completions response/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -274,6 +505,41 @@ test('falls back to Chat Completions when a gateway does not support Responses',
       ['https://gateway.test/v1/responses', 'https://gateway.test/v1/chat/completions'],
     )
   }
+})
+
+test('does not fall back from Responses when the provider returns semantic 400 errors', async () => {
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    calls.push(String(input))
+    return new Response(JSON.stringify({ error: { message: 'content filtered', code: 'content_filter' } }), {
+      status: 400,
+      statusText: 'Rejected',
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://gateway.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'content_filter')
+        assert.equal(err.status, 400)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, ['https://gateway.test/v1/responses'])
 })
 
 test('does not fall back from Responses for non-gateway provider errors', async () => {

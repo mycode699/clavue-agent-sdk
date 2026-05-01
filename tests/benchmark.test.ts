@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -61,6 +61,29 @@ test('runBenchmarks returns deterministic offline benchmark metrics', async () =
     assert.equal(runtimeProfile?.verify_memory_policy, 'off')
     assert.equal(report.metrics.find((metric) => metric.name === 'memoryQuery')?.metadata?.results, 5)
     assert.equal(report.metrics.find((metric) => metric.name === 'agentJobStorage')?.metadata?.jobs, 2)
+  } finally {
+    await rm(dirs.root, { recursive: true, force: true })
+  }
+})
+
+test('runBenchmarks records context pipeline startup metadata', async () => {
+  const dirs = await createBenchmarkDirs()
+  const { runBenchmarks } = await import('../src/index.ts')
+  await writeFile(join(dirs.root, 'clavue.md'), 'Benchmark context guidance.\n')
+
+  try {
+    const report = await runBenchmarks({
+      cwd: dirs.root,
+      iterations: 1,
+      memory: { dir: dirs.memory },
+      agentJobs: { dir: dirs.jobs, runtimeNamespace: 'benchmark-startup-test' },
+    })
+
+    const contextBuild = report.metrics.find((metric) => metric.name === 'contextBuild')
+    assert.equal(contextBuild?.metadata?.sections, 2)
+    assert.equal(contextBuild?.metadata?.rendered_context_included, true)
+    assert.equal(contextBuild?.metadata?.project_sources, 1)
+    assert.ok(Number(contextBuild?.metadata?.rendered_context_bytes) > 0)
   } finally {
     await rm(dirs.root, { recursive: true, force: true })
   }

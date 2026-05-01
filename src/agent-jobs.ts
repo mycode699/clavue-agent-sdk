@@ -8,6 +8,7 @@ import {
   getRuntimeNamespace,
   type RuntimeNamespaceContext,
 } from './utils/runtime.js'
+import { AGENT_JOB_RECORD_SCHEMA_VERSION } from './types.js'
 import type { AgentRunTrace, Evidence, QualityGateResult } from './types.js'
 
 export type AgentJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale'
@@ -23,6 +24,7 @@ export interface AgentJobReplayInput {
 }
 
 export interface AgentJobRecord {
+  schema_version?: string
   id: string
   kind: AgentJobKind
   status: AgentJobStatus
@@ -31,6 +33,8 @@ export interface AgentJobRecord {
   description?: string
   subagent_type?: string
   model?: string
+  batch_id?: string
+  correlation_id?: string
   createdAt: string
   updatedAt: string
   startedAt?: string
@@ -49,6 +53,8 @@ export interface AgentJobRecord {
 
 export interface AgentJobStoreOptions extends RuntimeNamespaceContext {
   dir?: string
+  batch_id?: string
+  correlation_id?: string
   /** Mark queued/running jobs stale after this many milliseconds without a heartbeat. Negative disables stale checks. */
   staleAfterMs?: number
   /** Internal heartbeat write interval while a job is active in this process. */
@@ -61,8 +67,25 @@ export interface CreateAgentJobInput {
   description?: string
   subagent_type?: string
   model?: string
+  batch_id?: string
+  correlation_id?: string
   allowedTools?: string[]
   replay?: AgentJobReplayInput
+}
+
+export interface CreateAgentJobBatchTask {
+  prompt: string
+  description?: string
+  subagent_type?: string
+  model?: string
+  allowedTools?: string[]
+  replay?: AgentJobReplayInput
+}
+
+export interface CreateAgentJobBatchInput {
+  tasks: CreateAgentJobBatchTask[]
+  batch_id?: string
+  correlation_id?: string
 }
 
 export interface AgentJobCompletion {
@@ -71,6 +94,53 @@ export interface AgentJobCompletion {
   trace?: AgentRunTrace
   evidence?: Evidence[]
   quality_gates?: QualityGateResult[]
+}
+
+export interface AgentJobStatusSummary {
+  queued: number
+  running: number
+  completed: number
+  failed: number
+  cancelled: number
+  stale: number
+}
+
+export interface AgentJobSummaryError {
+  id: string
+  status: AgentJobStatus
+  error: string
+}
+
+export interface AgentJobBatchSummary {
+  batch_id: string
+  correlation_id?: string
+  total: number
+  by_status: AgentJobStatusSummary
+  job_ids: string[]
+}
+
+export interface AgentJobSummary {
+  total: number
+  by_status: AgentJobStatusSummary
+  stale_count: number
+  replayable_count: number
+  failed_count: number
+  cancelled_count: number
+  latest_heartbeat_at?: string
+  latest_updated_at?: string
+  evidence_count: number
+  quality_gate_count: number
+  batch_count: number
+  batches: AgentJobBatchSummary[]
+  error_summaries: AgentJobSummaryError[]
+  stale_jobs: Array<Pick<AgentJobRecord, 'id' | 'kind' | 'status' | 'updatedAt' | 'heartbeatAt' | 'runnerId' | 'error'>>
+}
+
+export interface AgentJobBatchResult {
+  batch_id: string
+  correlation_id?: string
+  jobs: AgentJobRecord[]
+  summary: AgentJobSummary
 }
 
 export type AgentJobRunner = (signal: AbortSignal) => Promise<AgentJobCompletion>
@@ -245,6 +315,7 @@ export async function createAgentJob(
 ): Promise<AgentJobRecord> {
   const now = new Date().toISOString()
   const job: AgentJobRecord = {
+    schema_version: AGENT_JOB_RECORD_SCHEMA_VERSION,
     id: `agent_job_${Date.now()}_${randomUUID()}`,
     kind: input.kind,
     status: 'queued',
@@ -253,6 +324,8 @@ export async function createAgentJob(
     description: input.description,
     subagent_type: input.subagent_type,
     model: input.model,
+    batch_id: input.batch_id,
+    correlation_id: input.correlation_id,
     allowedTools: input.allowedTools,
     replay: input.replay,
     createdAt: now,
@@ -260,6 +333,35 @@ export async function createAgentJob(
   }
 
   return saveAgentJob(job, options)
+}
+
+export async function createAgentJobBatch(
+  input: CreateAgentJobBatchInput,
+  options?: AgentJobStoreOptions,
+): Promise<AgentJobBatchResult> {
+  const batchId = input.batch_id || `agent_job_batch_${Date.now()}_${randomUUID()}`
+  const jobs = await Promise.all(input.tasks.map((task) => createAgentJob({
+    kind: 'subagent',
+    prompt: task.prompt,
+    description: task.description,
+    subagent_type: task.subagent_type,
+    model: task.model,
+    batch_id: batchId,
+    correlation_id: input.correlation_id,
+    allowedTools: task.allowedTools,
+    replay: task.replay,
+  }, options)))
+  const summary = await summarizeAgentJobs({
+    ...options,
+    batch_id: batchId,
+  })
+
+  return {
+    batch_id: batchId,
+    correlation_id: input.correlation_id,
+    jobs,
+    summary,
+  }
 }
 
 export async function replayAgentJob(
@@ -370,10 +472,120 @@ export async function listAgentJobs(options?: AgentJobStoreOptions): Promise<Age
 
     return jobs
       .filter((job): job is AgentJobRecord => job !== null)
+      .filter((job) => !options?.batch_id || job.batch_id === options.batch_id)
+      .filter((job) => !options?.correlation_id || job.correlation_id === options.correlation_id)
       .map(cloneJob)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   } catch {
     return []
+  }
+}
+
+function createEmptyAgentJobStatusSummary(): AgentJobStatusSummary {
+  return {
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    stale: 0,
+  }
+}
+
+function maxIsoTimestamp(current: string | undefined, next: string | undefined): string | undefined {
+  if (!next) return current
+  if (!current) return next
+  return next.localeCompare(current) > 0 ? next : current
+}
+
+function summarizeJobBatches(jobs: AgentJobRecord[]): AgentJobBatchSummary[] {
+  const batches = new Map<string, AgentJobBatchSummary>()
+  for (const job of jobs) {
+    if (!job.batch_id) continue
+    const existing = batches.get(job.batch_id)
+    if (existing) {
+      existing.total++
+      existing.by_status[job.status]++
+      existing.job_ids.push(job.id)
+    } else {
+      const byStatus = createEmptyAgentJobStatusSummary()
+      byStatus[job.status]++
+      batches.set(job.batch_id, {
+        batch_id: job.batch_id,
+        correlation_id: job.correlation_id,
+        total: 1,
+        by_status: byStatus,
+        job_ids: [job.id],
+      })
+    }
+  }
+
+  return [...batches.values()]
+    .map((batch) => ({
+      ...batch,
+      job_ids: batch.job_ids.sort(),
+    }))
+    .sort((a, b) => a.batch_id.localeCompare(b.batch_id))
+}
+
+export async function summarizeAgentJobs(options?: AgentJobStoreOptions): Promise<AgentJobSummary> {
+  const jobs = await listAgentJobs(options)
+  const byStatus = createEmptyAgentJobStatusSummary()
+  let latestHeartbeatAt: string | undefined
+  let latestUpdatedAt: string | undefined
+  let evidenceCount = 0
+  let qualityGateCount = 0
+  const errorSummaries: AgentJobSummaryError[] = []
+  const staleJobs: AgentJobSummary['stale_jobs'] = []
+
+  for (const job of jobs) {
+    byStatus[job.status]++
+    latestHeartbeatAt = maxIsoTimestamp(latestHeartbeatAt, job.heartbeatAt)
+    latestUpdatedAt = maxIsoTimestamp(latestUpdatedAt, job.updatedAt)
+    evidenceCount += job.evidence?.length ?? 0
+    qualityGateCount += job.quality_gates?.length ?? 0
+
+    if (job.error) {
+      errorSummaries.push({
+        id: job.id,
+        status: job.status,
+        error: job.error,
+      })
+    }
+
+    if (job.status === 'stale') {
+      staleJobs.push({
+        id: job.id,
+        kind: job.kind,
+        status: job.status,
+        updatedAt: job.updatedAt,
+        heartbeatAt: job.heartbeatAt,
+        runnerId: job.runnerId,
+        error: job.error,
+      })
+    }
+  }
+
+  const batches = summarizeJobBatches(jobs)
+
+  return {
+    total: jobs.length,
+    by_status: byStatus,
+    stale_count: byStatus.stale,
+    replayable_count: jobs.filter((job) => Boolean(job.replay) && (job.status === 'stale' || job.status === 'failed' || job.status === 'cancelled')).length,
+    failed_count: byStatus.failed,
+    cancelled_count: byStatus.cancelled,
+    latest_heartbeat_at: latestHeartbeatAt,
+    latest_updated_at: latestUpdatedAt,
+    evidence_count: evidenceCount,
+    quality_gate_count: qualityGateCount,
+    batch_count: batches.length,
+    batches,
+    error_summaries: errorSummaries,
+    stale_jobs: staleJobs.sort((a, b) => {
+      const byUpdatedAt = a.updatedAt.localeCompare(b.updatedAt)
+      return byUpdatedAt === 0 ? a.id.localeCompare(b.id) : byUpdatedAt
+    }),
   }
 }
 

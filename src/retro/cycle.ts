@@ -76,6 +76,7 @@ export async function runRetroCycle(input: RetroCycleInput): Promise<RetroCycleR
     evaluators,
     runAt: input.runAt,
     sourceRun: input.sourceRun,
+    skillTargetCount: input.skillTargetCount,
   })
 
   const verification = await runRetroVerification({
@@ -114,6 +115,7 @@ export async function runRetroCycle(input: RetroCycleInput): Promise<RetroCycleR
     previousRunId: input.previousRunId,
     sourceRunId: input.sourceRun?.id,
     sourceSessionId: input.sourceRun?.session_id,
+    skillTargetCount: input.skillTargetCount,
     attemptCount,
     attemptNumber: attemptCount + 1,
     maxAttempts,

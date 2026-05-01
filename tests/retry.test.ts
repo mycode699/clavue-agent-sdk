@@ -21,6 +21,7 @@ test('isRetryableError covers transient API and network failures', () => {
   assert.equal(isRetryableError({ status: 529 }), true)
   assert.equal(isRetryableError({ status: 400 }), false)
   assert.equal(isRetryableError({ code: 'ECONNRESET' }), true)
+  assert.equal(isRetryableError({ category: 'network' }), true)
   assert.equal(isRetryableError({ code: 'UND_ERR_SOCKET' }), true)
   assert.equal(isRetryableError({ cause: { code: 'ENOTFOUND' } }), true)
   assert.equal(isRetryableError(new TypeError('fetch failed')), true)

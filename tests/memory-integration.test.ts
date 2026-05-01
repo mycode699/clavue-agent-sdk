@@ -240,15 +240,11 @@ test('memory trace records retrieval reasons, validation state, injection status
 
     assert.equal(memoryTrace?.injection_status, 'injected')
     assert.equal(memoryTrace?.selection_source, 'targeted')
-    assert.deepEqual(memoryTrace?.retrieval_steps, [
-      {
-        source: 'targeted',
-        query: 'use validated memory reasons',
-        repo_path: '/tmp/repo-a',
-        candidate_count: 1,
-        selected_count: 1,
-      },
-    ])
+    assert.equal(memoryTrace?.retrieval_steps?.[0]?.source, 'targeted')
+    assert.equal(memoryTrace?.retrieval_steps?.[0]?.query, 'use validated memory reasons')
+    assert.equal(memoryTrace?.retrieval_steps?.[0]?.repo_path, '/tmp/repo-a')
+    assert.equal(memoryTrace?.retrieval_steps?.[0]?.candidate_count, 1)
+    assert.equal(memoryTrace?.retrieval_steps?.[0]?.selected_count, 1)
     assert.deepEqual(memoryTrace?.selected?.[0]?.score_reasons, [
       'repo_path',
       'text:use',
@@ -259,6 +255,100 @@ test('memory trace records retrieval reasons, validation state, injection status
       'validated',
     ])
     assert.equal(memoryTrace?.selected?.[0]?.validation_state, 'validated')
+  } finally {
+    await agent.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('brainFirst memory trace records retrieval provenance, timing, filters, stale state, and redaction status', async () => {
+  const dir = await createMemoryDir()
+  const { Agent, saveMemory } = await import('../src/index.ts')
+
+  class StubProvider {
+    readonly apiType = 'openai-completions' as const
+
+    async createMessage() {
+      return {
+        content: [{ type: 'text', text: 'rich memory trace response' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 9, output_tokens: 4 },
+      }
+    }
+  }
+
+  const agent = new Agent({
+    model: 'gpt-5.4',
+    tools: [],
+    memory: {
+      enabled: true,
+      dir,
+      repoPath: '/tmp/repo-a',
+      maxInjectedEntries: 1,
+      policy: { mode: 'brainFirst' },
+    },
+  })
+  ;(agent as any).provider = new StubProvider()
+
+  try {
+    await saveMemory({
+      id: 'pref-rich-memory-trace',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Rich memory trace',
+      content: 'Use rich memory trace provenance before acting.',
+      repoPath: '/tmp/repo-a',
+      tags: ['memory', 'trace'],
+      confidence: 'high',
+      source: 'explicit user preference',
+      lastValidatedAt: '2026-04-01',
+    }, { dir })
+    await saveMemory({
+      id: 'pref-rich-memory-distractor',
+      type: 'feedback',
+      scope: 'repo',
+      title: 'Memory distractor',
+      content: 'A weaker memory trace distractor.',
+      repoPath: '/tmp/repo-a',
+      tags: ['memory'],
+      confidence: 'medium',
+    }, { dir })
+
+    const result = await agent.run('use rich memory trace provenance')
+    const memoryTrace = result.trace?.memory?.[0]
+    const step = memoryTrace?.retrieval_steps?.[0]
+    const selected = memoryTrace?.selected?.[0]
+
+    assert.match(memoryTrace?.retrieval_id || '', /^memret_[a-f0-9-]+$/)
+    assert.equal(memoryTrace?.strategy, 'brain_first')
+    assert.ok(Number(memoryTrace?.duration_ms) >= 0)
+    assert.equal(memoryTrace?.store?.configured, true)
+    assert.equal(memoryTrace?.store?.dir, dir)
+    assert.deepEqual(memoryTrace?.filters, {
+      repo_path: '/tmp/repo-a',
+      text: 'use rich memory trace provenance',
+      limit: 1,
+    })
+    assert.equal(step?.candidate_count, 1)
+    assert.equal(step?.selected_count, 1)
+    assert.ok(Number(step?.duration_ms) >= 0)
+    assert.deepEqual(step?.filters, memoryTrace?.filters)
+    assert.equal(selected?.id, 'pref-rich-memory-trace')
+    assert.equal(selected?.matched_fields?.includes('title'), true)
+    assert.equal(selected?.matched_fields?.includes('content'), true)
+    assert.equal(selected?.matched_fields?.includes('tags'), true)
+    assert.deepEqual(selected?.score_components, [
+      { reason: 'repo_path', score: 6 },
+      { reason: 'text:use', score: 2 },
+      { reason: 'text:rich', score: 2 },
+      { reason: 'text:memory', score: 2 },
+      { reason: 'text:trace', score: 2 },
+      { reason: 'text:provenance', score: 2 },
+      { reason: 'confidence:high', score: 1 },
+      { reason: 'validated', score: 1 },
+    ])
+    assert.equal(selected?.stale, true)
+    assert.equal(selected?.redaction_status, 'not_required')
   } finally {
     await agent.close()
     await rm(dir, { recursive: true, force: true })

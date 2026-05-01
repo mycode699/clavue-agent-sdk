@@ -32,6 +32,52 @@ test('CLI parses named toolsets', async () => {
   assert.deepEqual(parsed.options.toolsets, ['repo-readonly', 'research'])
 })
 
+test('CLI parses autonomy mode from env and flag', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  const fromEnv = parseArgs(['review release'], {
+    CLAVUE_AGENT_AUTONOMY: 'autonomous',
+  })
+  const fromFlag = parseArgs(['--autonomy', 'proactive', 'review release'], {
+    CLAVUE_AGENT_AUTONOMY: 'supervised',
+  })
+
+  assert.equal(fromEnv.options.autonomyMode, 'autonomous')
+  assert.equal(fromFlag.options.autonomyMode, 'proactive')
+})
+
+test('CLI parses permission mode from env and flag', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  const fromEnv = parseArgs(['review release'], {
+    CLAVUE_AGENT_PERMISSION_MODE: 'acceptEdits',
+  })
+  const fromFlag = parseArgs(['--permission-mode', 'trustedAutomation', 'review release'], {
+    CLAVUE_AGENT_PERMISSION_MODE: 'default',
+  })
+
+  assert.equal(fromEnv.options.permissionMode, 'acceptEdits')
+  assert.equal(fromFlag.options.permissionMode, 'trustedAutomation')
+})
+
+test('CLI rejects unknown autonomy mode', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  assert.throws(
+    () => parseArgs(['--autonomy', 'reckless', 'review release'], {}),
+    /--autonomy must be supervised, proactive, or autonomous/,
+  )
+})
+
+test('CLI rejects unknown permission mode', async () => {
+  const { parseArgs } = await import('../src/cli.ts')
+
+  assert.throws(
+    () => parseArgs(['--permission-mode', 'reckless', 'review release'], {}),
+    /--permission-mode must be trustedAutomation, auto, default, acceptEdits, dontAsk, bypassPermissions, or plan/,
+  )
+})
+
 test('CLI rejects unknown toolsets', async () => {
   const { parseArgs } = await import('../src/cli.ts')
 
@@ -145,6 +191,57 @@ test('runSelfImprovement persists capped improvement memories', async () => {
     assert.equal(result.savedMemories.length, 1)
     assert.equal(memories.length, 1)
     assert.equal(memories[0]?.title, 'Run ended with error_max_turns')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runSelfImprovement can include skill retro evaluators in self-improvement cycles', async () => {
+  const dir = await createMemoryDir()
+  const { runSelfImprovement, createSkillManifest } = await import('../src/index.ts')
+  type AgentRunResult = import('../src/index.ts').AgentRunResult
+
+  const run: AgentRunResult = {
+    id: 'run-skill-retro-1',
+    session_id: 'session-skill-retro-1',
+    status: 'completed',
+    subtype: 'success',
+    text: 'done',
+    usage: { input_tokens: 1, output_tokens: 1 },
+    num_turns: 1,
+    duration_ms: 10,
+    duration_api_ms: 5,
+    total_cost_usd: 0,
+    stop_reason: null,
+    started_at: '2026-04-25T00:00:00.000Z',
+    completed_at: '2026-04-25T00:00:01.000Z',
+    messages: [],
+    events: [],
+  }
+
+  try {
+    const result = await runSelfImprovement(run, {
+      memory: { enabled: false },
+      retro: {
+        enabled: true,
+        targetName: 'skill-retro-target',
+        cwd: dir,
+        ledger: { dir },
+        skills: [createSkillManifest({
+          name: 'Draft Skill',
+          description: 'Incomplete draft skill fixture.',
+          allowedTools: ['Read'],
+          qualityGates: ['manual-review'],
+        })],
+      },
+    }, {
+      cwd: dir,
+      sessionId: 'session-skill-retro-1',
+    })
+
+    assert.equal(result.retroCycle?.trace.skillTargetCount, 1)
+    assert.equal(result.retroCycle?.run.run_metadata.skillTargetCount, 1)
+    assert.ok(result.retroCycle?.run.findings.some((finding) => finding.title === 'Skill prompt process metadata is incomplete'))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

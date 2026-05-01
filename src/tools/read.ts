@@ -3,8 +3,8 @@
  */
 
 import { readFile, stat } from 'fs/promises'
-import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveWorkspacePath } from './workspace.js'
 
 export const FileReadTool = defineTool({
   name: 'Read',
@@ -34,7 +34,8 @@ export const FileReadTool = defineTool({
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {
-    const filePath = resolve(context.cwd, input.file_path)
+    const filePath = resolveWorkspacePath(context, input.file_path)
+    if (typeof filePath !== 'string') return filePath
 
     if (input.offset !== undefined && (!Number.isInteger(input.offset) || input.offset < 0)) {
       return { data: 'Error: offset must be a non-negative integer.', is_error: true }

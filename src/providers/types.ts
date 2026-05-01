@@ -22,7 +22,13 @@ export type ProviderErrorCategory =
   | 'rate_limit'
   | 'timeout'
   | 'aborted'
+  | 'network'
   | 'unsupported'
+  | 'unsupported_capability'
+  | 'content_filter'
+  | 'context_overflow'
+  | 'tool_protocol_error'
+  | 'provider_conversion_error'
   | 'provider_error'
   | 'invalid_request'
   | 'unknown'
@@ -34,6 +40,8 @@ export interface ProviderError extends Error {
   headers?: Record<string, string>
   body?: string
   error?: unknown
+  model?: string
+  capability?: ModelCapabilityName
 }
 
 export interface ModelCapabilityOptions {

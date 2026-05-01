@@ -5,7 +5,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import {
+  BashTool,
+  FileEditTool,
   FileReadTool,
+  FileWriteTool,
+  GlobTool,
   GrepTool,
   LSPTool,
   ListMcpResourcesTool,
@@ -30,6 +34,15 @@ test('GrepTool reports invalid regex errors instead of falling through to no mat
   assert.match(String(result.content), /regex|pattern|grep/i)
 })
 
+test('BashTool blocks destructive commands before execution', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bash-safety-'))
+  const result = await BashTool.call({ command: 'rm -rf .', timeout: 1000 }, { cwd: dir })
+
+  assert.equal(result.is_error, true)
+  assert.match(String(result.content), /destructive command/i)
+  assert.match(String(result.content), /rm -rf/i)
+})
+
 test('FileReadTool validates offset and limit boundaries', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'read-tool-'))
   const file = join(dir, 'sample.txt')
@@ -42,6 +55,45 @@ test('FileReadTool validates offset and limit boundaries', async () => {
   assert.match(String(negativeOffset.content), /offset/i)
   assert.equal(zeroLimit.is_error, true)
   assert.match(String(zeroLimit.content), /limit/i)
+})
+
+test('file tools reject paths outside the workspace root', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'workspace-root-'))
+  const outside = await mkdtemp(join(tmpdir(), 'workspace-outside-'))
+  const outsideFile = join(outside, 'secret.txt')
+  await writeFile(outsideFile, 'secret')
+
+  const readResult = await FileReadTool.call(
+    { file_path: outsideFile },
+    { cwd: workspace, workspaceRoot: workspace },
+  )
+  const writeResult = await FileWriteTool.call(
+    { file_path: outsideFile, content: 'changed' },
+    { cwd: workspace, workspaceRoot: workspace },
+  )
+  const editResult = await FileEditTool.call(
+    { file_path: outsideFile, old_string: 'secret', new_string: 'changed' },
+    { cwd: workspace, workspaceRoot: workspace },
+  )
+  const globResult = await GlobTool.call(
+    { pattern: '*.txt', path: outside },
+    { cwd: workspace, workspaceRoot: workspace },
+  )
+  const grepResult = await GrepTool.call(
+    { pattern: 'secret', path: outsideFile },
+    { cwd: workspace, workspaceRoot: workspace },
+  )
+
+  assert.equal(readResult.is_error, true)
+  assert.match(String(readResult.content), /outside.*workspace/i)
+  assert.equal(writeResult.is_error, true)
+  assert.match(String(writeResult.content), /outside.*workspace/i)
+  assert.equal(editResult.is_error, true)
+  assert.match(String(editResult.content), /outside.*workspace/i)
+  assert.equal(globResult.is_error, true)
+  assert.match(String(globResult.content), /outside.*workspace/i)
+  assert.equal(grepResult.is_error, true)
+  assert.match(String(grepResult.content), /outside.*workspace/i)
 })
 
 test('LSPTool searches symbols without shell interpolation', async () => {

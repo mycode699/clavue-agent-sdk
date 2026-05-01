@@ -14,7 +14,7 @@ import { getAllBaseTools, filterTools, getToolsetTools, isToolsetName } from './
 import { initBundledSkills, getUserInvocableSkills } from './skills/index.js'
 import { getMemoryStoreInfo } from './memory.js'
 import { listSessions } from './session.js'
-import { listAgentJobs } from './agent-jobs.js'
+import { summarizeAgentJobs } from './agent-jobs.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import type { ApiType } from './providers/index.js'
 import { getModelCapabilities } from './providers/index.js'
@@ -286,26 +286,24 @@ async function checkMemoryStorage(options: DoctorOptions): Promise<DoctorCheck> 
 async function checkAgentJobStorage(options: DoctorOptions): Promise<DoctorCheck> {
   try {
     if (options.agentJobs?.dir) await mkdir(options.agentJobs.dir, { recursive: true })
-    const jobs = await listAgentJobs({
+    const summary = await summarizeAgentJobs({
       dir: options.agentJobs?.dir,
       runtimeNamespace: options.agentJobs?.runtimeNamespace ?? options.runtimeNamespace,
       staleAfterMs: options.agentJobs?.staleAfterMs,
     })
-    const staleJobs = jobs.filter((job) => job.status === 'stale')
-    const activeJobs = jobs.filter((job) => job.status === 'queued' || job.status === 'running')
     return {
       name: 'storage.agentJobs',
       category: 'storage',
-      status: staleJobs.length > 0 ? 'warn' : 'ok',
-      message: staleJobs.length > 0
+      status: summary.stale_count > 0 ? 'warn' : 'ok',
+      message: summary.stale_count > 0
         ? 'Agent job storage is readable, but stale jobs require inspection or replay.'
         : 'Agent job storage is readable.',
       details: {
-        count: jobs.length,
+        count: summary.total,
         dir: options.agentJobs?.dir ?? 'default',
-        stale_count: staleJobs.length,
-        active_count: activeJobs.length,
-        stale_jobs: staleJobs.map((job) => ({
+        stale_count: summary.stale_count,
+        active_count: summary.by_status.queued + summary.by_status.running,
+        stale_jobs: summary.stale_jobs.map((job) => ({
           id: job.id,
           kind: job.kind,
           status: job.status,
@@ -314,6 +312,7 @@ async function checkAgentJobStorage(options: DoctorOptions): Promise<DoctorCheck
           runner_id: job.runnerId,
           error: job.error,
         })),
+        summary,
       },
     }
   } catch (err: any) {

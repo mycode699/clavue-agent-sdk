@@ -31,8 +31,14 @@ export {
 } from './registry.js'
 
 // Authoring and loading
-export { createSkill, skillFromManifest, validateSkillManifest } from './authoring.js'
-export type { SkillManifest, SkillPromptSource } from './authoring.js'
+export { createSkill, createSkillManifest, skillFromManifest, validateSkillManifest } from './authoring.js'
+export type {
+  SkillArtifactInput,
+  SkillManifest,
+  SkillManifestInput,
+  SkillPromptSource,
+  SkillQualityGateInput,
+} from './authoring.js'
 export { loadSkillsFromDir } from './loader.js'
 export type {
   LoadedSkill,
