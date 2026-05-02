@@ -10,6 +10,12 @@ Clavue Agent SDK 是面向生产环境的 TypeScript agent runtime，可用于�
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
 
+## Documentation / 文档
+
+- [Programmatic Integration Guide](./docs/programmatic-integration-guide.md): complete usage patterns for embedding the SDK in services, CI, workers, internal platforms, and agent products.
+- [Capability Upgrade Program](./docs/agent-sdk-capability-upgrade-program.md): roadmap and capability planning for controlled autonomous workflows.
+- [Production Capabilities](./docs/production-agent-sdk-capabilities.md): deeper analysis of production runtime capabilities and gaps.
+
 ## Why Clavue / 为什么选择 Clavue
 
 - **Library-first agent runtime:** embed `run()`, `query()`, or `createAgent()` directly in Node.js services, CI, workers, web backends, and internal platforms.
@@ -1367,6 +1373,8 @@ Clavue Agent SDK is an in-process TypeScript agent runtime for teams that need c
 For GitHub readers, start with the npx examples or the `run()` API. For npm consumers, install `clavue-agent-sdk` when you want the same agent loop embedded inside your own Node.js process rather than launching a separate tool.
 
 Clavue Agent SDK 是进程内 TypeScript agent runtime，面向需要“受控自主”而不是黑盒 CLI 包装的团队。它可用于 coding、review、research、planning、issue repair、CI automation 与服务端 agent workflow，并通过命名工具集、权限模式、自主模式、hooks、workspace guard、schema-versioned events、durable AgentJobs、memory、retro/eval 与 quality gates，把强模型主动性约束在可审计、可控制的边界内。
+
+For complete application integration patterns, read [Programmatic Integration Guide](./docs/programmatic-integration-guide.md).
 
 ### Repository checklist / 仓库检查
 

@@ -69,6 +69,7 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   assert.ok(paths.has('dist/tools/agent-job-tools.js'), 'expected AgentJob tools to be published')
   assert.ok(paths.has('dist/tools/agent-job-tools.d.ts'), 'expected AgentJob tool types to be published')
   assert.ok(paths.has('docs/agent-sdk-capability-upgrade-program.md'), 'expected referenced capability docs to be published')
+  assert.ok(paths.has('docs/programmatic-integration-guide.md'), 'expected programmatic integration guide to be published')
   assert.ok(paths.has('dist/skills/bundled/workflow.js'), 'expected bundled lifecycle workflow skills to be published')
   assert.ok(paths.has('dist/skills/bundled/workflow.d.ts'), 'expected bundled lifecycle workflow skill types to be published')
   assert.ok(paths.has('dist/providers/capabilities.js'), 'expected model capability registry to be published')
