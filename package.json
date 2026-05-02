@@ -12,8 +12,8 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.7.3",
-  "description": "In-process TypeScript agent runtime for controlled autonomous coding, research, issue workflows, durable AgentJobs, memory, and CI automation.",
+  "version": "0.7.4",
+  "description": "In-process TypeScript agent SDK for controlled autonomous workflows, workflow contracts, proof-of-work artifacts, durable AgentJobs, memory, and orchestration policy.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -69,6 +69,9 @@
     "workflow-automation",
     "ci-automation",
     "issue-workflow",
+    "workflow-contract",
+    "proof-of-work",
+    "orchestration-policy",
     "typescript"
   ],
   "license": "MIT"

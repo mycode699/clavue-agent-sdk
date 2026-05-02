@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-Clavue Agent SDK is a production-oriented TypeScript runtime for building coding agents, research agents, workflow agents, and autonomous repair loops. It runs the full agent loop **in-process** for library integrations, with no subprocess or local CLI dependency. An optional `npx` CLI is available for terminal and CI automation. The same runtime supports **Anthropic** and **OpenAI-compatible** APIs, including modern GPT models through the OpenAI Responses API when available.
+Clavue Agent SDK is a production-oriented TypeScript SDK for building controlled autonomous agents, workflow agents, coding agents, research agents, and repair loops. It runs the full agent loop **in-process** for library integrations, with no subprocess or local CLI dependency. An optional `npx` CLI is available for terminal and CI automation. The same runtime supports **Anthropic** and **OpenAI-compatible** APIs, including modern GPT models through the OpenAI Responses API when available.
 
 Clavue Agent SDK 是面向生产环境的 TypeScript agent runtime，可用于构建 coding agent、research agent、workflow agent 与自主修复循环。作为库集成时，它会在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时提供可选的 `npx` CLI，方便终端和 CI 自动化使用。它支持 **Anthropic** 与 **OpenAI-compatible** API，并可在可用时为现代 GPT 模型使用 OpenAI Responses API。
 
@@ -21,13 +21,13 @@ Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/cla
 - **Library-first agent runtime:** embed `run()`, `query()`, or `createAgent()` directly in Node.js services, CI, workers, web backends, and internal platforms.
 - **Low-confirmation autonomy:** use `autonomyMode` plus `permissionMode` to let strong models act proactively on approved work without bypassing safety policy.
 - **Production controls:** named toolsets, allow/deny filters, hooks, permission modes, workspace path guards, schema-versioned events, policy traces, quality gates, and budget controls.
-- **Durable workflows:** background AgentJobs, issue workflows, runtime namespaces, session persistence, memory injection, self-improvement capture, and retro/eval loops.
+- **Durable workflow contracts:** background AgentJobs, local issue workflows, `WORKFLOW.md` parsing, proof-of-work artifacts, orchestration policy helpers, runtime namespaces, session persistence, memory injection, self-improvement capture, and retro/eval loops.
 - **Provider portability:** Anthropic Messages and OpenAI-compatible providers share the same tool, memory, event, and result contracts.
 
 - **库优先的 agent runtime：** 可直接把 `run()`、`query()` 或 `createAgent()` 嵌入 Node.js 服务、CI、worker、Web 后端和内部平台。
 - **低确认自主执行：** 通过 `autonomyMode` 与 `permissionMode`，让强模型在已授权任务中主动推进，同时不绕过安全策略。
 - **生产级控制：** 命名工具集、allow/deny、hooks、权限模式、workspace 路径防护、带 schema version 的事件、policy trace、quality gates 与预算控制。
-- **持久化工作流：** background AgentJobs、issue workflow、runtime namespace、session persistence、memory injection、self-improvement capture 与 retro/eval loop。
+- **持久化工作流契约：** background AgentJobs、local issue workflow、`WORKFLOW.md` 解析、proof-of-work artifact、orchestration policy helper、runtime namespace、session persistence、memory injection、self-improvement capture 与 retro/eval loop。
 - **多 provider 可移植：** Anthropic Messages 与 OpenAI-compatible provider 共用同一套工具、记忆、事件和结果协议。
 
 ## What is new in 0.7.x / 0.7.x 新能力
@@ -35,6 +35,9 @@ Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/cla
 - Controlled autonomous development mode: `--autonomy autonomous` with `--permission-mode trustedAutomation` or safer local-edit-only `acceptEdits`.
 - Public schema metadata for SDK events, run results, traces, AgentJobs, and memory traces.
 - Local issue workflow commands for builder, reviewer, fixer, and verifier loops.
+- SDK-native workflow contracts: parse `WORKFLOW.md`, render strict issue prompts, resolve runtime config, normalize workspaces, and validate dispatch preflight.
+- Host-neutral proof-of-work artifacts for runs, AgentJobs, and issue workflows, including evidence, quality gates, risks, next actions, and external references.
+- Host-neutral orchestration policy helpers for candidate selection, active/terminal state handling, global/per-state concurrency, blocker handling, and capped retry backoff.
 - Stronger workspace safety: path containment for file tools and pre-execution blocking for destructive shell patterns.
 - Better GPT/OpenAI-compatible handling: capability preflight, normalized provider errors, Responses API routing, and fallback when gateways do not support `/responses`.
 - AgentJob batch summaries, retro skill evaluators, runtime profiles, and richer policy decision traces.
@@ -42,6 +45,9 @@ Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/cla
 - 受控自主开发模式：`--autonomy autonomous` 可与 `--permission-mode trustedAutomation` 或更安全的本地编辑模式 `acceptEdits` 配合使用。
 - SDK event、run result、trace、AgentJob 与 memory trace 都带有公开 schema metadata。
 - 本地 issue workflow 命令支持 builder、reviewer、fixer、verifier 循环。
+- SDK 原生 workflow contract：解析 `WORKFLOW.md`、严格渲染 issue prompt、解析运行配置、规范化 workspace，并做 dispatch preflight 校验。
+- 与宿主解耦的 proof-of-work artifact：覆盖 run、AgentJob 与 issue workflow，包含 evidence、quality gates、risks、next actions 与外部引用。
+- 与宿主解耦的 orchestration policy helper：支持候选任务选择、active/terminal state 处理、全局/按状态并发、blocker 判断与有上限的 retry backoff。
 - 更强 workspace 安全：文件工具路径限制，以及 shell 破坏性命令的执行前阻断。
 - 更好的 GPT / OpenAI-compatible 支持：capability preflight、标准化 provider error、Responses API 路由，以及网关不支持 `/responses` 时的回退。
 - AgentJob batch summary、retro skill evaluator、runtime profile 与更丰富的 policy decision trace。
@@ -987,9 +993,62 @@ const workflow = await runIssueWorkflow({
 });
 
 console.log(workflow.status, workflow.finalScore);
+console.log(workflow.proof_of_work.status, workflow.proof_of_work.verification);
 ```
 
-Issue workflow records are stored under `~/.clavue-agent-sdk/issue-runs` by default. Use the SDK store options to isolate runs for tests, CI, or multi-tenant hosts.
+Issue workflow records are stored under `~/.clavue-agent-sdk/issue-runs` by default. Use the SDK store options to isolate runs for tests, CI, or multi-tenant hosts. `runIssueWorkflow()` returns `proof_of_work`, so hosts get a standard handoff artifact without the SDK owning GitHub, PR, CI, Linear, or Jira integrations.
+
+### Workflow contracts, proof of work, and orchestration policy
+
+For host applications that want Symphony-style discipline without coupling the SDK to a tracker or daemon, use the SDK-core workflow primitives:
+
+```typescript
+import {
+  createProofOfWork,
+  loadWorkflowDefinition,
+  renderWorkflowPrompt,
+  resolveWorkflowServiceConfig,
+  selectDispatchCandidates,
+  validateWorkflowDispatchConfig,
+} from "clavue-agent-sdk";
+
+const definition = await loadWorkflowDefinition({ cwd: repoPath });
+const config = resolveWorkflowServiceConfig(definition);
+const configIssues = validateWorkflowDispatchConfig(config, { requireTracker: false });
+if (configIssues.length > 0) throw new Error(configIssues[0]!.message);
+
+const selection = selectDispatchCandidates({
+  config,
+  issues: [{
+    id: "issue-42",
+    identifier: "SDK-42",
+    title: "Fix autonomous workflow handoff",
+    state: "Todo",
+    priority: 1,
+  }],
+});
+
+const prompt = renderWorkflowPrompt(definition, {
+  issue: {
+    identifier: selection.selected[0]?.identifier,
+    title: selection.selected[0]?.title,
+    description: "Produce a tested SDK-core implementation and proof of work.",
+  },
+});
+
+const proof = createProofOfWork({
+  target: { kind: "issue", id: "SDK-42", title: "Fix autonomous workflow handoff" },
+  evidence: [{ type: "test", summary: "Focused verification passed", source: "external" }],
+  quality_gates: [{ name: "tests", status: "passed" }],
+  required_gates: ["tests"],
+  references: [{ type: "issue", label: "Host issue", url: "https://tracker.example/SDK-42" }],
+});
+
+console.log(prompt);
+console.log(proof.status, proof.handoff);
+```
+
+The SDK standardizes the contract, proof, and policy layers. Your host application still owns task polling, external tracker updates, PR creation, CI execution, dashboards, and worker lifecycle.
 
 ### Runtime profiles
 
@@ -1089,10 +1148,18 @@ npx tsx examples/web/server.ts
 | `loadRetroCycle(cycleId, opts)`         | Load a persisted retro cycle result from the run ledger        |
 | `normalizeIssueInput(input, source?)` | Normalize inline or file-backed issue text into a workflow record |
 | `createIssueWorkflowRun(input, opts)` | Create a durable local issue workflow with role-based AgentJobs |
-| `runIssueWorkflow(input, opts)`       | Execute a bounded local builder/reviewer/fixer/verifier loop   |
+| `runIssueWorkflow(input, opts)`       | Execute a bounded local builder/reviewer/fixer/verifier loop and return `proof_of_work` |
 | `listIssueWorkflowRuns(opts)`         | List persisted issue workflow runs                             |
 | `loadIssueWorkflowRun(id, opts)`      | Load one persisted issue workflow run                          |
 | `stopIssueWorkflowRun(id, reason, opts)` | Stop an issue workflow run and cancel its associated jobs    |
+| `loadWorkflowDefinition(opts)`        | Load a repository-owned `WORKFLOW.md` contract                  |
+| `renderWorkflowPrompt(def, input)`    | Strictly render an issue/task prompt from a workflow contract   |
+| `resolveWorkflowServiceConfig(def)`   | Resolve workflow defaults, env indirection, workspaces, and runtime settings |
+| `validateWorkflowDispatchConfig(config)` | Validate workflow config before dispatch                    |
+| `selectDispatchCandidates(input)`     | Select eligible issues under active/terminal state and concurrency policy |
+| `calculateRetryDelayMs(input)`        | Compute continuation or capped exponential retry delay          |
+| `shouldReleaseIssueForState(state, config)` | Decide whether an issue state should release a claim     |
+| `createProofOfWork(input)`            | Create a standard proof-of-work handoff artifact                |
 | `getRuntimeProfile(mode)`             | Read a built-in workflow profile                               |
 | `getAllRuntimeProfiles()`             | List built-in workflow profiles                                |
 | `applyRuntimeProfile(options)`        | Expand `workflowMode` into concrete runtime options            |
@@ -1368,11 +1435,11 @@ npx tsx examples/web/server.ts
 
 ### Public package summary / 公开包介绍
 
-Clavue Agent SDK is an in-process TypeScript agent runtime for teams that need controlled autonomy instead of a black-box CLI wrapper. It provides a reusable engine for coding, review, research, planning, issue repair, CI automation, and service-side agent workflows. The runtime combines strong model initiative with explicit safety controls: named toolsets, permission modes, autonomy modes, hooks, workspace guards, schema-versioned events, durable AgentJobs, memory, retro/eval, and quality gates.
+Clavue Agent SDK is an in-process TypeScript agent SDK for teams that need controlled autonomy instead of a black-box CLI wrapper. It provides a reusable engine for coding, review, research, planning, issue repair, CI automation, and service-side agent workflows. The runtime combines strong model initiative with explicit safety controls: named toolsets, permission modes, autonomy modes, hooks, workspace guards, schema-versioned events, durable AgentJobs, workflow contracts, proof-of-work artifacts, orchestration policy helpers, memory, retro/eval, and quality gates.
 
 For GitHub readers, start with the npx examples or the `run()` API. For npm consumers, install `clavue-agent-sdk` when you want the same agent loop embedded inside your own Node.js process rather than launching a separate tool.
 
-Clavue Agent SDK 是进程内 TypeScript agent runtime，面向需要“受控自主”而不是黑盒 CLI 包装的团队。它可用于 coding、review、research、planning、issue repair、CI automation 与服务端 agent workflow，并通过命名工具集、权限模式、自主模式、hooks、workspace guard、schema-versioned events、durable AgentJobs、memory、retro/eval 与 quality gates，把强模型主动性约束在可审计、可控制的边界内。
+Clavue Agent SDK 是进程内 TypeScript agent SDK，面向需要“受控自主”而不是黑盒 CLI 包装的团队。它可用于 coding、review、research、planning、issue repair、CI automation 与服务端 agent workflow，并通过命名工具集、权限模式、自主模式、hooks、workspace guard、schema-versioned events、durable AgentJobs、workflow contract、proof-of-work artifact、orchestration policy helper、memory、retro/eval 与 quality gates，把强模型主动性约束在可审计、可控制的边界内。
 
 For complete application integration patterns, read [Programmatic Integration Guide](./docs/programmatic-integration-guide.md).
 
