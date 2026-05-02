@@ -12,8 +12,8 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.7.0",
-  "description": "Clavue Agent SDK. Runs the full agent loop in-process — no local CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
+  "version": "0.7.1",
+  "description": "In-process TypeScript agent runtime for controlled autonomous coding, research, issue workflows, durable AgentJobs, memory, and CI automation.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -56,14 +56,20 @@
   },
   "keywords": [
     "clavue-agent-sdk",
-    "agent",
-    "sdk",
-    "ai",
+    "agent-sdk",
+    "ai-agent",
+    "autonomous-agent",
+    "coding-agent",
+    "agentic",
     "llm",
     "tools",
-    "agentic",
-    "coding-agent",
-    "mcp"
+    "mcp",
+    "openai",
+    "anthropic",
+    "workflow-automation",
+    "ci-automation",
+    "issue-workflow",
+    "typescript"
   ],
   "license": "MIT"
 }

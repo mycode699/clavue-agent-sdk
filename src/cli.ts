@@ -24,6 +24,8 @@ function printHelp(): void {
 Usage:
   npx clavue-agent-sdk "Read package.json and summarize it"
   npx clavue-agent-sdk --prompt "Review src for obvious bugs" --allow Read,Glob,Grep
+  npx clavue-agent-sdk --autonomy autonomous --permission-mode acceptEdits --toolset repo-edit "Update docs"
+  npx clavue-agent-sdk issue execute .clavue/issues/p0.md --max-iterations 3 --json
 
 Options:
   -p, --prompt <text>       Prompt to send to the agent
@@ -41,6 +43,13 @@ Options:
   --self-improvement        Save bounded improvement memories after the run
   --json                    Print the final run artifact as JSON
   -h, --help                Show this help
+
+Issue workflow:
+  issue run <text-or-path>      Create builder/reviewer/verifier jobs for an issue
+  issue execute <text-or-path>  Execute a bounded local issue workflow loop
+  issue list                    List local issue workflow runs
+  issue get <run-id>            Show one issue workflow run
+  issue stop <run-id>           Stop a workflow run and its jobs
 
 Environment:
   CLAVUE_AGENT_API_KEY      API key

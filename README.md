@@ -4,11 +4,41 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-Clavue Agent SDK runs the full agent loop **in-process** for library integrations — no subprocess and no local CLI dependency. An optional `npx` CLI is also available for terminal and CI automation. It supports both **Anthropic** and **OpenAI-compatible** APIs, so you can embed the same agent runtime in cloud services, serverless jobs, Docker containers, and CI/CD workflows.
+Clavue Agent SDK is a production-oriented TypeScript runtime for building coding agents, research agents, workflow agents, and autonomous repair loops. It runs the full agent loop **in-process** for library integrations, with no subprocess or local CLI dependency. An optional `npx` CLI is available for terminal and CI automation. The same runtime supports **Anthropic** and **OpenAI-compatible** APIs, including modern GPT models through the OpenAI Responses API when available.
 
-Clavue Agent SDK 作为库集成时会在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时也提供可选的 `npx` CLI，方便终端和 CI 自动化使用。它支持 **Anthropic** 与 **OpenAI-compatible** API，适合直接嵌入云服务、Serverless、Docker 与 CI/CD。
+Clavue Agent SDK 是面向生产环境的 TypeScript agent runtime，可用于构建 coding agent、research agent、workflow agent 与自主修复循环。作为库集成时，它会在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时提供可选的 `npx` CLI，方便终端和 CI 自动化使用。它支持 **Anthropic** 与 **OpenAI-compatible** API，并可在可用时为现代 GPT 模型使用 OpenAI Responses API。
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
+
+## Why Clavue / 为什么选择 Clavue
+
+- **Library-first agent runtime:** embed `run()`, `query()`, or `createAgent()` directly in Node.js services, CI, workers, web backends, and internal platforms.
+- **Low-confirmation autonomy:** use `autonomyMode` plus `permissionMode` to let strong models act proactively on approved work without bypassing safety policy.
+- **Production controls:** named toolsets, allow/deny filters, hooks, permission modes, workspace path guards, schema-versioned events, policy traces, quality gates, and budget controls.
+- **Durable workflows:** background AgentJobs, issue workflows, runtime namespaces, session persistence, memory injection, self-improvement capture, and retro/eval loops.
+- **Provider portability:** Anthropic Messages and OpenAI-compatible providers share the same tool, memory, event, and result contracts.
+
+- **库优先的 agent runtime：** 可直接把 `run()`、`query()` 或 `createAgent()` 嵌入 Node.js 服务、CI、worker、Web 后端和内部平台。
+- **低确认自主执行：** 通过 `autonomyMode` 与 `permissionMode`，让强模型在已授权任务中主动推进，同时不绕过安全策略。
+- **生产级控制：** 命名工具集、allow/deny、hooks、权限模式、workspace 路径防护、带 schema version 的事件、policy trace、quality gates 与预算控制。
+- **持久化工作流：** background AgentJobs、issue workflow、runtime namespace、session persistence、memory injection、self-improvement capture 与 retro/eval loop。
+- **多 provider 可移植：** Anthropic Messages 与 OpenAI-compatible provider 共用同一套工具、记忆、事件和结果协议。
+
+## What is new in 0.7.x / 0.7.x 新能力
+
+- Controlled autonomous development mode: `--autonomy autonomous` with `--permission-mode trustedAutomation` or safer local-edit-only `acceptEdits`.
+- Public schema metadata for SDK events, run results, traces, AgentJobs, and memory traces.
+- Local issue workflow commands for builder, reviewer, fixer, and verifier loops.
+- Stronger workspace safety: path containment for file tools and pre-execution blocking for destructive shell patterns.
+- Better GPT/OpenAI-compatible handling: capability preflight, normalized provider errors, Responses API routing, and fallback when gateways do not support `/responses`.
+- AgentJob batch summaries, retro skill evaluators, runtime profiles, and richer policy decision traces.
+
+- 受控自主开发模式：`--autonomy autonomous` 可与 `--permission-mode trustedAutomation` 或更安全的本地编辑模式 `acceptEdits` 配合使用。
+- SDK event、run result、trace、AgentJob 与 memory trace 都带有公开 schema metadata。
+- 本地 issue workflow 命令支持 builder、reviewer、fixer、verifier 循环。
+- 更强 workspace 安全：文件工具路径限制，以及 shell 破坏性命令的执行前阻断。
+- 更好的 GPT / OpenAI-compatible 支持：capability preflight、标准化 provider error、Responses API 路由，以及网关不支持 `/responses` 时的回退。
+- AgentJob batch summary、retro skill evaluator、runtime profile 与更丰富的 policy decision trace。
 
 ## Quick start / 快速开始
 
@@ -86,6 +116,13 @@ npx clavue-agent-sdk "Fix the failing package payload test" \
   --permission-mode trustedAutomation \
   --autonomy autonomous \
   --max-turns 10
+
+# Safer low-confirmation local edits / 更安全的低确认本地编辑
+npx clavue-agent-sdk "Update usage docs and run verification" \
+  --toolset repo-edit \
+  --permission-mode acceptEdits \
+  --autonomy autonomous \
+  --max-turns 8
 
 # CI-friendly JSON output / 适合 CI 的 JSON 输出
 npx clavue-agent-sdk "Check whether package.json is release-ready" \
@@ -906,6 +943,69 @@ npx clavue-agent-sdk "Fix the P0-P3 todo list and verify" \
 
 For safer local-edit-only automation, combine `autonomyMode: "autonomous"` with `permissionMode: "acceptEdits"` and omit shell/network tools. Run traces include `policy_decisions` for both allows and denials, with a safe input summary instead of raw tool input, plus the backward-compatible `permission_denials` list.
 
+### Local issue workflows
+
+Use the issue workflow when you want a bounded builder, reviewer, fixer, and verifier loop around a concrete bug report or todo item. `issue run` creates the workflow record and background jobs without executing the full loop. `issue execute` runs the local workflow loop immediately.
+
+```bash
+# Create a workflow from inline text / 从内联文本创建 workflow
+npx clavue-agent-sdk issue run "Fix provider retry handling for 429 responses" \
+  --passing-score 85 \
+  --require-gate tests \
+  --json
+
+# Execute from a local markdown issue / 从本地 markdown issue 执行
+npx clavue-agent-sdk issue execute .clavue/issues/p0-provider-retry.md \
+  --max-iterations 3 \
+  --passing-score 90 \
+  --require-gate build,tests \
+  --json
+
+# Inspect and stop workflow runs / 查看和停止 workflow run
+npx clavue-agent-sdk issue list --json
+npx clavue-agent-sdk issue get issue_run_... --json
+npx clavue-agent-sdk issue stop issue_run_... --json
+```
+
+Programmatic usage:
+
+```typescript
+import { normalizeIssueInput, runIssueWorkflow } from "clavue-agent-sdk";
+
+const workflow = await runIssueWorkflow({
+  cwd: process.cwd(),
+  issue: normalizeIssueInput("Fix flaky package payload verification."),
+  maxIterations: 3,
+  passingScore: 90,
+  requiredGates: ["build", "tests"],
+});
+
+console.log(workflow.status, workflow.finalScore);
+```
+
+Issue workflow records are stored under `~/.clavue-agent-sdk/issue-runs` by default. Use the SDK store options to isolate runs for tests, CI, or multi-tenant hosts.
+
+### Runtime profiles
+
+Runtime profiles turn a high-level workflow mode into concrete toolsets, permission mode, memory policy, autonomy mode, prompt guidance, and quality-gate behavior. This is the recommended path for hosts that want consistent behavior across collect, organize, plan, solve, build, verify, review, and ship flows.
+
+```typescript
+import { getAllRuntimeProfiles, run } from "clavue-agent-sdk";
+
+console.log(getAllRuntimeProfiles().map((profile) => profile.name));
+
+const result = await run({
+  prompt: "Verify this package is ready to publish.",
+  options: {
+    workflowMode: "verify",
+    cwd: process.cwd(),
+    maxTurns: 6,
+  },
+});
+
+console.log(result.status, result.trace?.policy_decisions);
+```
+
 The engine only parallelizes tool calls when a tool declares both `isReadOnly()` and `isConcurrencySafe()`. Mutating tools and read-only tools that are not concurrency-safe run serially. Set `maxToolConcurrency` per run to cap safe parallel batches; when omitted, `AGENT_SDK_MAX_TOOL_CONCURRENCY` is used as the fallback. Invalid, zero, or negative values fall back to `10` so runs do not hang. Run traces include `tool_concurrency_limit`, `tool_concurrency_source`, and the existing `concurrency_batches`.
 
 引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。可通过每次运行的 `maxToolConcurrency` 限制安全并行批次；未设置时回退使用 `AGENT_SDK_MAX_TOOL_CONCURRENCY`。无效、零或负数会回退到 `10`，避免运行卡住。运行 trace 会包含 `tool_concurrency_limit`、`tool_concurrency_source` 和已有的 `concurrency_batches`。
@@ -981,6 +1081,15 @@ npx tsx examples/web/server.ts
 | `loadRetroRun(runId, opts)`           | Load a persisted retro run result from the run ledger          |
 | `saveRetroCycle(cycleId, result, opts)` | Persist a full retro cycle result including decision and summary |
 | `loadRetroCycle(cycleId, opts)`         | Load a persisted retro cycle result from the run ledger        |
+| `normalizeIssueInput(input, source?)` | Normalize inline or file-backed issue text into a workflow record |
+| `createIssueWorkflowRun(input, opts)` | Create a durable local issue workflow with role-based AgentJobs |
+| `runIssueWorkflow(input, opts)`       | Execute a bounded local builder/reviewer/fixer/verifier loop   |
+| `listIssueWorkflowRuns(opts)`         | List persisted issue workflow runs                             |
+| `loadIssueWorkflowRun(id, opts)`      | Load one persisted issue workflow run                          |
+| `stopIssueWorkflowRun(id, reason, opts)` | Stop an issue workflow run and cancel its associated jobs    |
+| `getRuntimeProfile(mode)`             | Read a built-in workflow profile                               |
+| `getAllRuntimeProfiles()`             | List built-in workflow profiles                                |
+| `applyRuntimeProfile(options)`        | Expand `workflowMode` into concrete runtime options            |
 | `normalizeFindings(findings)`         | Normalize retro findings into a stable schema                  |
 | `scoreFindings(findings)`             | Compute per-dimension and overall retro scores                 |
 | `planUpgrades(findings)`              | Turn retro findings into prioritized workstreams               |
@@ -1251,12 +1360,20 @@ npx tsx examples/web/server.ts
 
 ## GitHub, npm, and deployment / GitHub、npm 与部署
 
+### Public package summary / 公开包介绍
+
+Clavue Agent SDK is an in-process TypeScript agent runtime for teams that need controlled autonomy instead of a black-box CLI wrapper. It provides a reusable engine for coding, review, research, planning, issue repair, CI automation, and service-side agent workflows. The runtime combines strong model initiative with explicit safety controls: named toolsets, permission modes, autonomy modes, hooks, workspace guards, schema-versioned events, durable AgentJobs, memory, retro/eval, and quality gates.
+
+For GitHub readers, start with the npx examples or the `run()` API. For npm consumers, install `clavue-agent-sdk` when you want the same agent loop embedded inside your own Node.js process rather than launching a separate tool.
+
+Clavue Agent SDK 是进程内 TypeScript agent runtime，面向需要“受控自主”而不是黑盒 CLI 包装的团队。它可用于 coding、review、research、planning、issue repair、CI automation 与服务端 agent workflow，并通过命名工具集、权限模式、自主模式、hooks、workspace guard、schema-versioned events、durable AgentJobs、memory、retro/eval 与 quality gates，把强模型主动性约束在可审计、可控制的边界内。
+
 ### Repository checklist / 仓库检查
 
 - Keep `README.md`, `package.json`, and examples aligned when changing public APIs.
 - Run `npm run build` and `npm test` before publishing or cutting a release.
 - Use `npm pack --dry-run --json` to inspect the exact package payload.
-- The package publishes only `dist/`; `prepack` runs `npm run build` so TypeScript output is generated before packing.
+- The package publishes `dist/` and `docs/`; `prepack` runs `npm run build` so TypeScript output is generated before packing.
 
 ### Publish to npm / 发布到 npm
 
