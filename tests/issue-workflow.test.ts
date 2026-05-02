@@ -135,6 +135,12 @@ test('runIssueWorkflow records a passing builder-reviewer-verifier loop', async 
     assert.equal(result.finalScore, 94)
     assert.deepEqual(result.unresolvedFindings, [])
     assert.deepEqual(result.quality_gates, [{ name: 'tests', status: 'passed', summary: 'verifier passed' }])
+    assert.equal(result.proof_of_work.status, 'passed')
+    assert.equal(result.proof_of_work.target?.id, result.run.issue.id)
+    assert.equal(result.proof_of_work.issue_workflow?.id, result.run.id)
+    assert.deepEqual(result.proof_of_work.verification.required_gates, ['tests'])
+    assert.deepEqual(result.proof_of_work.verification.missing_gates, [])
+    assert.equal(result.proof_of_work.handoff.ready_for_human_review, true)
     assert.deepEqual(result.run.jobs.map((job) => job.role), ['builder', 'reviewer', 'verifier'])
 
     for (const workflowJob of result.run.jobs) {
@@ -277,6 +283,8 @@ test('runIssueWorkflow creates a fixer iteration for blocking reviewer findings'
     assert.equal(result.status, 'completed')
     assert.equal(result.finalScore, 96)
     assert.deepEqual(result.unresolvedFindings, [])
+    assert.equal(result.proof_of_work.status, 'passed')
+    assert.deepEqual(result.proof_of_work.risks, [])
     assert.deepEqual(result.run.jobs.map((job) => `${job.role}:${job.iteration}`), [
       'builder:1',
       'reviewer:1',
@@ -284,6 +292,34 @@ test('runIssueWorkflow creates a fixer iteration for blocking reviewer findings'
       'reviewer:2',
       'verifier:1',
     ])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow proof of work records failed gates and next actions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-proof-fail-'))
+  const { runIssueWorkflow } = await import('../src/index.ts')
+
+  try {
+    const result = await runIssueWorkflow({
+      issue: normalizeInlineIssue('Fix missing verification\n\nThe required gate should remain missing.'),
+      cwd: dir,
+      requiredGates: ['tests'],
+      passingScore: 90,
+      evaluateRole: async ({ role }) => {
+        if (role === 'reviewer') return { score: 95, findings: [] }
+        if (role === 'verifier') return { gate: 'lint', passed: true, output: 'lint passed' }
+        return { score: 100, findings: [] }
+      },
+    }, { dir, runtimeNamespace: 'issue-proof-fail-test' })
+
+    assert.equal(result.status, 'failed_gate')
+    assert.equal(result.proof_of_work.status, 'failed')
+    assert.deepEqual(result.proof_of_work.verification.required_gates, ['tests'])
+    assert.deepEqual(result.proof_of_work.verification.missing_gates, ['tests'])
+    assert.deepEqual(result.proof_of_work.next_actions, ['Run or repair the missing required quality gates.'])
+    assert.equal(result.proof_of_work.handoff.ready_for_human_review, false)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

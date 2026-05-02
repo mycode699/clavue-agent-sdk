@@ -78,6 +78,37 @@ export type {
   LoadLocalIssuesOptions,
   RunIssueWorkflowInput,
 } from './issue-workflow.js'
+export {
+  WorkflowContractError,
+  getWorkflowWorkspacePath,
+  loadWorkflowDefinition,
+  normalizeWorkflowState,
+  normalizeWorkspaceKey,
+  parseWorkflowDefinition,
+  renderWorkflowPrompt,
+  resolveWorkflowServiceConfig,
+  validateWorkflowDispatchConfig,
+} from './workflow-contract.js'
+export type {
+  LoadWorkflowDefinitionOptions,
+  ParseWorkflowDefinitionOptions,
+  RenderWorkflowPromptInput,
+  RenderWorkflowPromptOptions,
+  ResolveWorkflowServiceConfigOptions,
+  ResolvedWorkflowAgentConfig,
+  ResolvedWorkflowCodexConfig,
+  ResolvedWorkflowHooksConfig,
+  ResolvedWorkflowServiceConfig,
+  ResolvedWorkflowTrackerConfig,
+  ValidateWorkflowDispatchOptions,
+  WorkflowConfigMap,
+  WorkflowConfigScalar,
+  WorkflowConfigValue,
+  WorkflowContractErrorCode,
+  WorkflowDefinition,
+  WorkflowIssueInput,
+  WorkflowValidationIssue,
+} from './workflow-contract.js'
 export { createEvaluationLoopContract, normalizeEvaluationLoopContract } from './evaluation-loop.js'
 export type {
   EvaluationLoopBaseline,
@@ -98,6 +129,37 @@ export {
   MEMORY_TRACE_SCHEMA_VERSION,
 } from './types.js'
 export type { AgentAutonomyMode, ControlledExecutionContract, PublicSchemaVersions, RuntimeProfile, WorkflowMode } from './types.js'
+export { PROOF_OF_WORK_SCHEMA_VERSION, createProofOfWork } from './proof-of-work.js'
+export type {
+  CreateProofOfWorkInput,
+  ProofOfWorkArtifact,
+  ProofOfWorkHandoff,
+  ProofOfWorkIssueWorkflowInput,
+  ProofOfWorkIssueWorkflowSummary,
+  ProofOfWorkJobSummary,
+  ProofOfWorkReference,
+  ProofOfWorkReferenceType,
+  ProofOfWorkRunSummary,
+  ProofOfWorkStatus,
+  ProofOfWorkTarget,
+  ProofOfWorkVerificationSummary,
+} from './proof-of-work.js'
+export {
+  calculateRetryDelayMs,
+  selectDispatchCandidates,
+  shouldReleaseIssueForState,
+} from './orchestration-policy.js'
+export type {
+  DispatchCandidateDecision,
+  DispatchSelection,
+  OrchestrationBlockerRef,
+  OrchestrationIssue,
+  OrchestrationReleaseReason,
+  OrchestrationRunningEntry,
+  OrchestrationRuntimeSnapshot,
+  RetryDelayOptions,
+  SelectDispatchCandidatesInput,
+} from './orchestration-policy.js'
 export {
   runRetroEvaluation,
   normalizeFindings,

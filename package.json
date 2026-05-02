@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "In-process TypeScript agent runtime for controlled autonomous coding, research, issue workflows, durable AgentJobs, memory, and CI automation.",
   "type": "module",
   "main": "./dist/index.js",

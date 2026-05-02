@@ -24,6 +24,49 @@ Every new capability must satisfy four gates:
 - **Workflow gate**: the capability maps to a user-facing workflow or artifact.
 - **Learning gate**: successful or failed runs can produce reusable evidence, memory, or skill improvements when enabled.
 
+## Symphony-Derived SDK Principles
+
+The useful lesson from OpenAI Symphony is not to copy a specific daemon or tracker integration first. The durable lesson is a higher-level execution contract:
+
+- **Repository-owned workflow contract**: agent behavior should be versioned with the codebase through a `WORKFLOW.md`-style prompt and config contract.
+- **Strict prompt rendering**: unknown variables or filters should fail explicitly instead of producing silent, low-quality runs.
+- **Typed config resolution**: defaults, `$ENV` indirection, workspace paths, concurrency, timeouts, and tracker settings should be resolved before dispatch.
+- **Per-work isolation**: every issue or task should map to a deterministic workspace key and path before execution starts.
+- **Observable lifecycle**: runs should expose explicit phases, status, evidence, quality gates, retries, and errors rather than relying on prose summaries.
+- **Supervisor before feature sprawl**: add orchestration only when the lower-level contract is testable and reusable by SDK hosts.
+
+Current SDK action: keep external trackers, daemons, PR automation, and dashboards out of the core until the contract layer is stable. The first core addition is the exported workflow contract utility:
+
+- `parseWorkflowDefinition()`
+- `loadWorkflowDefinition()`
+- `renderWorkflowPrompt()`
+- `resolveWorkflowServiceConfig()`
+- `validateWorkflowDispatchConfig()`
+- `normalizeWorkspaceKey()`
+- `getWorkflowWorkspacePath()`
+
+The second core addition is a host-neutral proof-of-work artifact:
+
+- `createProofOfWork()`
+- `PROOF_OF_WORK_SCHEMA_VERSION`
+- `ProofOfWorkArtifact`
+- `ProofOfWorkReference`
+- `ProofOfWorkStatus`
+
+This is the SDK-safe version of Symphony's PR/CI handoff lesson. The SDK should not directly own GitHub, Linear, Jira, PR, or CI integrations by default. Instead, it should standardize the artifact shape so hosts can attach external issue, PR, CI, commit, review, dashboard, or log references when they have those systems available.
+
+The third core addition is a host-neutral orchestration policy layer:
+
+- `selectDispatchCandidates()`
+- `calculateRetryDelayMs()`
+- `shouldReleaseIssueForState()`
+- `OrchestrationIssue`
+- `DispatchSelection`
+
+This is the SDK-safe version of Symphony's scheduler lesson. The SDK should not own the poll loop, external tracker client, worker process, or dashboard by default. Instead, it should standardize the deterministic policy decisions that every host orchestrator needs: active/terminal state checks, claimed/running exclusion, blocker handling, priority sorting, global and per-state concurrency slots, release decisions, and capped retry backoff.
+
+Together, workflow contracts, proof-of-work artifacts, and orchestration policy let host applications and future issue workflows adopt Symphony-grade discipline without forcing a specific task board, CI vendor, repository host, worker process model, or long-running service.
+
 ## Product Workflow Modes
 
 The SDK should expose or document first-class workflow modes. These can start as presets over existing options before becoming deeper runtime APIs.

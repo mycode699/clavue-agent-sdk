@@ -12,6 +12,7 @@ import {
   type AgentJobCompletion,
   type AgentJobStoreOptions,
 } from './agent-jobs.js'
+import { createProofOfWork, type ProofOfWorkArtifact } from './proof-of-work.js'
 import { getRuntimeNamespace, type RuntimeNamespaceContext } from './utils/runtime.js'
 import type { QualityGateResult } from './types.js'
 
@@ -95,6 +96,7 @@ export interface IssueWorkflowResult {
   finalScore?: number
   unresolvedFindings: IssueWorkflowFinding[]
   quality_gates: QualityGateResult[]
+  proof_of_work: ProofOfWorkArtifact
   errors?: string[]
 }
 
@@ -468,6 +470,36 @@ export async function runIssueWorkflow(
   }
 
   await writeIssueWorkflowRun(updatedRun, options)
+  const proofOfWork = createProofOfWork({
+    target: {
+      kind: 'issue',
+      id: updatedRun.issue.id,
+      title: updatedRun.issue.title,
+      metadata: {
+        labels: updatedRun.issue.labels,
+        priority: updatedRun.issue.priority,
+        source: updatedRun.issue.source,
+      },
+    },
+    issueWorkflow: {
+      run: updatedRun,
+      status,
+      finalScore,
+      unresolvedFindings,
+      quality_gates: qualityGates,
+    },
+    required_gates: updatedRun.requiredGates,
+    risks: unresolvedFindings.map((finding) => `${finding.severity}: ${finding.message}`),
+    next_actions: status === 'completed'
+      ? []
+      : status === 'failed_gate'
+        ? ['Run or repair the missing required quality gates.']
+        : status === 'max_iterations'
+          ? ['Review unresolved findings and decide whether to continue with another bounded repair loop.']
+          : unresolvedFindings.length > 0
+            ? ['Resolve blocking reviewer findings, then re-run verification.']
+            : ['Inspect the workflow result and retry after correcting the failure cause.'],
+  })
 
   return {
     run: updatedRun,
@@ -475,5 +507,6 @@ export async function runIssueWorkflow(
     finalScore,
     unresolvedFindings,
     quality_gates: qualityGates,
+    proof_of_work: proofOfWork,
   }
 }

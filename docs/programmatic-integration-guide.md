@@ -570,6 +570,8 @@ const workflow = await runIssueWorkflow({
 console.log(workflow.status);
 console.log(workflow.finalScore);
 console.log(workflow.unresolvedFindings);
+console.log(workflow.proof_of_work.status);
+console.log(workflow.proof_of_work.verification);
 ```
 
 CLI equivalent:
@@ -582,9 +584,169 @@ npx clavue-agent-sdk issue execute .clavue/issues/p0-provider-retry.md \
   --json
 ```
 
-Use this when your product needs deterministic records for P0-P3 issue repair, rather than a single unstructured prompt.
+Use this when your product needs deterministic records for P0-P3 issue repair, rather than a single unstructured prompt. `runIssueWorkflow()` also returns `proof_of_work`, so hosts get the same handoff artifact shape used by standalone `createProofOfWork()`.
 
-## 15. Durable Background AgentJobs
+## 15. Workflow Contracts
+
+Use workflow contracts when your host wants a repository-owned execution policy before adding task-board or daemon orchestration. A `WORKFLOW.md` file can hold YAML front matter for runtime settings and a strict Markdown prompt template for each issue or task.
+
+```md
+---
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: agents
+workspace:
+  root: ./workspaces
+agent:
+  max_concurrent_agents: 4
+  max_turns: 12
+codex:
+  command: codex app-server
+---
+
+You are working on {{ issue.identifier }}.
+
+Title: {{ issue.title }}
+Body: {{ issue.description }}
+```
+
+Programmatic usage:
+
+```typescript
+import {
+  loadWorkflowDefinition,
+  renderWorkflowPrompt,
+  resolveWorkflowServiceConfig,
+  validateWorkflowDispatchConfig,
+} from "clavue-agent-sdk";
+
+const definition = await loadWorkflowDefinition({ cwd: repoPath });
+const config = resolveWorkflowServiceConfig(definition);
+const issues = validateWorkflowDispatchConfig(config, { requireTracker: true });
+
+if (issues.length > 0) {
+  throw new Error(issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
+}
+
+const prompt = renderWorkflowPrompt(definition, {
+  issue: {
+    identifier: "SDK-42",
+    title: "Fix autonomous workflow handoff",
+    description: "Produce a tested implementation and proof of work.",
+    labels: ["p1", "agentops"],
+  },
+});
+```
+
+Template rendering is strict: unknown variables and unknown filters fail with `WorkflowContractError` instead of silently producing an incomplete prompt. This is the recommended foundation for hosts that want Symphony-style isolated autonomous runs without coupling the SDK to Linear, GitHub Issues, Jira, or a daemon process.
+
+## 16. Proof Of Work
+
+Use proof-of-work artifacts when your host needs a standard handoff record after an agent run, background job, or issue workflow. The SDK does not create GitHub PRs, run your CI provider, or update external trackers by default. Instead, it normalizes evidence, gates, costs, references, risks, and handoff readiness so your application can attach those external links when available.
+
+```typescript
+import { createProofOfWork, run } from "clavue-agent-sdk";
+
+const result = await run({
+  prompt: "Fix the issue and run focused verification.",
+  options: {
+    cwd: repoPath,
+    workflowMode: "build",
+    permissionMode: "trustedAutomation",
+    autonomyMode: "autonomous",
+    qualityGatePolicy: { required: ["tests"] },
+  },
+});
+
+const proof = createProofOfWork({
+  target: {
+    kind: "issue",
+    id: "SDK-42",
+    title: "Fix autonomous workflow handoff",
+  },
+  run: result,
+  required_gates: ["tests"],
+  references: [
+    { type: "issue", label: "Tracker issue", url: "https://tracker.example/SDK-42" },
+    { type: "ci", label: "CI run", url: "https://ci.example/run/123", status: "passed" },
+  ],
+  risks: result.status === "completed" ? [] : ["Agent run did not complete successfully."],
+});
+
+console.log(proof.status);
+console.log(proof.verification);
+console.log(proof.handoff);
+```
+
+The artifact status is derived from reported run/job/workflow status and quality gates:
+
+- `passed`: required gates passed and no failing signal was reported.
+- `failed`: a run, job, workflow, or gate failed.
+- `blocked`: work was cancelled, stale, or blocked by policy.
+- `in_progress`: work is still queued or running.
+- `needs_review`: no hard failure was reported, but required proof is missing.
+- `unknown`: there is not enough evidence to classify the result.
+
+This is the SDK-level way to absorb Symphony's proof-of-work practice without exceeding SDK scope.
+
+## 17. Orchestration Policy
+
+Use orchestration policy helpers when your host owns the task source and worker process, but wants deterministic SDK-level scheduling decisions. The SDK does not poll Linear, GitHub Issues, Jira, or any other tracker by default. It can, however, decide which normalized issues are eligible to dispatch.
+
+```typescript
+import {
+  calculateRetryDelayMs,
+  resolveWorkflowServiceConfig,
+  selectDispatchCandidates,
+  shouldReleaseIssueForState,
+} from "clavue-agent-sdk";
+
+const config = resolveWorkflowServiceConfig(definition, {
+  env: process.env,
+  cwd: repoPath,
+});
+
+const selection = selectDispatchCandidates({
+  config,
+  runtime: {
+    claimed: ["issue-already-claimed"],
+    running: {
+      "issue-running": {
+        issue_id: "issue-running",
+        issue_identifier: "SDK-9",
+        state: "In Progress",
+      },
+    },
+  },
+  issues: [
+    {
+      id: "issue-42",
+      identifier: "SDK-42",
+      title: "Fix autonomous workflow handoff",
+      state: "Todo",
+      priority: 1,
+      created_at: "2026-05-02T00:00:00.000Z",
+    },
+  ],
+});
+
+for (const issue of selection.selected) {
+  // Host-owned step: create workspace, start worker, call run(), update tracker, etc.
+  console.log("dispatch", issue.identifier);
+}
+
+const retryDelayMs = calculateRetryDelayMs({
+  attempt: 3,
+  max_retry_backoff_ms: config.agent.max_retry_backoff_ms,
+});
+
+const release = shouldReleaseIssueForState("Done", config);
+```
+
+This gives SDK consumers the reusable policy spine from Symphony without requiring the SDK to become a tracker client, job daemon, repository host integration, or CI system.
+
+## 18. Durable Background AgentJobs
 
 Use AgentJobs when long-running specialist work should be inspectable and cancellable. There are two levels:
 
@@ -661,7 +823,7 @@ console.log(await summarizeAgentJobs({ runtimeNamespace: "release-review" }));
 
 Job storage defaults to `~/.clavue-agent-sdk/agent-jobs`. Set `CLAVUE_AGENT_JOBS_DIR` or pass store options for tests, CI, or multi-tenant services.
 
-## 16. Hooks For Observability And Control
+## 19. Hooks For Observability And Control
 
 Hooks can log, block, or annotate lifecycle events.
 
