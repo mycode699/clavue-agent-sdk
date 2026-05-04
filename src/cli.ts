@@ -317,13 +317,18 @@ export async function handleIssueCommand(
     case 'execute': {
       const input = await readIssueInput(requireIssueInput(parsed))
       const issue = normalizeIssueInput(input.content, input.path ? { type: 'local-file', path: input.path } : { type: 'inline' })
-      return runIssueWorkflow({
+      const result = await runIssueWorkflow({
         issue,
         cwd: parsed.options.cwd || process.cwd(),
         requiredGates: parsed.issue.requiredGates,
         passingScore: parsed.issue.passingScore,
         maxIterations: parsed.issue.maxIterations,
       }, options)
+      return {
+        ...result,
+        workspace: result.run.workspace,
+        errors: result.run.errors,
+      }
     }
     case 'list':
       return listIssueWorkflowRuns(options)

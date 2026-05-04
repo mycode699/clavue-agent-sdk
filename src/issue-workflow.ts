@@ -41,6 +41,12 @@ export interface IssueWorkflowJobRef {
   iteration: number
 }
 
+export interface IssueWorkflowWorkspace {
+  cwd: string
+  runtimeNamespace: string
+  isolation: 'local'
+}
+
 export interface IssueWorkflowRunRecord {
   schema_version: string
   id: string
@@ -50,10 +56,12 @@ export interface IssueWorkflowRunRecord {
   updatedAt: string
   correlation_id: string
   batch_id: string
+  workspace: IssueWorkflowWorkspace
   jobs: IssueWorkflowJobRef[]
   requiredGates: string[]
   passingScore: number
   finalScore?: number
+  proof_of_work?: ProofOfWorkArtifact
   errors?: string[]
 }
 
@@ -274,6 +282,11 @@ export async function createIssueWorkflowRun(
     updatedAt: now,
     correlation_id: id,
     batch_id: batchId,
+    workspace: {
+      cwd: input.cwd,
+      runtimeNamespace: getRuntimeNamespace(options),
+      isolation: 'local',
+    },
     jobs,
     requiredGates: input.requiredGates ?? [],
     passingScore: input.passingScore ?? 80,
@@ -382,6 +395,10 @@ function reviewFailed(score: number | undefined, findings: IssueWorkflowFinding[
   return hasBlockingFindings(findings) || (score !== undefined && score < passingScore)
 }
 
+function normalizeMaxIterations(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined && value >= 1 ? Math.floor(value) : 1
+}
+
 async function appendIssueWorkflowJob(
   run: IssueWorkflowRunRecord,
   issue: IssueWorkflowRecord,
@@ -403,7 +420,50 @@ async function appendIssueWorkflowJob(
   }, options)
   const jobRef = { role, job_id: job.id, iteration }
   run.jobs.push(jobRef)
+  run.updatedAt = new Date().toISOString()
+  await writeIssueWorkflowRun(run, options)
   return jobRef
+}
+
+function createIssueWorkflowProofOfWork(input: {
+  run: IssueWorkflowRunRecord
+  status: IssueWorkflowStatus
+  finalScore?: number
+  unresolvedFindings: IssueWorkflowFinding[]
+  qualityGates: QualityGateResult[]
+  risks: string[]
+  nextActions: string[]
+}): ProofOfWorkArtifact {
+  return createProofOfWork({
+    target: {
+      kind: 'issue',
+      id: input.run.issue.id,
+      title: input.run.issue.title,
+      metadata: {
+        labels: input.run.issue.labels,
+        priority: input.run.issue.priority,
+        source: input.run.issue.source,
+      },
+    },
+    issueWorkflow: {
+      run: input.run,
+      status: input.status,
+      finalScore: input.finalScore,
+      unresolvedFindings: input.unresolvedFindings,
+      quality_gates: input.qualityGates,
+    },
+    required_gates: input.run.requiredGates,
+    risks: input.risks,
+    next_actions: input.nextActions,
+  })
+}
+
+function getIssueWorkflowNextActions(status: IssueWorkflowStatus, unresolvedFindings: IssueWorkflowFinding[]): string[] {
+  if (status === 'completed') return []
+  if (status === 'failed_gate') return ['Run or repair the missing required quality gates.']
+  if (status === 'max_iterations') return ['Review unresolved findings and decide whether to continue with another bounded repair loop.']
+  if (unresolvedFindings.length > 0) return ['Resolve blocking reviewer findings, then re-run verification.']
+  return ['Inspect the workflow result and retry after correcting the failure cause.']
 }
 
 export async function runIssueWorkflow(
@@ -414,99 +474,106 @@ export async function runIssueWorkflow(
     ...input,
     roles: ['builder', 'reviewer'],
   }, options)
+  run.status = 'running'
+  run.updatedAt = new Date().toISOString()
+  await writeIssueWorkflowRun(run, options)
+
   const qualityGates: QualityGateResult[] = []
-  const maxIterations = input.maxIterations ?? 6
+  const maxIterations = normalizeMaxIterations(input.maxIterations ?? 6)
   let unresolvedFindings: IssueWorkflowFinding[] = []
   let finalScore: number | undefined
 
-  const executeJob = async (workflowJob: IssueWorkflowJobRef): Promise<IssueWorkflowRoleEvaluation | undefined> => {
-    const evaluation = await input.evaluateRole?.({
-      role: workflowJob.role,
-      issue: input.issue,
-      iteration: workflowJob.iteration,
-      run,
-    })
+  try {
+    const executeJob = async (workflowJob: IssueWorkflowJobRef): Promise<IssueWorkflowRoleEvaluation | undefined> => {
+      const evaluation = await input.evaluateRole?.({
+        role: workflowJob.role,
+        issue: input.issue,
+        iteration: workflowJob.iteration,
+        run,
+      })
 
-    runAgentJob(workflowJob.job_id, async () => createIssueWorkflowJobCompletion(workflowJob.role, evaluation), options)
-    const job = await waitForIssueWorkflowJob(workflowJob.job_id, options)
-    if (job?.quality_gates) qualityGates.push(...job.quality_gates)
-    return evaluation
-  }
+      runAgentJob(workflowJob.job_id, async () => createIssueWorkflowJobCompletion(workflowJob.role, evaluation), options)
+      const job = await waitForIssueWorkflowJob(workflowJob.job_id, options)
+      if (job?.quality_gates) qualityGates.push(...job.quality_gates)
+      return evaluation
+    }
 
-  await executeJob(run.jobs[0]!)
+    await executeJob(run.jobs[0]!)
 
-  let reviewIteration = 1
-  let reviewEvaluation = await executeJob(run.jobs[1]!)
-  if (reviewEvaluation && 'score' in reviewEvaluation) {
-    finalScore = reviewEvaluation.score
-    unresolvedFindings = (reviewEvaluation.findings ?? []).filter((finding) => !finding.resolved)
-  }
-
-  while (reviewFailed(finalScore, unresolvedFindings, run.passingScore) && reviewIteration < maxIterations) {
-    await executeJob(await appendIssueWorkflowJob(run, input.issue, 'fixer', reviewIteration, options))
-    reviewIteration += 1
-    reviewEvaluation = await executeJob(await appendIssueWorkflowJob(run, input.issue, 'reviewer', reviewIteration, options))
+    let reviewIteration = 1
+    let reviewEvaluation = await executeJob(run.jobs[1]!)
     if (reviewEvaluation && 'score' in reviewEvaluation) {
       finalScore = reviewEvaluation.score
       unresolvedFindings = (reviewEvaluation.findings ?? []).filter((finding) => !finding.resolved)
     }
-  }
 
-  if (!reviewFailed(finalScore, unresolvedFindings, run.passingScore)) {
-    await executeJob(await appendIssueWorkflowJob(run, input.issue, 'verifier', 1, options))
-  }
+    while (reviewFailed(finalScore, unresolvedFindings, run.passingScore) && reviewIteration < maxIterations) {
+      await executeJob(await appendIssueWorkflowJob(run, input.issue, 'fixer', reviewIteration, options))
+      reviewIteration += 1
+      reviewEvaluation = await executeJob(await appendIssueWorkflowJob(run, input.issue, 'reviewer', reviewIteration, options))
+      if (reviewEvaluation && 'score' in reviewEvaluation) {
+        finalScore = reviewEvaluation.score
+        unresolvedFindings = (reviewEvaluation.findings ?? []).filter((finding) => !finding.resolved)
+      }
+    }
 
-  const requiredGatesPassed = run.requiredGates.every((gate) => qualityGates.some((result) => result.name === gate && result.status === 'passed'))
-  const status: IssueWorkflowStatus = !requiredGatesPassed
-    ? 'failed_gate'
-    : reviewFailed(finalScore, unresolvedFindings, run.passingScore)
-      ? reviewIteration >= maxIterations ? 'max_iterations' : 'failed_review'
-      : 'completed'
-  const updatedRun: IssueWorkflowRunRecord = {
-    ...run,
-    status,
-    updatedAt: new Date().toISOString(),
-    finalScore,
-  }
+    if (!reviewFailed(finalScore, unresolvedFindings, run.passingScore)) {
+      await executeJob(await appendIssueWorkflowJob(run, input.issue, 'verifier', 1, options))
+    }
 
-  await writeIssueWorkflowRun(updatedRun, options)
-  const proofOfWork = createProofOfWork({
-    target: {
-      kind: 'issue',
-      id: updatedRun.issue.id,
-      title: updatedRun.issue.title,
-      metadata: {
-        labels: updatedRun.issue.labels,
-        priority: updatedRun.issue.priority,
-        source: updatedRun.issue.source,
-      },
-    },
-    issueWorkflow: {
+    const requiredGatesPassed = run.requiredGates.every((gate) => qualityGates.some((result) => result.name === gate && result.status === 'passed'))
+    const status: IssueWorkflowStatus = !requiredGatesPassed
+      ? 'failed_gate'
+      : reviewFailed(finalScore, unresolvedFindings, run.passingScore)
+        ? reviewIteration >= maxIterations ? 'max_iterations' : 'failed_review'
+        : 'completed'
+    const proofOfWork = createIssueWorkflowProofOfWork({
+      run,
+      status,
+      finalScore,
+      unresolvedFindings,
+      qualityGates,
+      risks: unresolvedFindings.map((finding) => `${finding.severity}: ${finding.message}`),
+      nextActions: getIssueWorkflowNextActions(status, unresolvedFindings),
+    })
+    const updatedRun: IssueWorkflowRunRecord = {
+      ...run,
+      status,
+      updatedAt: new Date().toISOString(),
+      finalScore,
+      proof_of_work: proofOfWork,
+    }
+
+    await writeIssueWorkflowRun(updatedRun, options)
+
+    return {
       run: updatedRun,
       status,
       finalScore,
       unresolvedFindings,
       quality_gates: qualityGates,
-    },
-    required_gates: updatedRun.requiredGates,
-    risks: unresolvedFindings.map((finding) => `${finding.severity}: ${finding.message}`),
-    next_actions: status === 'completed'
-      ? []
-      : status === 'failed_gate'
-        ? ['Run or repair the missing required quality gates.']
-        : status === 'max_iterations'
-          ? ['Review unresolved findings and decide whether to continue with another bounded repair loop.']
-          : unresolvedFindings.length > 0
-            ? ['Resolve blocking reviewer findings, then re-run verification.']
-            : ['Inspect the workflow result and retry after correcting the failure cause.'],
-  })
-
-  return {
-    run: updatedRun,
-    status,
-    finalScore,
-    unresolvedFindings,
-    quality_gates: qualityGates,
-    proof_of_work: proofOfWork,
+      proof_of_work: proofOfWork,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const proofOfWork = createIssueWorkflowProofOfWork({
+      run,
+      status: 'error',
+      finalScore,
+      unresolvedFindings,
+      qualityGates,
+      risks: [`error: ${message}`],
+      nextActions: ['Inspect the workflow error, repair the failure cause, then retry the run.'],
+    })
+    const failedRun: IssueWorkflowRunRecord = {
+      ...run,
+      status: 'error',
+      updatedAt: new Date().toISOString(),
+      finalScore,
+      proof_of_work: proofOfWork,
+      errors: [message],
+    }
+    await writeIssueWorkflowRun(failedRun, options)
+    throw error
   }
 }

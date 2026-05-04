@@ -542,6 +542,41 @@ test('does not fall back from Responses when the provider returns semantic 400 e
   assert.deepEqual(calls, ['https://gateway.test/v1/responses'])
 })
 
+test('does not fall back from Responses for generic invalid request errors', async () => {
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    calls.push(String(input))
+    return new Response(JSON.stringify({ error: { message: 'invalid image input', type: 'invalid_request_error' } }), {
+      status: 400,
+      statusText: 'Rejected',
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://gateway.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'invalid_request')
+        assert.equal(err.status, 400)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, ['https://gateway.test/v1/responses'])
+})
+
 test('does not fall back from Responses for non-gateway provider errors', async () => {
   const cases = [
     { status: 401, category: 'authentication' },

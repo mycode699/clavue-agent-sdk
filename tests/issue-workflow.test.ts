@@ -94,6 +94,11 @@ test('createIssueWorkflowRun indexes role-based agent jobs for an issue', async 
     assert.match(run.id, /^issue_run_/)
     assert.equal(run.status, 'queued')
     assert.equal(run.issue.id, issue.id)
+    assert.deepEqual(run.workspace, {
+      cwd: dir,
+      runtimeNamespace: 'issue-run-test',
+      isolation: 'local',
+    })
     assert.deepEqual(run.requiredGates, ['build', 'tests'])
     assert.equal(run.passingScore, 85)
     assert.equal(run.jobs.length, 2)
@@ -136,6 +141,7 @@ test('runIssueWorkflow records a passing builder-reviewer-verifier loop', async 
     assert.deepEqual(result.unresolvedFindings, [])
     assert.deepEqual(result.quality_gates, [{ name: 'tests', status: 'passed', summary: 'verifier passed' }])
     assert.equal(result.proof_of_work.status, 'passed')
+    assert.deepEqual(result.run.proof_of_work, result.proof_of_work)
     assert.equal(result.proof_of_work.target?.id, result.run.issue.id)
     assert.equal(result.proof_of_work.issue_workflow?.id, result.run.id)
     assert.deepEqual(result.proof_of_work.verification.required_gates, ['tests'])
@@ -223,6 +229,55 @@ test('handleIssueCommand execute preserves local issue source metadata', async (
   }
 })
 
+test('handleIssueCommand execute exposes durable workflow state in JSON payloads', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-execute-state-'))
+  const issuePath = join(dir, 'execute-state-issue.md')
+  const { handleIssueCommand, parseArgs } = await import('../src/cli.ts')
+
+  try {
+    await writeFile(issuePath, 'Visible workflow state\n\nExpose durable handoff state from the CLI payload.')
+
+    const executePayload = await handleIssueCommand(parseArgs([
+      'issue',
+      'execute',
+      issuePath,
+      '--cwd',
+      dir,
+      '--require-gate',
+      'tests',
+      '--json',
+    ]), { dir, runtimeNamespace: 'issue-execute-state-test' })
+
+    assert.equal(executePayload.status, 'failed_gate')
+    assert.deepEqual(executePayload.workspace, {
+      cwd: dir,
+      runtimeNamespace: 'issue-execute-state-test',
+      isolation: 'local',
+    })
+    assert.equal(executePayload.proof_of_work?.status, 'failed')
+    assert.deepEqual(executePayload.proof_of_work?.verification.missing_gates, ['tests'])
+
+    const getPayload = await handleIssueCommand(parseArgs(['issue', 'get', executePayload.run.id, '--json']), { dir, runtimeNamespace: 'issue-execute-state-test' })
+    assert.deepEqual(getPayload.workspace, executePayload.workspace)
+    assert.equal(getPayload.proof_of_work?.id, executePayload.proof_of_work.id)
+    assert.deepEqual(getPayload.proof_of_work?.verification.missing_gates, ['tests'])
+
+    const stopPayload = await handleIssueCommand(parseArgs(['issue', 'stop', executePayload.run.id, '--json']), { dir, runtimeNamespace: 'issue-execute-state-test' })
+    assert.deepEqual(stopPayload.errors, ['Cancelled: cli stop'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('handleIssueCommand replay reports explicit local CLI limitation', async () => {
+  const { handleIssueCommand, parseArgs } = await import('../src/cli.ts')
+
+  await assert.rejects(
+    handleIssueCommand(parseArgs(['issue', 'replay', 'issue_run_123', '--json'])),
+    /issue replay requires an external runner and is not available from the local CLI yet/,
+  )
+})
+
 test('issue workflow helpers list runs and cancel associated jobs', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-cli-'))
   const { createIssueWorkflowRun, getAgentJob, listIssueWorkflowRuns, stopIssueWorkflowRun } = await import('../src/index.ts')
@@ -292,6 +347,162 @@ test('runIssueWorkflow creates a fixer iteration for blocking reviewer findings'
       'reviewer:2',
       'verifier:1',
     ])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow persists running state before role evaluation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-running-'))
+  const { loadIssueWorkflowRun, runIssueWorkflow } = await import('../src/index.ts')
+  let observedStatus: string | undefined
+
+  try {
+    await runIssueWorkflow({
+      issue: normalizeInlineIssue('Track live workflow state\n\nThe persisted run should be running during role execution.'),
+      cwd: dir,
+      evaluateRole: async ({ role, run }) => {
+        if (role === 'builder') {
+          observedStatus = (await loadIssueWorkflowRun(run.id, { dir, runtimeNamespace: 'issue-running-test' }))?.status
+        }
+        if (role === 'reviewer') return { score: 100, findings: [] }
+        return { score: 100, findings: [] }
+      },
+    }, { dir, runtimeNamespace: 'issue-running-test' })
+
+    assert.equal(observedStatus, 'running')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow persists appended jobs during live repair loops', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-live-jobs-'))
+  const { loadIssueWorkflowRun, runIssueWorkflow } = await import('../src/index.ts')
+  let runId: string | undefined
+  let persistedJobsBeforeSecondReview: string[] = []
+
+  try {
+    await runIssueWorkflow({
+      issue: normalizeInlineIssue('Persist live repair jobs\n\nThe stored run should show appended fixer and reviewer jobs before completion.'),
+      cwd: dir,
+      maxIterations: 2,
+      evaluateRole: async ({ role, run, iteration }) => {
+        runId = run.id
+        if (role === 'reviewer' && iteration === 1) {
+          return { score: 70, findings: [{ severity: 'p1', message: 'Repair job needed' }] }
+        }
+        if (role === 'reviewer' && iteration === 2) {
+          persistedJobsBeforeSecondReview = (await loadIssueWorkflowRun(run.id, { dir, runtimeNamespace: 'issue-live-jobs-test' }))
+            ?.jobs.map((job) => `${job.role}:${job.iteration}`) ?? []
+          return { score: 100, findings: [] }
+        }
+        return { score: 100, findings: [] }
+      },
+    }, { dir, runtimeNamespace: 'issue-live-jobs-test' })
+
+    assert.ok(runId)
+    assert.deepEqual(persistedJobsBeforeSecondReview, [
+      'builder:1',
+      'reviewer:1',
+      'fixer:1',
+      'reviewer:2',
+    ])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow treats non-finite maxIterations as a single bounded review pass', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-max-iterations-'))
+  const { runIssueWorkflow } = await import('../src/index.ts')
+  let reviewerCalls = 0
+
+  try {
+    const result = await runIssueWorkflow({
+      issue: normalizeInlineIssue('Bound repair iterations\n\nInvalid iteration counts should not run unbounded repair loops.'),
+      cwd: dir,
+      maxIterations: Number.NaN,
+      passingScore: 90,
+      evaluateRole: async ({ role }) => {
+        if (role === 'reviewer') {
+          reviewerCalls += 1
+          return { score: 50, findings: [{ severity: 'p1', message: 'Blocking issue remains' }] }
+        }
+        return { score: 100, findings: [] }
+      },
+    }, { dir, runtimeNamespace: 'issue-max-iterations-test' })
+
+    assert.equal(result.status, 'max_iterations')
+    assert.equal(reviewerCalls, 1)
+    assert.deepEqual(result.run.jobs.map((job) => `${job.role}:${job.iteration}`), ['builder:1', 'reviewer:1'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow persists error status when role evaluation fails', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-error-'))
+  const { loadIssueWorkflowRun, runIssueWorkflow } = await import('../src/index.ts')
+  let runId: string | undefined
+
+  try {
+    await assert.rejects(
+      runIssueWorkflow({
+        issue: normalizeInlineIssue('Persist workflow failures\n\nThe run should not remain running after an exception.'),
+        cwd: dir,
+        evaluateRole: async ({ run }) => {
+          runId = run.id
+          throw new Error('review provider unavailable')
+        },
+      }, { dir, runtimeNamespace: 'issue-error-test' }),
+      /review provider unavailable/,
+    )
+
+    assert.ok(runId)
+    const persistedRun = await loadIssueWorkflowRun(runId, { dir, runtimeNamespace: 'issue-error-test' })
+    assert.equal(persistedRun?.status, 'error')
+    assert.deepEqual(persistedRun?.errors, ['review provider unavailable'])
+    assert.equal(persistedRun?.proof_of_work?.status, 'failed')
+    assert.deepEqual(persistedRun?.proof_of_work?.risks, ['error: review provider unavailable'])
+    assert.deepEqual(persistedRun?.proof_of_work?.next_actions, ['Inspect the workflow error, repair the failure cause, then retry the run.'])
+    assert.equal(persistedRun?.proof_of_work?.handoff.ready_for_human_review, false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runIssueWorkflow error proof of work preserves partial quality gates', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'clavue-issue-workflow-error-gates-'))
+  const { loadIssueWorkflowRun, runIssueWorkflow } = await import('../src/index.ts')
+  let runId: string | undefined
+
+  try {
+    await assert.rejects(
+      runIssueWorkflow({
+        issue: normalizeInlineIssue('Preserve partial gates\n\nA repair gate should remain visible when a later review fails.'),
+        cwd: dir,
+        requiredGates: ['lint'],
+        passingScore: 90,
+        maxIterations: 2,
+        evaluateRole: async ({ role, run, iteration }) => {
+          runId = run.id
+          if (role === 'reviewer' && iteration === 1) {
+            return { score: 70, findings: [{ severity: 'p1', message: 'Repair still needed' }] }
+          }
+          if (role === 'fixer') return { gate: 'lint', passed: true, output: 'lint passed before failure' }
+          if (role === 'reviewer' && iteration === 2) throw new Error('review failed after partial gates')
+          return { score: 100, findings: [] }
+        },
+      }, { dir, runtimeNamespace: 'issue-error-gates-test' }),
+      /review failed after partial gates/,
+    )
+
+    assert.ok(runId)
+    const persistedRun = await loadIssueWorkflowRun(runId, { dir, runtimeNamespace: 'issue-error-gates-test' })
+    assert.deepEqual(persistedRun?.proof_of_work?.quality_gates, [{ name: 'lint', status: 'passed', summary: 'lint passed before failure' }])
+    assert.deepEqual(persistedRun?.proof_of_work?.verification.passed_gates, ['lint'])
+    assert.deepEqual(persistedRun?.proof_of_work?.verification.missing_gates, [])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

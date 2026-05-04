@@ -152,12 +152,16 @@ function getOpenAIErrorField(error: unknown, field: 'message' | 'type' | 'code' 
   return typeof value === 'string' ? value : ''
 }
 
-function categorizeOpenAIErrorBody(error: unknown): ProviderErrorCategory | undefined {
+function getOpenAIErrorSignature(error: unknown): string {
   const message = getOpenAIErrorField(error, 'message').toLowerCase()
   const type = getOpenAIErrorField(error, 'type').toLowerCase()
   const code = getOpenAIErrorField(error, 'code').toLowerCase()
   const param = getOpenAIErrorField(error, 'param').toLowerCase()
-  const signature = `${message} ${type} ${code} ${param}`
+  return `${message} ${type} ${code} ${param}`
+}
+
+function categorizeOpenAIErrorBody(error: unknown): ProviderErrorCategory | undefined {
+  const signature = getOpenAIErrorSignature(error)
 
   if (signature.includes('content_filter') || signature.includes('content filter') || signature.includes('filtered')) {
     return 'content_filter'
@@ -169,6 +173,10 @@ function categorizeOpenAIErrorBody(error: unknown): ProviderErrorCategory | unde
 
   if (signature.includes('tool_call') || signature.includes('tool call') || signature.includes('tool_call_id')) {
     return 'tool_protocol_error'
+  }
+
+  if (signature.includes('unsupported') && signature.includes('responses')) {
+    return 'unsupported'
   }
 
   return undefined
@@ -415,9 +423,15 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   private shouldFallbackToChatCompletions(model: string, error: OpenAIError): boolean {
-    if (error.category !== 'unsupported' && error.category !== 'invalid_request') return false
+    if (error.category !== 'unsupported') return false
+    if (error.status === 400 && !this.isResponsesGatewayUnsupportedError(error)) return false
 
     return getModelCapabilities(model, { apiType: this.apiType }).fallback?.responsesToChatCompletionsStatuses?.includes(error.status ?? 0) === true
+  }
+
+  private isResponsesGatewayUnsupportedError(error: OpenAIError): boolean {
+    const signature = getOpenAIErrorSignature(error.error)
+    return signature.includes('unsupported') && signature.includes('responses')
   }
 
   // --------------------------------------------------------------------------

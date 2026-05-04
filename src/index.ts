@@ -73,6 +73,7 @@ export type {
   IssueWorkflowRoleEvaluation,
   IssueWorkflowRunRecord,
   IssueWorkflowSource,
+  IssueWorkflowWorkspace,
   IssueWorkflowSourceType,
   IssueWorkflowStatus,
   LoadLocalIssuesOptions,
