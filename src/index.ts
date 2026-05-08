@@ -41,6 +41,13 @@ export type {
 } from './middleware/index.js'
 
 // --------------------------------------------------------------------------
+// Memory vector retrieval (v0.10.0 — additive, default keyword unchanged)
+// --------------------------------------------------------------------------
+export { cosineSimilarity } from './memory/embedder-adapter.js'
+export type { EmbedderLike } from './memory/embedder-adapter.js'
+export type { MemoryRetrievalStrategy } from './types/memory.js'
+
+// --------------------------------------------------------------------------
 // Tool Helper (Zod-based tool creation, compatible with official SDK)
 // --------------------------------------------------------------------------
 

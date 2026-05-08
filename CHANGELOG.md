@@ -30,6 +30,16 @@ The 1.0.0 work-up continues per:
   `MiddlewareContext`, `composeMiddleware`, `createMiddlewareContext`,
   `CoreRunner`. Covered by `tests/middleware.test.ts` (12 tests including
   rate-limit, audit-log, PII-redact patterns). Zero new runtime deps.
+- **P1-7 memory vector retrieval (additive)** — `MemoryConfig.retrieval`
+  accepts `'keyword'` (default, unchanged), `'vector'`, or `'hybrid'`.
+  Hosts inject a structural `EmbedderLike { embed(text): Promise<number[]> }`;
+  the SDK adds zero new runtime deps. `queryMemoryMatches` dispatches to
+  cosine-similarity scoring when `strategy` is vector / hybrid; the legacy
+  keyword path is byte-identical for `strategy: 'keyword'` (default).
+  New public exports: `EmbedderLike`, `MemoryRetrievalStrategy`,
+  `cosineSimilarity`. Covered by `tests/memory-vector.test.ts` (10 tests
+  including pure cosine helper, synonym retrieval, hybrid union, no-embedder
+  fallback, and embedder-throwing fallback).
 
 ### Planned (carry-overs from v2 audit)
 

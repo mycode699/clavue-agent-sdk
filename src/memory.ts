@@ -1,6 +1,9 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 
+import { cosineSimilarity, type EmbedderLike } from './memory/embedder-adapter.js'
+import type { MemoryRetrievalStrategy } from './types/memory.js'
+
 export type MemoryType = 'user' | 'project' | 'reference' | 'feedback' | 'decision' | 'improvement'
 export type MemoryScope = 'global' | 'repo' | 'session'
 export type MemoryConfidence = 'low' | 'medium' | 'high'
@@ -33,6 +36,17 @@ export interface MemoryQuery {
   sessionId?: string
   text?: string
   limit?: number
+  /**
+   * Optional retrieval strategy override per-query. Falls back to
+   * `MemoryConfig.retrieval` (resolved by the engine), then to `'keyword'`.
+   */
+  strategy?: MemoryRetrievalStrategy
+  /**
+   * Embedder adapter required when `strategy` is `'vector'` or `'hybrid'`.
+   * If absent the query falls back to keyword-only and adds a
+   * `vector_skipped:no_embedder` reason to scoreReasons.
+   */
+  embedder?: EmbedderLike
 }
 
 export interface MemoryQueryResult {
@@ -137,7 +151,11 @@ function matchesMemory(entry: MemoryEntry, query: MemoryQuery): boolean {
     if (!query.tags.every((tag) => tags.has(tag))) return false
   }
 
-  if (query.text) {
+  // Text is a hard filter ONLY for the legacy 'keyword' strategy. For
+  // 'vector' / 'hybrid' strategies the embedder must get a chance to
+  // surface synonyms even when no keyword overlaps.
+  const strategy: MemoryRetrievalStrategy = query.strategy ?? 'keyword'
+  if (query.text && strategy === 'keyword') {
     const haystack = `${entry.title}\n${entry.content}\n${(entry.tags || []).join(' ')}`.toLowerCase()
     const terms = query.text
       .toLowerCase()
@@ -214,12 +232,63 @@ export async function queryMemoryMatches(
   const limit = query.limit ?? 10
   const memories = await listMemories(options)
 
-  return memories
-    .filter((entry) => matchesMemory(entry, query))
-    .map((entry) => {
-      const { score, scoreReasons } = scoreMemory(entry, query)
-      return { entry, score, scoreReasons }
-    })
+  const filtered = memories.filter((entry) => matchesMemory(entry, query))
+
+  // Resolve effective strategy. Default = 'keyword' (zero-dep legacy path).
+  const strategy: MemoryRetrievalStrategy = query.strategy ?? 'keyword'
+  const wantsVector = strategy === 'vector' || strategy === 'hybrid'
+  const wantsKeyword = strategy === 'keyword' || strategy === 'hybrid'
+
+  // Vector scoring (lazy: only embed if strategy asks for it AND we have a
+  // text query AND we have an embedder). Otherwise vector contribution is 0.
+  let queryVec: number[] | null = null
+  let vectorSkipReason: string | null = null
+  if (wantsVector) {
+    if (!query.embedder) {
+      vectorSkipReason = 'vector_skipped:no_embedder'
+    } else if (!query.text || query.text.trim().length === 0) {
+      vectorSkipReason = 'vector_skipped:no_text'
+    } else {
+      try {
+        queryVec = await query.embedder.embed(query.text)
+      } catch {
+        vectorSkipReason = 'vector_skipped:embed_error'
+      }
+    }
+  }
+
+  const scored: MemoryQueryResult[] = await Promise.all(
+    filtered.map(async (entry) => {
+      const reasons: string[] = []
+      let score = 0
+      if (wantsKeyword) {
+        const kw = scoreMemory(entry, query)
+        score += kw.score
+        reasons.push(...kw.scoreReasons)
+      }
+      if (wantsVector && queryVec && query.embedder) {
+        try {
+          const haystack = `${entry.title}\n${entry.content}`
+          const entryVec = await query.embedder.embed(haystack)
+          const sim = cosineSimilarity(queryVec, entryVec)
+          // Scale cosine [-1,1] into a positive contribution comparable to
+          // keyword scoring (text match = +2 per term). Clamp negatives to 0.
+          const contribution = Math.max(0, sim) * 10
+          if (contribution > 0) {
+            score += contribution
+            reasons.push(`vector:${sim.toFixed(3)}`)
+          }
+        } catch {
+          reasons.push('vector_skipped:entry_embed_error')
+        }
+      } else if (wantsVector && vectorSkipReason && !reasons.includes(vectorSkipReason)) {
+        reasons.push(vectorSkipReason)
+      }
+      return { entry, score, scoreReasons: reasons }
+    }),
+  )
+
+  return scored
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score
       return b.entry.updatedAt.localeCompare(a.entry.updatedAt)
