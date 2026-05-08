@@ -33,7 +33,26 @@ export interface ThinkingConfig {
   budgetTokens?: number
 }
 
+/**
+ * Named shorthand for common `AgentOptions` combinations.
+ *
+ * - `'autonomous'`: trusted automation + auto-inject memory, high maxTurns.
+ * - `'interactive'`: `plan` permission mode + supervised autonomy, lower maxTurns.
+ * - `'sandboxed'`: `bypassPermissions` denied; read-only tools, memory off.
+ * - `'minimal'`: zero memory / zero skills / zero hooks — bare engine shell.
+ *
+ * Expanded by `createAgent()` before any other field merges. Explicit fields
+ * on the same call always win over preset defaults.
+ */
+export type AgentPreset = 'autonomous' | 'interactive' | 'sandboxed' | 'minimal'
+
 export interface AgentOptions {
+  /**
+   * Named preset expanded into safe defaults for permission mode, autonomy,
+   * memory, and turn budget. Explicit fields passed alongside always win.
+   * See {@link AgentPreset} for semantics of each preset.
+   */
+  profile?: AgentPreset
   /** Named runtime workflow profile that expands into safe defaults for tools, permissions, memory, and gates. */
   workflowMode?: WorkflowMode
   /** LLM model ID */

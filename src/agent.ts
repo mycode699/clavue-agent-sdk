@@ -43,7 +43,7 @@ import {
 import { saveMemory } from './memory.js'
 import { persistSessionMemoryCandidates } from './memory-policy.js'
 import { runSelfImprovement } from './improvement.js'
-import { applyRuntimeProfile } from './runtime-profiles.js'
+import { applyAgentPreset, applyRuntimeProfile } from './runtime-profiles.js'
 import { createHookRegistry, type HookRegistry } from './hooks.js'
 import {
   composeMiddleware,
@@ -85,8 +85,9 @@ export class Agent {
   private middlewares: Middleware[] = []
 
   constructor(options: AgentOptions = {}) {
-    // Shallow copy to avoid mutating caller's object
-    this.cfg = applyRuntimeProfile(options)
+    // Shallow copy to avoid mutating caller's object. AgentPreset shorthand
+    // expands first (explicit fields win), then workflow profile fills gaps.
+    this.cfg = applyRuntimeProfile(applyAgentPreset(options))
 
     // Merge credentials from options.env map, direct options, and process.env
     this.apiCredentials = this.pickCredentials()
@@ -747,9 +748,10 @@ export class Agent {
 // Factory function
 // --------------------------------------------------------------------------
 
-/** Factory: shorthand for `new Agent(options)`. */
+/** Factory: shorthand for `new Agent(options)`. Applies `profile` preset first
+ *  so explicit fields always win, then forwards to the Agent constructor. */
 export function createAgent(options: AgentOptions = {}): Agent {
-  return new Agent(options)
+  return new Agent(applyAgentPreset(options))
 }
 
 // --------------------------------------------------------------------------

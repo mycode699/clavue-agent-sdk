@@ -5,6 +5,7 @@ import {
   MEMORY_TRACE_SCHEMA_VERSION,
   SDK_EVENT_SCHEMA_VERSION,
   type AgentOptions,
+  type AgentPreset,
   type ControlledExecutionContract,
   type MemoryConfig,
   type PermissionMode,
@@ -195,4 +196,82 @@ export function applyRuntimeProfile<T extends AgentOptions>(options: T): T {
     appendSystemPrompt: mergeAppendPrompt(profile.appendSystemPrompt, options.appendSystemPrompt),
     maxTurns: options.maxTurns ?? profile.maxTurns,
   }
+}
+
+// --------------------------------------------------------------------------
+// AgentPreset shorthand — common AgentOptions combinations as one field.
+// --------------------------------------------------------------------------
+
+/**
+ * Default field values for each {@link AgentPreset}.
+ *
+ * - `autonomous` — long-running build / fix loops with prompt caching benefits.
+ * - `interactive` — pair-programming style, plan-first permission mode.
+ * - `sandboxed` — readonly investigation; memory off; bypass mode forbidden.
+ * - `minimal` — zero memory / skills / hooks; thin shell for embedding.
+ *
+ * Returns a fresh object every call (callers can freely mutate).
+ */
+export function expandAgentPreset(preset: AgentPreset): Partial<AgentOptions> {
+  switch (preset) {
+    case 'autonomous':
+      return {
+        permissionMode: 'trustedAutomation',
+        autonomyMode: 'autonomous',
+        memory: { enabled: true, autoInject: true, policy: { mode: 'autoInject' } },
+        maxTurns: 50,
+      }
+    case 'interactive':
+      return {
+        permissionMode: 'plan',
+        autonomyMode: 'supervised',
+        memory: { enabled: true, autoInject: true, policy: { mode: 'autoInject' } },
+        maxTurns: 10,
+      }
+    case 'sandboxed':
+      return {
+        permissionMode: 'auto',
+        autonomyMode: 'supervised',
+        toolsets: ['repo-readonly'],
+        memory: { enabled: false, policy: { mode: 'off' } },
+        maxTurns: 5,
+      }
+    case 'minimal':
+      return {
+        permissionMode: 'default',
+        autonomyMode: 'supervised',
+        memory: { enabled: false, policy: { mode: 'off' } },
+        maxTurns: 5,
+      }
+    default: {
+      const exhaustive: never = preset
+      throw new Error(`Unknown agent preset: ${String(exhaustive)}`)
+    }
+  }
+}
+
+/**
+ * Merge an `AgentPreset` expansion into caller-supplied `AgentOptions`.
+ * Explicit fields on `options` always win; preset fills in the gaps.
+ *
+ * Memory policy and toolset arrays use union/explicit-wins semantics
+ * consistent with `applyRuntimeProfile`. The `profile` field itself is
+ * stripped from the return value to prevent re-application.
+ */
+export function applyAgentPreset<T extends AgentOptions>(options: T): T {
+  if (!options.profile) return { ...options }
+
+  const expanded = expandAgentPreset(options.profile)
+  const merged: T = {
+    ...options,
+    permissionMode: options.permissionMode ?? expanded.permissionMode,
+    autonomyMode: options.autonomyMode ?? expanded.autonomyMode,
+    toolsets: mergeToolsets(expanded.toolsets, options.toolsets),
+    memory: mergeMemory(expanded.memory, options.memory),
+    maxTurns: options.maxTurns ?? expanded.maxTurns,
+  }
+  // Drop `profile` so downstream code (which keys off concrete fields) does
+  // not re-expand the preset on retries / nested constructors.
+  delete (merged as { profile?: unknown }).profile
+  return merged
 }

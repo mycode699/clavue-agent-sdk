@@ -75,7 +75,9 @@ export { runBenchmarks } from './benchmark.js'
 export {
   CONTROLLED_EXECUTION_CONTRACT_SCHEMA,
   CONTROLLED_EXECUTION_CONTRACT_VERSION,
+  applyAgentPreset,
   applyRuntimeProfile,
+  expandAgentPreset,
   getControlledExecutionContract,
   getRuntimeProfile,
   getAllRuntimeProfiles,
@@ -882,6 +884,7 @@ export type {
 
   // Agent types
   AgentOptions,
+  AgentPreset,
   AgentDefinition,
   AgentRunStatus,
   AgentRunResult,

@@ -21,6 +21,21 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice J runtime profile shorthand** (`AgentPreset`) — `createAgent({
+  profile })` and `new Agent({ profile })` now accept four named presets that
+  expand into preconfigured `AgentOptions`:
+  - `autonomous` — `mode: 'trustedAutomation'`, `autoInject: true`,
+    `maxTurns: 50`
+  - `interactive` — `mode: 'plan'`, `interactionMode: 'supervised'`,
+    `maxTurns: 10`
+  - `sandboxed` — `mode: 'auto'`, repo-readonly toolset, `memory: { enabled:
+    false }`, `maxTurns: 5`
+  - `minimal` — `mode: 'default'`, `memory: { enabled: false }`
+  Explicit caller fields always win; the preset only fills gaps. The
+  `profile` field is stripped from the merged config so retries / nested
+  constructors don't re-apply. New public exports: `AgentPreset`,
+  `applyAgentPreset`, `expandAgentPreset`. Covered by
+  `tests/runtime-profiles.test.ts` (13 tests). Zero new runtime deps.
 - **P1-5 koa-style middleware layer** (`src/middleware/`) — `agent.use(mw)`
   registers `(ctx, next) => Promise<void>` middlewares that wrap every
   `agent.query()` / `agent.run()` / `agent.prompt()` invocation. Mutating
