@@ -21,6 +21,17 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice F unified WorkItem core type** (`src/workflow/work-item.ts`) — a
+  single `{ id, title, acceptance, status, evidence, links, rawStatus? }`
+  shape spanning the three workflow data views (`WorkflowDefinition`,
+  `OrchestrationIssue`, `IssueWorkflowRecord`). Pure converters in both
+  directions; round-trips are stable for `OrchestrationIssue` and
+  `IssueWorkflowRecord`. Original types and exports are unchanged. New
+  public exports: `WorkItem`, `WorkItemStatus`, `WorkItemLink`,
+  `workflowDefinitionToWorkItem`, `orchestrationIssueToWorkItem`,
+  `issueWorkflowRecordToWorkItem`, `workItemToOrchestrationIssue`,
+  `workItemToIssueWorkflowRecord`, `normalizeStateToWorkItemStatus`.
+  Covered by `tests/work-item.test.ts` (11 tests). Zero new runtime deps.
 - **Slice J runtime profile shorthand** (`AgentPreset`) — `createAgent({
   profile })` and `new Agent({ profile })` now accept four named presets that
   expand into preconfigured `AgentOptions`:
