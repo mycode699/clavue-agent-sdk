@@ -103,6 +103,26 @@ export interface AgentOptions {
   quality_gates?: QualityGateResult[]
   /** Policy for turning quality gate results into terminal run failure. */
   qualityGatePolicy?: QualityGatePolicy
+  /**
+   * Optional v3.4 guardrail registry. When set, every tool call is
+   * evaluated for `tool_input` (pre-call) and `tool_output` (post-call)
+   * scopes. Blocking violations short-circuit the call and return an
+   * `is_error: true` ToolResult so the model can replan.
+   */
+  guardrails?: import('../guardrails/runtime.js').GuardrailRegistry
+  /**
+   * RFC D2 follow-up — policy hook for tool-scope violations. Returning
+   * `'skip'` (default if omitted) injects a denied ToolResult; `'abort'`
+   * terminates the run with `error_guardrail_abort`; `'continue'` lets the
+   * call/result proceed unchanged (audit-only). Throwing → `'abort'`.
+   */
+  onToolViolation?: import('../guardrails/types.js').OnToolViolationFn
+  /**
+   * Optional v3.3 trace store. When provided alongside `guardrails`, every
+   * tool-scope guardrail evaluation is appended as a `guardrail` event.
+   * Caller owns `startRun()` / `endRun()`.
+   */
+  trace?: import('../tracing/runtime.js').TraceStore
   /** Automated run learning and retro/eval feedback loop. */
   selfImprovement?: boolean | SelfImprovementConfig
   /** Named built-in capability profiles that expand into allowed tool names */

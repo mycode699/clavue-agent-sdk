@@ -76,6 +76,140 @@ export type {
   CommandVerifierCheck,
   CommandVerifierOptions,
 } from './workflow/verifier.js'
+
+// --------------------------------------------------------------------------
+// v3.1 Multi-Agent Graph DSL (prototype) — see docs/v2_v3_v4_upgrade_chain.md
+// --------------------------------------------------------------------------
+export { runGraph, validateGraph } from './graph/index.js'
+export type {
+  AgentGraph,
+  GraphAgentLike,
+  GraphContext,
+  GraphEdge,
+  GraphNode,
+  GraphNodeOutput,
+  GraphStep,
+  RunGraphOptions,
+  RunGraphResult,
+} from './graph/index.js'
+
+// --------------------------------------------------------------------------
+// v3.4 Guardrails (prototype) — 4-scope first-class guardrail registry
+// --------------------------------------------------------------------------
+export { GuardrailRegistry, GuardrailAbortError, isGuardrailAbortError } from './guardrails/index.js'
+export type {
+  Guardrail,
+  GuardrailCheckResult,
+  GuardrailContext,
+  GuardrailEvaluation,
+  GuardrailScope,
+  GuardrailViolation,
+  OnToolViolationFn,
+  ToolGuardrailAction,
+  ToolGuardrailCallContext,
+  ToolGuardrailPhase,
+} from './guardrails/index.js'
+
+// --------------------------------------------------------------------------
+// v3.3 Live Tracing (prototype) — in-memory TraceStore with replay
+// --------------------------------------------------------------------------
+export { TraceStore } from './tracing/index.js'
+export {
+  ConsoleExporter,
+  JsonlExporter,
+  OtelTraceExporter,
+  eventToOtelSpan,
+} from './tracing/index.js'
+export type {
+  GraphStepEventData,
+  GuardrailEventData,
+  OtelSpanLike,
+  OtelSpanHandleLike,
+  OtelTracerLike,
+  ToolCallEventData,
+  TraceEvent,
+  TraceExporter,
+  TraceQuery,
+  TraceRun,
+} from './tracing/index.js'
+
+// --------------------------------------------------------------------------
+// v3.2 Sandbox (prototype) — capability tokens
+// --------------------------------------------------------------------------
+export { CapabilityRegistry, matchResource } from './sandbox/index.js'
+export type {
+  CapabilityDecision,
+  CapabilityDenyReason,
+  CapabilityName,
+  CapabilityRegistryQuery,
+  CapabilityToken,
+  MintTokenInput,
+  ResourcePattern,
+} from './sandbox/index.js'
+
+// --------------------------------------------------------------------------
+// v3.5 RAG (prototype) — provider-agnostic retriever interface
+// --------------------------------------------------------------------------
+export { InMemoryRetriever, PgvectorRetriever, cosine } from './rag/index.js'
+export type {
+  EmbedFn,
+  InMemoryRetrieverOptions,
+  PgClientLike,
+  PgvectorRetrieverOptions,
+  RagDocument,
+  RetrievalHit,
+  Retriever,
+  RetrieveQuery,
+} from './rag/index.js'
+
+// --------------------------------------------------------------------------
+// v3.6 Generative UI (prototype) — framework-agnostic fragment stream
+// --------------------------------------------------------------------------
+export {
+  UiStreamBuilder,
+  applyFragment,
+  pipe as pipeUiStream,
+  renderToState,
+} from './genui/index.js'
+export type {
+  ComponentFragment,
+  DataFragment,
+  DoneFragment,
+  TextFragment,
+  UiFragment,
+  UiState,
+  UiStreamSink,
+  UiStreamSource,
+} from './genui/index.js'
+
+// --------------------------------------------------------------------------
+// v3.7 Voice (prototype) — provider-agnostic ASR / TTS
+// --------------------------------------------------------------------------
+export {
+  DeepgramAsrProvider,
+  ElevenLabsTtsProvider,
+  StubAsrProvider,
+  StubTtsProvider,
+  WhisperOpenAiAsrProvider,
+  bufferToChunks,
+  collectAudio,
+  collectTranscript,
+} from './voice/index.js'
+export type {
+  AsrChunk,
+  AsrOptions,
+  AsrProvider,
+  DeepgramAsrProviderOptions,
+  ElevenLabsTtsProviderOptions,
+  FetchLike,
+  FetchResponseLike,
+  StubAsrProviderOptions,
+  StubTtsProviderOptions,
+  TtsChunk,
+  TtsOptions,
+  TtsProvider,
+  WhisperOpenAiAsrProviderOptions,
+} from './voice/index.js'
 export type {
   CreateIssueWorkflowRunInput,
   IssueWorkflowFinding,

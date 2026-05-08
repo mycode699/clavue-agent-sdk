@@ -53,6 +53,12 @@ import {
   isPromptTooLongError,
 } from './utils/retry.js'
 import { abortError } from './utils/abort.js'
+import { GuardrailAbortError } from './guardrails/errors.js'
+import type {
+  GuardrailEvaluation,
+  ToolGuardrailAction,
+  ToolGuardrailPhase,
+} from './guardrails/types.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import {
@@ -539,7 +545,36 @@ export class QueryEngine {
       }
 
       // Execute tools while preserving model-requested ordering around mutations.
-      const toolResults = await this.executeTools(toolUseBlocks)
+      let toolResults: (ToolResult & { tool_name?: string })[]
+      try {
+        toolResults = await this.executeTools(toolUseBlocks)
+      } catch (err) {
+        // RFC D2 — onToolViolation('abort') terminates the run with a
+        // dedicated subtype so callers can distinguish it from other
+        // failures.
+        if (err instanceof GuardrailAbortError) {
+          yield {
+            type: 'result',
+            schema_version: SDK_EVENT_SCHEMA_VERSION,
+            subtype: 'error_guardrail_abort',
+            session_id: this.sessionId,
+            is_error: true,
+            usage: this.totalUsage,
+            num_turns: this.turnCount,
+            total_cost_usd: this.totalCost,
+            duration_api_ms: Math.round(this.apiTimeMs),
+            model_usage: this.getModelUsage(),
+            permission_denials: this.trace.permission_denials,
+            evidence: this.getEvidence(),
+            quality_gates: this.getQualityGates(),
+            trace: this.getTrace(),
+            errors: [err.message],
+            cost: this.totalCost,
+          }
+          return
+        }
+        throw err
+      }
 
       // Yield tool results
       for (const result of toolResults) {
@@ -689,6 +724,37 @@ export class QueryEngine {
   }
 
   /**
+   * Format violation messages for the denied-ToolResult content.
+   */
+  private formatViolations(evaluation: GuardrailEvaluation): string {
+    return evaluation.violations.map((v) => v.message ?? v.guardrail).join('; ')
+  }
+
+  /**
+   * Resolve the tool-scope guardrail action for a failed evaluation (RFC D2).
+   * Default = `'skip'`. Callback returns one of `'abort' | 'skip' | 'continue'`;
+   * throwing → `'abort'` (mirrors graph `onViolation`).
+   */
+  private async resolveToolGuardrailAction(
+    evaluation: GuardrailEvaluation,
+    toolName: string,
+    phase: ToolGuardrailPhase,
+  ): Promise<ToolGuardrailAction> {
+    const cb = this.config.onToolViolation
+    if (!cb) return 'skip'
+    try {
+      const action = await cb(evaluation, { toolName, phase })
+      if (action === 'abort' || action === 'skip' || action === 'continue') {
+        return action
+      }
+      // Unknown return value → safe default = skip.
+      return 'skip'
+    } catch {
+      return 'abort'
+    }
+  }
+
+  /**
    * Execute a single tool with permission checking.
    */
   private async executeSingleTool(
@@ -818,7 +884,85 @@ export class QueryEngine {
 
       // Execute the tool
       try {
+        // v3.4 Guardrails — tool_input scope (RFC D1+D2: skip-by-default;
+        // onToolViolation callback may override with 'abort' or 'continue').
+        if (this.config.guardrails) {
+          const evalIn = await this.config.guardrails.evaluate(
+            'tool_input',
+            block.input,
+            { toolName: block.name },
+          )
+          if (this.config.trace) {
+            try {
+              this.config.trace.appendGuardrail('tool_input', evalIn, { toolName: block.name })
+            } catch {
+              // Telemetry must never break a run.
+            }
+          }
+          if (!evalIn.passed) {
+            const action = await this.resolveToolGuardrailAction(evalIn, block.name, 'request')
+            if (action === 'abort') {
+              throw new GuardrailAbortError(
+                `Guardrail aborted tool input for "${block.name}": ${this.formatViolations(evalIn)}`,
+                evalIn,
+                block.name,
+                'request',
+              )
+            }
+            if (action === 'skip') {
+              result = {
+                type: 'tool_result',
+                tool_use_id: block.id,
+                content: `Guardrail denied tool input: ${this.formatViolations(evalIn)}`,
+                is_error: true,
+                tool_name: block.name,
+              }
+              return result
+            }
+            // 'continue' → fall through, call the tool anyway (audit-only).
+          }
+        }
+
         const toolResult = await tool.call(block.input, context)
+
+        // v3.4 Guardrails — tool_output scope
+        if (this.config.guardrails) {
+          const evalOut = await this.config.guardrails.evaluate(
+            'tool_output',
+            toolResult.content,
+            { toolName: block.name },
+          )
+          if (this.config.trace) {
+            try {
+              this.config.trace.appendGuardrail('tool_output', evalOut, { toolName: block.name })
+            } catch {
+              // Telemetry must never break a run.
+            }
+          }
+          if (!evalOut.passed) {
+            const action = await this.resolveToolGuardrailAction(evalOut, block.name, 'response')
+            if (action === 'abort') {
+              throw new GuardrailAbortError(
+                `Guardrail aborted tool output for "${block.name}": ${this.formatViolations(evalOut)}`,
+                evalOut,
+                block.name,
+                'response',
+              )
+            }
+            if (action === 'skip') {
+              result = {
+                type: 'tool_result',
+                tool_use_id: block.id,
+                content: `Guardrail denied tool output: ${this.formatViolations(evalOut)}`,
+                is_error: true,
+                tool_name: block.name,
+              }
+              return result
+            }
+            // 'continue' → fall through, pass original result through (audit-only).
+          }
+        }
+
         if (toolResult.evidence) {
           this.evidence.push(...toolResult.evidence)
         }
@@ -859,6 +1003,13 @@ export class QueryEngine {
         result = { ...toolResult, tool_use_id: block.id, tool_name: block.name }
         return result
       } catch (err: any) {
+        // GuardrailAbortError must bubble past the per-tool catch so the
+        // engine top-level can terminate the run. Other tool errors stay
+        // contained as `is_error: true` results (current behavior).
+        if (err instanceof GuardrailAbortError) {
+          throw err
+        }
+
         // Hook: PostToolUseFailure
         await this.executeHooks('PostToolUseFailure', {
           toolName: block.name,
@@ -881,7 +1032,9 @@ export class QueryEngine {
         tool_use_id: block.id,
         tool_name: block.name,
         duration_ms: Math.round(performance.now() - start),
-        is_error: result?.is_error === true,
+        // When an exception unwinds (e.g. GuardrailAbortError) `result` is
+        // undefined; record the call as errored so trace consumers see it.
+        is_error: result === undefined ? true : result.is_error === true,
         concurrency_safe: canRunConcurrently(tool),
       }
       if (recordTrace === true) {

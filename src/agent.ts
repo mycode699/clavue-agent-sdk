@@ -338,6 +338,9 @@ export class Agent {
       evidence: opts.evidence,
       quality_gates: opts.quality_gates,
       qualityGatePolicy: opts.qualityGatePolicy,
+      guardrails: opts.guardrails,
+      onToolViolation: opts.onToolViolation,
+      trace: opts.trace,
     })
     this.currentEngine = engine
 

@@ -1,0 +1,67 @@
+/**
+ * Tracing — types (v3.3 prototype).
+ *
+ * Goal: capture every meaningful run event in a structured stream that hosts
+ * can persist, replay, or forward to OTel/dashboards. The differentiator vs
+ * openai-agents tracing dashboard is **replay** — peer dashboards can view
+ * past runs but cannot drive a deterministic re-execution from any prefix.
+ *
+ * Event shape is intentionally narrow: `kind` + `at` + free-form `data`.
+ * Concrete kinds (`graph_step`, `guardrail`, `tool_call` …) are documented
+ * but not enforced — hosts can add custom kinds without forking the SDK.
+ *
+ * @module
+ */
+
+import type { GraphStep } from '../graph/types.js'
+import type { GuardrailEvaluation, GuardrailScope } from '../guardrails/types.js'
+
+export interface TraceEvent {
+  /** Discriminator. Built-in kinds: `graph_step`, `guardrail`, `tool_call`, `note`. Hosts may extend. */
+  kind: string
+  /** Unix epoch ms when the event occurred. */
+  at: number
+  /** Free-form payload. Concrete shape lives on `kind`. */
+  data: unknown
+  /** Optional run id; falls back to TraceRun.id at append time. */
+  runId?: string
+  /** Optional grouping (graph node, agent, subagent, …). */
+  spanId?: string
+}
+
+export interface TraceRun {
+  id: string
+  startedAt: number
+  endedAt?: number
+  /** Events in append order. */
+  events: TraceEvent[]
+  /** Free-form metadata (graph id, prompt hash, model id …). */
+  meta: Record<string, unknown>
+}
+
+export interface TraceQuery {
+  kinds?: string[]
+  spanId?: string
+  /** Inclusive lower bound on event index. */
+  fromIndex?: number
+  /** Exclusive upper bound on event index. */
+  toIndex?: number
+}
+
+/** Convenience factories for built-in event kinds. */
+export interface GraphStepEventData {
+  step: GraphStep
+}
+export interface GuardrailEventData {
+  scope: GuardrailScope
+  evaluation: GuardrailEvaluation
+  toolName?: string
+  agentId?: string
+}
+export interface ToolCallEventData {
+  toolName: string
+  phase: 'request' | 'result'
+  input?: unknown
+  output?: unknown
+  error?: string
+}

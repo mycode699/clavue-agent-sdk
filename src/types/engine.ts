@@ -50,4 +50,25 @@ export interface QueryEngineConfig {
   quality_gates?: QualityGateResult[]
   /** Policy for turning quality gate results into terminal run failure. */
   qualityGatePolicy?: QualityGatePolicy
+  /**
+   * Optional v3.4 guardrail registry. When provided, the engine evaluates
+   * every tool dispatch against `tool_input` (pre-call) and `tool_output`
+   * (post-call) scopes. A blocking violation short-circuits the call and
+   * returns an `is_error: true` ToolResult containing the violation
+   * messages — the model loop sees a denied tool and may replan (RFC D2
+   * default = `'skip'`). `'abort'` / `'continue'` policy callbacks are
+   * follow-ups (see docs/v3_rfc.md).
+   */
+  guardrails?: import('../guardrails/runtime.js').GuardrailRegistry
+  /**
+   * RFC D2 follow-up — policy callback for tool-scope guardrail
+   * violations. See `AgentOptions.onToolViolation`.
+   */
+  onToolViolation?: import('../guardrails/types.js').OnToolViolationFn
+  /**
+   * Optional v3.3 trace store. When provided alongside `guardrails`, every
+   * tool-scope evaluation is appended as a `guardrail` event with
+   * `tool.name` set, mirroring the graph runtime integration.
+   */
+  trace?: import('../tracing/runtime.js').TraceStore
 }
