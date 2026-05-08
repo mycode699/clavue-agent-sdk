@@ -19,6 +19,18 @@ The 1.0.0 work-up continues per:
 - [docs/v2_roadmap.md](./docs/v2_roadmap.md) — milestones M0..M7 → 1.0.0
 - [docs/v2_implementation_slices.md](./docs/v2_implementation_slices.md) — worker-disjoint slice catalog for the 12 remaining P1/P2/P3 items
 
+### Added
+
+- **P1-5 koa-style middleware layer** (`src/middleware/`) — `agent.use(mw)`
+  registers `(ctx, next) => Promise<void>` middlewares that wrap every
+  `agent.query()` / `agent.run()` / `agent.prompt()` invocation. Mutating
+  `ctx.prompt` and `ctx.options` before `next()` is honored; skipping
+  `next()` short-circuits the engine call. Composes with existing event
+  hooks (does not replace them). New public exports: `Middleware`,
+  `MiddlewareContext`, `composeMiddleware`, `createMiddlewareContext`,
+  `CoreRunner`. Covered by `tests/middleware.test.ts` (12 tests including
+  rate-limit, audit-log, PII-redact patterns). Zero new runtime deps.
+
 ### Planned (carry-overs from v2 audit)
 
 - M2 turn pipeline (`Guard → Compact → Render → Call → Stream → Tools → Decide`)
@@ -26,8 +38,6 @@ The 1.0.0 work-up continues per:
 - P1-4 unified `ResilientCall` wrapping retry / fallback / compact-recovery in
   one path, replacing the current three-branch error handling in
   `QueryEngine.submitMessage`.
-- P1-5 middleware (`agent.use()`) layer with built-in rate-limit / audit /
-  PII-scrubber adapters.
 - M6 subagent isolation (`inprocess` / `worker_thread`), tool-inheritance
   narrowing, budget propagation.
 - M7 v1→v2 migration guide, benchmark report (TTFT, multi-turn cost, hot-path

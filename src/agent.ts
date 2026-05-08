@@ -45,6 +45,11 @@ import { persistSessionMemoryCandidates } from './memory-policy.js'
 import { runSelfImprovement } from './improvement.js'
 import { applyRuntimeProfile } from './runtime-profiles.js'
 import { createHookRegistry, type HookRegistry } from './hooks.js'
+import {
+  composeMiddleware,
+  createMiddlewareContext,
+  type Middleware,
+} from './middleware/index.js'
 import { initBundledSkills } from './skills/index.js'
 import { createProvider, getModelCapabilities, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
@@ -77,6 +82,7 @@ export class Agent {
   private abortCtrl: AbortController | null = null
   private currentEngine: QueryEngine | null = null
   private hookRegistry: HookRegistry
+  private middlewares: Middleware[] = []
 
   constructor(options: AgentOptions = {}) {
     // Shallow copy to avoid mutating caller's object
@@ -243,9 +249,94 @@ export class Agent {
   }
 
   /**
+   * Register a koa-style middleware. Middlewares run in registration order
+   * around `query()` (and any consumer of `query()`, including `run()` and
+   * `prompt()`). They can mutate `ctx.prompt` / `ctx.options` before
+   * calling `next()`, observe duration / errors after, and short-circuit by
+   * skipping `next()`.
+   */
+  use(mw: Middleware): this {
+    if (typeof mw !== 'function') {
+      throw new TypeError('Agent.use() expects a middleware function')
+    }
+    this.middlewares.push(mw)
+    return this
+  }
+
+  /**
    * Run a query with streaming events.
    */
   async *query(
+    prompt: string,
+    overrides?: Partial<AgentOptions>,
+  ): AsyncGenerator<SDKMessage, void> {
+    if (this.middlewares.length === 0) {
+      // Fast path: no middleware → run engine directly without queue bridge.
+      yield* this.queryCore(prompt, overrides)
+      return
+    }
+
+    // Bridge the streaming generator through a bounded queue so koa-style
+    // (ctx, next) middleware can wrap an AsyncGenerator without buffering
+    // the entire run.
+    const ctx = createMiddlewareContext(prompt, overrides ?? {})
+    const queue: SDKMessage[] = []
+    let done = false
+    let resolveNext: (() => void) | null = null
+    const wake = () => {
+      if (resolveNext) {
+        const r = resolveNext
+        resolveNext = null
+        r()
+      }
+    }
+
+    const dispatch = composeMiddleware(this.middlewares)
+    const chain = dispatch(ctx, async (mwCtx) => {
+      try {
+        for await (const ev of this.queryCore(mwCtx.prompt, mwCtx.options)) {
+          queue.push(ev)
+          wake()
+        }
+      } catch (err) {
+        mwCtx.error = err
+        throw err
+      }
+    })
+      .then(
+        () => {
+          ctx.finishedAt = Date.now()
+        },
+        (err) => {
+          ctx.finishedAt = Date.now()
+          if (ctx.error === undefined) ctx.error = err
+        },
+      )
+      .finally(() => {
+        done = true
+        wake()
+      })
+
+    while (true) {
+      if (queue.length > 0) {
+        yield queue.shift() as SDKMessage
+        continue
+      }
+      if (done) break
+      await new Promise<void>((resolve) => {
+        resolveNext = resolve
+      })
+    }
+
+    await chain
+    if (ctx.error !== undefined) throw ctx.error
+  }
+
+  /**
+   * Run a query with streaming events (engine-direct path; bypasses
+   * `agent.use()` middleware). Public callers should prefer `query()`.
+   */
+  async *queryCore(
     prompt: string,
     overrides?: Partial<AgentOptions>,
   ): AsyncGenerator<SDKMessage, void> {

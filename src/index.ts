@@ -28,6 +28,19 @@
 export { Agent, createAgent, query, run } from './agent.js'
 
 // --------------------------------------------------------------------------
+// Middleware (koa-style agent.use() chain — v0.10.0)
+// --------------------------------------------------------------------------
+export {
+  composeMiddleware,
+  createMiddlewareContext,
+} from './middleware/index.js'
+export type {
+  CoreRunner,
+  Middleware,
+  MiddlewareContext,
+} from './middleware/index.js'
+
+// --------------------------------------------------------------------------
 // Tool Helper (Zod-based tool creation, compatible with official SDK)
 // --------------------------------------------------------------------------
 
