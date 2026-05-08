@@ -11,18 +11,36 @@ explicitly when they bump.
 
 ---
 
-## [Unreleased] — path to 0.9.0 / 2.0.0
+## [Unreleased] — path to 1.0.0
 
-The 1.0.0 work-up is tracked in:
+The 1.0.0 work-up continues per:
 
 - [docs/v2_audit_report.md](./docs/v2_audit_report.md) — 17-issue audit of 0.7.5
-- [docs/v2_architecture.md](./docs/v2_architecture.md) — turn-pipeline target design
 - [docs/v2_roadmap.md](./docs/v2_roadmap.md) — milestones M0..M7 → 1.0.0
-- [docs/v3_rfc.md](./docs/v3_rfc.md) — v3 capability-layer decisions (D1/D2/D4 shipped, D3 deferred to v4)
-- [docs/v2_v3_v4_upgrade_chain.md](./docs/v2_v3_v4_upgrade_chain.md) — full peer-comparison + v2/v3/v4 timeline
 - [docs/v2_implementation_slices.md](./docs/v2_implementation_slices.md) — worker-disjoint slice catalog for the 12 remaining P1/P2/P3 items
 
-### Added — v3 seven-axis capability layer (additive, zero engine API breakage)
+### Planned (carry-overs from v2 audit)
+
+- M2 turn pipeline (`Guard → Compact → Render → Call → Stream → Tools → Decide`)
+  replacing the monolithic `QueryEngine.submitMessage` hot path.
+- P1-4 unified `ResilientCall` wrapping retry / fallback / compact-recovery in
+  one path, replacing the current three-branch error handling in
+  `QueryEngine.submitMessage`.
+- P1-5 middleware (`agent.use()`) layer with built-in rate-limit / audit /
+  PII-scrubber adapters.
+- M6 subagent isolation (`inprocess` / `worker_thread`), tool-inheritance
+  narrowing, budget propagation.
+- M7 v1→v2 migration guide, benchmark report (TTFT, multi-turn cost, hot-path
+  LoC, dispatch overhead, abort latency), README split into topic pages.
+
+---
+
+## [0.9.0] — 2026-05-09
+
+v3 capability layer release. Additive: zero engine API breakage, zero new
+runtime npm dependencies. SemVer minor bump because seven new public
+subsurfaces and seven new subpath exports are introduced; existing 0.8.0
+imports keep working unchanged.
 
 - **Multi-agent graph DSL** (`src/graph/`) with 6 node kinds — `agent`,
   `verifier`, `router`, `parallel`, `human`, `retriever` — plus `runGraph`
