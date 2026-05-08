@@ -225,7 +225,7 @@ export async function loadLocalIssues(options: LoadLocalIssuesOptions): Promise<
   }
 }
 
-async function writeIssueWorkflowRun(
+export async function writeIssueWorkflowRun(
   run: IssueWorkflowRunRecord,
   options?: AgentJobStoreOptions,
 ): Promise<IssueWorkflowRunRecord> {
@@ -348,7 +348,7 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function waitForIssueWorkflowJob(
+export async function waitForIssueWorkflowJob(
   jobId: string,
   options?: AgentJobStoreOptions,
 ): Promise<Awaited<ReturnType<typeof getAgentJob>>> {
@@ -399,7 +399,7 @@ function normalizeMaxIterations(value: number | undefined): number {
   return Number.isFinite(value) && value !== undefined && value >= 1 ? Math.floor(value) : 1
 }
 
-async function appendIssueWorkflowJob(
+export async function appendIssueWorkflowJob(
   run: IssueWorkflowRunRecord,
   issue: IssueWorkflowRecord,
   role: IssueWorkflowRole,
@@ -425,7 +425,7 @@ async function appendIssueWorkflowJob(
   return jobRef
 }
 
-function createIssueWorkflowProofOfWork(input: {
+export function createIssueWorkflowProofOfWork(input: {
   run: IssueWorkflowRunRecord
   status: IssueWorkflowStatus
   finalScore?: number
@@ -466,6 +466,13 @@ function getIssueWorkflowNextActions(status: IssueWorkflowStatus, unresolvedFind
   return ['Inspect the workflow result and retry after correcting the failure cause.']
 }
 
+/**
+ * @deprecated since v0.8 — prefer `runIssueWorkflowWithAgent` which drives a
+ * real Agent + Verifier loop instead of relying on a host-supplied
+ * `evaluateRole` callback. This legacy function is preserved to keep existing
+ * call sites working; it never invokes an LLM, only records role outcomes
+ * derived from `input.evaluateRole`. See `examples/17-issue-workflow-real.ts`.
+ */
 export async function runIssueWorkflow(
   input: RunIssueWorkflowInput,
   options?: AgentJobStoreOptions & RuntimeNamespaceContext,

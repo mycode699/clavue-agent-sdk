@@ -15,11 +15,49 @@ import type {
   NormalizedContentBlock,
   NormalizedTool,
   NormalizedResponseBlock,
+  OutputSchema,
   ProviderError,
   ProviderErrorCategory,
   ModelCapabilityName,
 } from './types.js'
 import { decideModelCapability, getModelCapabilities } from './capabilities.js'
+
+// --------------------------------------------------------------------------
+// Structured Output Helpers
+// --------------------------------------------------------------------------
+//
+// OpenAI exposes structured outputs through two near-identical shapes:
+//
+//   - Chat Completions: `response_format = { type: 'json_schema',
+//       json_schema: { name, schema, strict } }`.
+//   - Responses API:    `text.format = { type: 'json_schema', name,
+//       schema, strict }` (note: no `json_schema` wrapper).
+//
+// `strict` defaults to true so the model is required to produce valid JSON
+// conforming to the schema.
+
+const DEFAULT_OUTPUT_SCHEMA_NAME = 'output'
+
+function buildOpenAIResponseFormat(schema: OutputSchema): Record<string, any> {
+  const jsonSchema: Record<string, any> = {
+    name: schema.name || DEFAULT_OUTPUT_SCHEMA_NAME,
+    schema: schema.schema,
+    strict: schema.strict ?? true,
+  }
+  if (schema.description) jsonSchema.description = schema.description
+  return { type: 'json_schema', json_schema: jsonSchema }
+}
+
+function buildOpenAIResponsesTextFormat(schema: OutputSchema): Record<string, any> {
+  const format: Record<string, any> = {
+    type: 'json_schema',
+    name: schema.name || DEFAULT_OUTPUT_SCHEMA_NAME,
+    schema: schema.schema,
+    strict: schema.strict ?? true,
+  }
+  if (schema.description) format.description = schema.description
+  return format
+}
 
 // --------------------------------------------------------------------------
 // OpenAI-specific types (minimal, just what we need)
@@ -343,6 +381,10 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
+    if (params.outputSchema) {
+      body.response_format = buildOpenAIResponseFormat(params.outputSchema)
+    }
+
     let response: Response
     try {
       response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -380,6 +422,12 @@ export class OpenAIProvider implements LLMProvider {
 
     if (tools && tools.length > 0) {
       body.tools = tools
+    }
+
+    if (params.outputSchema) {
+      // Responses API uses `text.format` for structured outputs.
+      // Reference: https://platform.openai.com/docs/api-reference/responses/create
+      body.text = { format: buildOpenAIResponsesTextFormat(params.outputSchema) }
     }
 
     let response: Response
@@ -755,7 +803,9 @@ export class OpenAIProvider implements LLMProvider {
     if (data.status === 'failed' || data.status === 'cancelled') {
       throw createOpenAIProviderError({
         message: data.error?.message || `OpenAI Responses API returned ${data.status}`,
-        category: data.status === 'cancelled' ? 'aborted' : 'provider_error',
+        category: data.status === 'cancelled'
+          ? 'aborted'
+          : categorizeOpenAIErrorBody(data.error) ?? 'provider_error',
         error: data.error,
       })
     }

@@ -318,6 +318,10 @@ test('OpenAI provider errors expose semantic categories from provider bodies', a
       body: { error: { message: 'missing tool response message', param: 'messages.[3].tool_call_id' } },
       category: 'tool_protocol_error',
     },
+    {
+      body: { error: { message: 'unsupported parameter for the responses endpoint' } },
+      category: 'unsupported',
+    },
   ]
 
   for (const { body, category } of cases) {
@@ -896,6 +900,132 @@ test('throws categorized provider errors on failed Responses output', async () =
   }
 })
 
+test('preserves semantic categories on failed Responses output', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({
+      id: 'resp_123',
+      status: 'failed',
+      error: { message: 'content filtered', code: 'content_filter' },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.match(err.message, /content filtered/)
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'content_filter')
+        assert.equal(err.error.code, 'content_filter')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('preserves context_overflow category on failed Responses output', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({
+      id: 'resp_456',
+      status: 'failed',
+      error: { message: 'maximum context length exceeded', code: 'context_length_exceeded' },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'context_overflow')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('preserves tool_protocol_error category on failed Responses output', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({
+      id: 'resp_789',
+      status: 'failed',
+      error: { message: 'invalid tool_call_id reference', code: 'invalid_request' },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'tool_protocol_error')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('falls back to provider_error when failed Responses error is unrecognized', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({
+      id: 'resp_999',
+      status: 'failed',
+      error: { message: 'unexpected upstream condition', code: 'mystery' },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as typeof fetch
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await assert.rejects(
+      provider.createMessage({
+        model: 'gpt-5.4',
+        maxTokens: 256,
+        system: 'You are helpful.',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      (err: any) => {
+        assert.equal(err.provider, 'openai')
+        assert.equal(err.category, 'provider_error')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('throws categorized provider errors on cancelled Responses output', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => new Response(
@@ -1233,4 +1363,195 @@ test('serializes Responses tool-call continuations with function_call_output ite
       output: '4',
     },
   ])
+})
+
+// --------------------------------------------------------------------------
+// Structured output (outputSchema) — request shape verification
+// --------------------------------------------------------------------------
+
+function mockOnceJsonResponse(body: unknown) {
+  const calls: Array<{ url: string; body: any }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    })
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch
+    },
+  }
+}
+
+test('OpenAI Chat Completions request encodes outputSchema as response_format json_schema', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'chatcmpl_x',
+    choices: [{ index: 0, message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-4o',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+      outputSchema: {
+        name: 'verdict',
+        description: 'verdict payload',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      },
+    })
+  } finally {
+    mock.restore()
+  }
+
+  const body = mock.calls[0]?.body
+  assert.equal(mock.calls[0]?.url, 'https://example.test/v1/chat/completions')
+  assert.deepEqual(body.response_format, {
+    type: 'json_schema',
+    json_schema: {
+      name: 'verdict',
+      schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      strict: true,
+      description: 'verdict payload',
+    },
+  })
+  // No `text.format` in chat-completions requests.
+  assert.equal(body.text, undefined)
+})
+
+test('OpenAI Chat Completions outputSchema defaults name to "output" and strict=true', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'chatcmpl_x',
+    choices: [{ index: 0, message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-4o',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+      outputSchema: { schema: { type: 'object', properties: {} } },
+    })
+  } finally {
+    mock.restore()
+  }
+
+  const body = mock.calls[0]?.body
+  assert.equal(body.response_format.json_schema.name, 'output')
+  assert.equal(body.response_format.json_schema.strict, true)
+  assert.equal(body.response_format.json_schema.description, undefined)
+})
+
+test('OpenAI Chat Completions outputSchema honors strict=false', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'chatcmpl_x',
+    choices: [{ index: 0, message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-4o',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+      outputSchema: { schema: { type: 'object', properties: {} }, strict: false },
+    })
+  } finally {
+    mock.restore()
+  }
+
+  assert.equal(mock.calls[0]?.body.response_format.json_schema.strict, false)
+})
+
+test('OpenAI Chat Completions request without outputSchema omits response_format', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'chatcmpl_x',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-4o',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  assert.equal(mock.calls[0]?.body.response_format, undefined)
+})
+
+test('OpenAI Responses request encodes outputSchema as text.format json_schema (no json_schema wrapper)', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: '{}',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+      outputSchema: {
+        name: 'verdict',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      },
+    })
+  } finally {
+    mock.restore()
+  }
+
+  const body = mock.calls[0]?.body
+  assert.equal(mock.calls[0]?.url, 'https://example.test/v1/responses')
+  assert.deepEqual(body.text, {
+    format: {
+      type: 'json_schema',
+      name: 'verdict',
+      schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      strict: true,
+    },
+  })
+  // Responses API uses text.format, not response_format.
+  assert.equal(body.response_format, undefined)
+})
+
+test('OpenAI Responses request without outputSchema omits text.format', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: 'hi',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  assert.equal(mock.calls[0]?.body.text, undefined)
 })

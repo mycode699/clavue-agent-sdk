@@ -63,6 +63,19 @@ export {
 export { extractRunImprovementCandidates, runSelfImprovement } from './improvement.js'
 export type { ImprovementCandidate, RunSelfImprovementOptions } from './improvement.js'
 export { createIssueWorkflowRun, listIssueWorkflowRuns, loadIssueWorkflowRun, loadLocalIssues, normalizeIssueInput, runIssueWorkflow, stopIssueWorkflowRun } from './issue-workflow.js'
+export { runIssueWorkflowWithAgent } from './workflow/issue-workflow-real.js'
+export type {
+  AgentLike,
+  RunIssueWorkflowWithAgentInput,
+  IssueWorkflowPrompts,
+} from './workflow/issue-workflow-real.js'
+export { CommandVerifier, StaticVerifier } from './workflow/verifier.js'
+export type {
+  Verifier,
+  VerifyInput,
+  CommandVerifierCheck,
+  CommandVerifierOptions,
+} from './workflow/verifier.js'
 export type {
   CreateIssueWorkflowRunInput,
   IssueWorkflowFinding,
@@ -245,6 +258,7 @@ export type {
   LLMProvider,
   CreateMessageParams,
   CreateMessageResponse,
+  StreamCallbacks,
   NormalizedMessageParam,
   NormalizedContentBlock,
   NormalizedImageSource,
@@ -517,6 +531,7 @@ export {
   estimateCost,
   MODEL_PRICING,
   AUTOCOMPACT_BUFFER_TOKENS,
+  AUTOCOMPACT_BUFFER_FRACTION,
 } from './utils/tokens.js'
 
 // --------------------------------------------------------------------------
@@ -741,6 +756,7 @@ export type {
 
   // Output format
   OutputFormat,
+  OutputSchema,
   MemoryConfig,
   MemoryPolicy,
   MemoryPolicyMode,

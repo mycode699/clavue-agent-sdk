@@ -89,6 +89,33 @@ export interface ModelCapabilities {
 }
 
 // --------------------------------------------------------------------------
+// Structured Output Schema
+// --------------------------------------------------------------------------
+
+/**
+ * Structured output constraint passed through to the provider. Each provider
+ * translates this into its native shape:
+ *
+ *   - Anthropic: synthesizes a single tool whose `input_schema` is `schema`,
+ *     and forces `tool_choice: { type: 'tool', name }`. The model's JSON
+ *     output appears as that tool's input.
+ *   - OpenAI: maps to `response_format: { type: 'json_schema', json_schema:
+ *     { name, schema, strict } }` on the Chat Completions / Responses APIs.
+ */
+export interface OutputSchema {
+  /** Schema name. Used as the synthesized tool name (Anthropic) or
+   *  `response_format.json_schema.name` (OpenAI). Defaults to `_output`. */
+  name?: string
+  /** A JSON Schema object describing the expected structured output. */
+  schema: Record<string, unknown>
+  /** OpenAI-only hint: pass `strict: true` for guaranteed-conforming output.
+   *  Anthropic ignores this field. Default: true on OpenAI. */
+  strict?: boolean
+  /** Optional human-readable description forwarded to the provider. */
+  description?: string
+}
+
+// --------------------------------------------------------------------------
 // Normalized Request
 // --------------------------------------------------------------------------
 
@@ -100,6 +127,26 @@ export interface CreateMessageParams {
   tools?: NormalizedTool[]
   thinking?: { type: string; budget_tokens?: number }
   abortSignal?: AbortSignal
+  /** Optional structured output constraint. Providers translate this to
+   *  their native equivalent (tool_choice on Anthropic, response_format on
+   *  OpenAI). When set, the model is required to produce JSON conforming to
+   *  `schema`. */
+  outputSchema?: OutputSchema
+  /** Optional streaming callbacks. When set on a provider that supports
+   *  streaming, the provider will use its native streaming API and emit
+   *  partial deltas as they arrive. The final aggregated response is still
+   *  returned from createMessage(). When undefined, providers fall back to
+   *  the non-streaming endpoint. */
+  stream?: StreamCallbacks
+}
+
+/** Provider-emitted streaming events. Phase 1 surface focuses on text deltas
+ *  (covers ~80% of perceived TTFT improvement). Tool-use deltas and a
+ *  generic `event` channel are reserved for phase 2. */
+export interface StreamCallbacks {
+  /** Called for each incremental text fragment as it arrives. Implementations
+   *  must not throw — exceptions are swallowed by the provider. */
+  onText?: (delta: string) => void
 }
 
 /**

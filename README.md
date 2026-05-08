@@ -15,6 +15,9 @@ Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/cla
 - [Programmatic Integration Guide](./docs/programmatic-integration-guide.md): complete usage patterns for embedding the SDK in services, CI, workers, internal platforms, and agent products.
 - [Capability Upgrade Program](./docs/agent-sdk-capability-upgrade-program.md): roadmap and capability planning for controlled autonomous workflows.
 - [Production Capabilities](./docs/production-agent-sdk-capabilities.md): deeper analysis of production runtime capabilities and gaps.
+- [v2 Audit Report](./docs/v2_audit_report.md) (draft): audit of 0.7.x covering 17 prioritized issues across the engine, providers, workflow, and contracts.
+- [v2 Architecture](./docs/v2_architecture.md) (draft): proposed pipeline, streaming-first provider, real token counter, real issue-workflow loop, middleware, subagent isolation, subpath exports, and telemetry.
+- [v2 Roadmap](./docs/v2_roadmap.md) (draft): milestone plan from 0.8.0 to 1.0.0 with benchmark SLOs, breaking-change table, and rollback paths.
 
 ## Why Clavue / 为什么选择 Clavue
 
@@ -88,13 +91,13 @@ CLAVUE_AGENT_SELF_IMPROVEMENT=true \
   npx clavue-agent-sdk --allow Read,Glob,Grep "Review package.json"
 ```
 
-CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--allow`, `--toolset`, `--deny`, `--self-improvement`, `--json`.
+CLI options: `--prompt`, `--model`, `--api-type`, `--api-key`, `--base-url`, `--cwd`, `--max-turns`, `--autonomy`, `--permission-mode`, `--allow`, `--toolset`, `--deny`, `--self-improvement`, `--json`. Issue subcommand only: `--max-iterations`, `--passing-score`, `--require-gate`.
 
-Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_SELF_IMPROVEMENT`, `AGENT_SDK_MAX_TOOL_CONCURRENCY`.
+Environment variables: `CLAVUE_AGENT_API_KEY`, `CLAVUE_AGENT_AUTH_TOKEN`, `CLAVUE_AGENT_API_TYPE`, `CLAVUE_AGENT_MODEL`, `CLAVUE_AGENT_BASE_URL`, `CLAVUE_AGENT_AUTONOMY`, `CLAVUE_AGENT_PERMISSION_MODE`, `CLAVUE_AGENT_SELF_IMPROVEMENT`, `AGENT_SDK_MAX_TOOL_CONCURRENCY`.
 
-命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--allow`、`--toolset`、`--deny`、`--self-improvement`、`--json`。
+命令行参数：`--prompt`、`--model`、`--api-type`、`--api-key`、`--base-url`、`--cwd`、`--max-turns`、`--autonomy`、`--permission-mode`、`--allow`、`--toolset`、`--deny`、`--self-improvement`、`--json`。仅 issue 子命令：`--max-iterations`、`--passing-score`、`--require-gate`。
 
-环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_SELF_IMPROVEMENT`、`AGENT_SDK_MAX_TOOL_CONCURRENCY`。
+环境变量：`CLAVUE_AGENT_API_KEY`、`CLAVUE_AGENT_AUTH_TOKEN`、`CLAVUE_AGENT_API_TYPE`、`CLAVUE_AGENT_MODEL`、`CLAVUE_AGENT_BASE_URL`、`CLAVUE_AGENT_AUTONOMY`、`CLAVUE_AGENT_PERMISSION_MODE`、`CLAVUE_AGENT_SELF_IMPROVEMENT`、`AGENT_SDK_MAX_TOOL_CONCURRENCY`。
 
 ## Best practices / 最佳使用实践
 
@@ -350,6 +353,32 @@ for await (const message of query({
   }
 }
 ```
+
+#### Partial-message streaming (live text deltas) / 字符级流式（TTFT 体感）
+
+Pass `includePartialMessages: true` to receive `partial_message` events with each text delta as the model emits it — useful for character-by-character UI rendering. The aggregated `assistant` event still arrives after all partials. Defaults to `false` so existing callers are unaffected.
+
+传 `includePartialMessages: true` 即可拿到模型逐 token 返回的 `partial_message` 事件，适合做字符级 UI 渲染。最终聚合的 `assistant` 事件仍然在所有 partial 之后到达。默认关闭，不影响现有调用方。
+
+```typescript
+import { createAgent } from "clavue-agent-sdk";
+
+const agent = createAgent({
+  model: "claude-sonnet-4-6",
+  includePartialMessages: true,
+});
+
+for await (const event of agent.query("Count from 1 to 5.")) {
+  if (event.type === "partial_message" && event.partial?.type === "text") {
+    process.stdout.write(event.partial.text); // live deltas
+  }
+  if (event.type === "assistant") {
+    process.stdout.write("\n"); // aggregated message arrives last
+  }
+}
+```
+
+See `examples/18-streaming.ts` for a runnable demo.
 
 ### 5. Reusable agent / 可复用 Agent
 

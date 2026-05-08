@@ -112,8 +112,15 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   assert.match(indexTypes, /AGENT_JOB_RECORD_SCHEMA_VERSION/, 'expected agent job schema version to be exported')
   assert.match(indexTypes, /MEMORY_TRACE_SCHEMA_VERSION/, 'expected memory trace schema version to be exported')
   assert.match(indexTypes, /PublicSchemaVersions/, 'expected public schema version type to be exported')
-  const publicTypes = await readFile(resolve(packageRoot, 'dist/types.d.ts'), 'utf-8')
-  assert.match(publicTypes, /schema_version/, 'expected public run artifacts to expose schema metadata')
+  // After the v2 split, types.d.ts is a barrel that re-exports themed
+  // sub-modules. The schema_version field on SDKResultMessage / AgentRunResult
+  // now lives in dist/types/messages.d.ts and dist/types/agent.d.ts. Read both
+  // the barrel and the messages module to confirm public run artifacts still
+  // expose schema metadata.
+  const publicTypesBarrel = await readFile(resolve(packageRoot, 'dist/types.d.ts'), 'utf-8')
+  const publicMessageTypes = await readFile(resolve(packageRoot, 'dist/types/messages.d.ts'), 'utf-8')
+  assert.match(publicTypesBarrel, /export \* from '\.\/types\/index\.js'/, 'expected dist/types.d.ts to re-export the themed types barrel')
+  assert.match(publicMessageTypes, /schema_version/, 'expected public run artifacts to expose schema metadata')
   assert.match(indexTypes, /createEvaluationLoopContract/, 'expected evaluation loop helper to be exported')
   assert.match(indexTypes, /EvaluationLoopContract/, 'expected evaluation loop contract type to be exported')
   assert.match(indexTypes, /summarizeAgentJobs/, 'expected AgentJob summary helper to be exported')

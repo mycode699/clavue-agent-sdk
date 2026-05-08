@@ -325,6 +325,7 @@ export class Agent {
       maxTokens: opts.maxTokens ?? 16384,
       thinking: opts.thinking,
       jsonSchema: opts.jsonSchema,
+      outputSchema: opts.outputSchema,
       policy,
       autonomyMode: opts.autonomyMode,
       includePartialMessages: opts.includePartialMessages ?? false,

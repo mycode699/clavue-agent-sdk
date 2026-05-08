@@ -16,9 +16,7 @@ import { randomUUID } from 'node:crypto'
 
 import {
   AGENT_RUN_TRACE_SCHEMA_VERSION,
-  MEMORY_TRACE_SCHEMA_VERSION,
   SDK_EVENT_SCHEMA_VERSION,
-  type AgentAutonomyMode,
   type SDKMessage,
   type QueryEngineConfig,
   type ToolDefinition,
@@ -30,16 +28,9 @@ import {
   type AgentRunToolTrace,
   type Evidence,
   type QualityGateResult,
-  type MemoryPolicyMode,
   type AgentRunMemoryTrace,
   type AgentRunMemorySelectionTrace,
-  type AgentRunToolConcurrencySource,
   type AgentRunPolicyDecisionTrace,
-  type AgentRunToolInputSummary,
-  type AgentRunToolSafetySummary,
-  type SDKPendingInputMessage,
-  type SDKPhaseMessage,
-  type SDKRunPhase,
 } from './types.js'
 import type {
   LLMProvider,
@@ -62,27 +53,36 @@ import {
 import {
   withRetry,
   isPromptTooLongError,
-  isRetryableError,
 } from './utils/retry.js'
 import { abortError } from './utils/abort.js'
-import { getSystemContext, getUserContext } from './utils/context.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
-import { queryMemoryMatches, type MemoryEntry, type MemoryQueryResult } from './memory.js'
-import type { SkillQualityGateSpec } from './skills/types.js'
-
-// ============================================================================
-// Tool format conversion
-// ============================================================================
-
-/** Convert a ToolDefinition to the normalized provider tool format. */
-function toProviderTool(tool: ToolDefinition): NormalizedTool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
-  }
-}
+import {
+  canRunConcurrently,
+  resolveMaxToolConcurrency,
+  summarizeToolInput,
+  summarizeToolSafety,
+} from './engine/tool-helpers.js'
+import {
+  filterToolsForSkill,
+  parseSkillActivation,
+  type SkillActivation,
+} from './engine/skill-helpers.js'
+import { isAbortError, shouldUseFallbackModel } from './engine/error-helpers.js'
+import {
+  buildSystemPrompt,
+  createToolContext,
+  getAutonomyMode,
+  toProviderTool,
+} from './engine/prompt-helpers.js'
+import {
+  buildPhaseMessage,
+  buildPendingInputMessage,
+} from './engine/message-helpers.js'
+import {
+  findTerminalQualityGateFailure,
+  resolveActiveQualityGatePolicy,
+} from './engine/quality-gate-helpers.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -95,563 +95,10 @@ interface ToolUseBlock {
   input: any
 }
 
-interface SkillActivation {
-  type: 'clavue.skill.activation'
-  version: 1
-  success: true
-  skillName?: string
-  commandName?: string
-  status?: 'inline' | 'forked'
-  prompt?: string
-  allowedTools?: string[]
-  model?: string
-  job_id?: string
-  qualityGates?: SkillQualityGateSpec[]
-}
-
-function getMemoryPriority(memory: MemoryEntry): number {
-  switch (memory.type) {
-    case 'feedback':
-      return 0
-    case 'decision':
-      return 1
-    case 'improvement':
-      return 2
-    case 'project':
-      return 3
-    case 'reference':
-      return 4
-    case 'user':
-      return 5
-    default:
-      return 6
-  }
-}
-
-function toMemoryScoreComponents(scoreReasons: string[]): AgentRunMemorySelectionTrace['score_components'] {
-  return scoreReasons.map((reason) => {
-    if (reason === 'repo_path') return { reason, score: 6 }
-    if (reason === 'session_id') return { reason, score: 4 }
-    if (reason.startsWith('tag:')) return { reason, score: 3 }
-    if (reason.startsWith('text:')) return { reason, score: 2 }
-    return { reason, score: 1 }
-  })
-}
-
-function getMatchedMemoryFields(entry: MemoryEntry, queryText?: string): string[] {
-  if (!queryText) return []
-
-  const terms = queryText
-    .toLowerCase()
-    .split(/\s+/)
-    .map((term) => term.trim())
-    .filter(Boolean)
-  if (terms.length === 0) return []
-
-  const fields: string[] = []
-  const title = entry.title.toLowerCase()
-  const content = entry.content.toLowerCase()
-  const tags = (entry.tags || []).join(' ').toLowerCase()
-
-  if (terms.some((term) => title.includes(term))) fields.push('title')
-  if (terms.some((term) => content.includes(term))) fields.push('content')
-  if (tags && terms.some((term) => tags.includes(term))) fields.push('tags')
-
-  return fields
-}
-
-function isStaleMemory(entry: MemoryEntry): boolean {
-  if (!entry.lastValidatedAt) return false
-  const validated = Date.parse(entry.lastValidatedAt)
-  if (!Number.isFinite(validated)) return false
-  const staleAfterMs = 30 * 24 * 60 * 60 * 1000
-  return Date.now() - validated >= staleAfterMs
-}
-
-function toMemorySelectionTrace(
-  match: MemoryQueryResult,
-  options: { includeRichFields?: boolean; queryText?: string } = {},
-): AgentRunMemorySelectionTrace {
-  const { entry, score, scoreReasons } = match
-  const trace: AgentRunMemorySelectionTrace = {
-    id: entry.id,
-    type: entry.type,
-    scope: entry.scope,
-    title: entry.title,
-    score,
-    score_reasons: [...scoreReasons],
-    validation_state: entry.lastValidatedAt ? 'validated' : 'unvalidated',
-    tags: entry.tags ? [...entry.tags] : undefined,
-    source: entry.source,
-    confidence: entry.confidence,
-    last_validated_at: entry.lastValidatedAt,
-    repo_path: entry.repoPath,
-    session_id: entry.sessionId,
-  }
-
-  if (options.includeRichFields) {
-    trace.score_components = toMemoryScoreComponents(scoreReasons)
-    trace.matched_fields = getMatchedMemoryFields(entry, options.queryText)
-    trace.stale = isStaleMemory(entry)
-    trace.redaction_status = 'not_required'
-  }
-
-  return trace
-}
-
-function formatInjectedMemories(memories: MemoryEntry[]): string {
-  const lines: string[] = []
-
-  for (const memory of [...memories].sort((a, b) => getMemoryPriority(a) - getMemoryPriority(b))) {
-    const metadata = [memory.type, memory.scope, memory.confidence]
-      .filter(Boolean)
-      .join(' / ')
-    lines.push(`- ${memory.title}${metadata ? ` (${metadata})` : ''}`)
-    lines.push(`  ${memory.content}`)
-    if (memory.tags && memory.tags.length > 0) {
-      lines.push(`  tags: ${memory.tags.join(', ')}`)
-    }
-  }
-
-  return lines.join('\n')
-}
-
-const DEFAULT_TOOL_CONCURRENCY = 10
-
-function parsePositiveInteger(value: unknown): number | undefined {
-  if (typeof value === 'number') {
-    return Number.isInteger(value) && value > 0 ? value : undefined
-  }
-  if (typeof value !== 'string') return undefined
-  const parsed = Number.parseInt(value, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
-}
-
-function resolveMaxToolConcurrency(configured?: number): { limit: number; source: AgentRunToolConcurrencySource } {
-  const optionLimit = parsePositiveInteger(configured)
-  if (optionLimit !== undefined) return { limit: optionLimit, source: 'option' }
-
-  const envLimit = parsePositiveInteger(process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY)
-  if (envLimit !== undefined) return { limit: envLimit, source: 'env' }
-
-  return { limit: DEFAULT_TOOL_CONCURRENCY, source: 'default' }
-}
-
-function canRunConcurrently(tool?: ToolDefinition): boolean {
-  return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
-}
-
-function summarizeToolInput(input: unknown): AgentRunToolInputSummary {
-  if (input === null) return { type: 'null', size_bytes: 4 }
-  if (input === undefined) return { type: 'undefined' }
-  if (Array.isArray(input)) {
-    return {
-      type: 'array',
-      size_bytes: estimateJsonSize(input),
-    }
-  }
-  if (typeof input === 'object') {
-    return {
-      type: 'object',
-      keys: Object.keys(input as Record<string, unknown>).slice(0, 20),
-      size_bytes: estimateJsonSize(input),
-    }
-  }
-  if (typeof input === 'string') {
-    return {
-      type: 'string',
-      size_bytes: Buffer.byteLength(input, 'utf8'),
-    }
-  }
-  if (typeof input === 'number') return { type: 'number', size_bytes: Buffer.byteLength(String(input), 'utf8') }
-  if (typeof input === 'boolean') return { type: 'boolean', size_bytes: input ? 4 : 5 }
-  return { type: 'unknown' }
-}
-
-function estimateJsonSize(input: unknown): number | undefined {
-  try {
-    return Buffer.byteLength(JSON.stringify(input), 'utf8')
-  } catch {
-    return undefined
-  }
-}
-
-function summarizeToolSafety(tool: ToolDefinition): AgentRunToolSafetySummary {
-  const safety = tool.safety ?? {}
-  const read = safety.read ?? tool.isReadOnly?.() === true
-  const write = safety.write ?? !read
-
-  return {
-    read,
-    write,
-    shell: safety.shell ?? false,
-    network: safety.network ?? false,
-    external_state: safety.externalState ?? false,
-    destructive: safety.destructive ?? false,
-    approval_required: safety.approvalRequired ?? false,
-    idempotent: safety.idempotent,
-  }
-}
-
-function shouldUseFallbackModel(err: any): boolean {
-  if (err?.category) return isRetryableError(err)
-  return err?.status === 404 || isRetryableError(err)
-}
-
-function filterToolsForSkill(tools: ToolDefinition[], allowedTools?: string[]): ToolDefinition[] {
-  if (!allowedTools || allowedTools.length === 0) return tools
-
-  const allowed = new Set([...allowedTools, 'Skill'])
-  return tools.filter((tool) => allowed.has(tool.name))
-}
-
-function normalizeSkillQualityGates(value: unknown): SkillQualityGateSpec[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const gates = value.filter((gate): gate is SkillQualityGateSpec => (
-    typeof gate === 'object' &&
-    gate !== null &&
-    typeof (gate as { name?: unknown }).name === 'string'
-  ))
-  return gates.length > 0 ? gates : undefined
-}
-
-function mergeQualityGatePolicy(
-  base: QualityGatePolicy | undefined,
-  gateNames: string[],
-): QualityGatePolicy {
-  const required = [...new Set([...(base?.required ?? []), ...gateNames])]
-  return {
-    ...base,
-    required,
-  }
-}
-
-function isAbortError(err: any): boolean {
-  return err?.name === 'AbortError'
-}
-
-function parseSkillActivation(result: ToolResult): SkillActivation | undefined {
-  if (result.is_error || typeof result.content !== 'string') return undefined
-
-  try {
-    const parsed = JSON.parse(result.content) as Partial<SkillActivation>
-    if (
-      parsed?.type !== 'clavue.skill.activation' ||
-      parsed.version !== 1 ||
-      parsed.success !== true ||
-      typeof parsed.prompt !== 'string'
-    ) {
-      return undefined
-    }
-
-    return {
-      type: 'clavue.skill.activation',
-      version: 1,
-      success: true,
-      skillName: typeof parsed.skillName === 'string' ? parsed.skillName : parsed.commandName,
-      commandName: typeof parsed.commandName === 'string' ? parsed.commandName : parsed.skillName,
-      status: parsed.status === 'forked' ? 'forked' : 'inline',
-      prompt: parsed.prompt,
-      allowedTools: Array.isArray(parsed.allowedTools)
-        ? parsed.allowedTools.filter((name): name is string => typeof name === 'string')
-        : undefined,
-      model: typeof parsed.model === 'string' ? parsed.model : undefined,
-      job_id: typeof parsed.job_id === 'string' ? parsed.job_id : undefined,
-      qualityGates: normalizeSkillQualityGates(parsed.qualityGates),
-    }
-  } catch {
-    return undefined
-  }
-}
-
-function createToolContext(config: QueryEngineConfig, tools: ToolDefinition[] = config.tools): ToolContext {
-  return {
-    cwd: config.cwd,
-    workspaceRoot: config.cwd,
-    abortSignal: config.abortSignal,
-    provider: config.provider,
-    model: config.model,
-    apiType: config.provider.apiType,
-    policy: config.policy,
-    runtimeNamespace: config.runtimeNamespace,
-    availableTools: tools.map((tool) => tool.name),
-    autonomyMode: config.autonomyMode,
-  }
-}
-
-async function collectToolPromptFragments(config: QueryEngineConfig): Promise<string[]> {
-  const context = createToolContext(config)
-  const fragments: string[] = []
-  const maxChars = 8_000
-  const maxFragmentChars = 2_000
-  let used = 0
-
-  for (const tool of config.tools) {
-    if (!tool.prompt) continue
-    if (tool.isEnabled && !tool.isEnabled(context)) continue
-
-    try {
-      const prompt = (await tool.prompt(context)).trim()
-      if (!prompt) continue
-
-      const trimmedPrompt = prompt.length > maxFragmentChars
-        ? `${prompt.slice(0, maxFragmentChars)}\n...(tool guidance truncated)...`
-        : prompt
-      const fragment = `## ${tool.name}\n${trimmedPrompt}`
-      if (used + fragment.length > maxChars) continue
-      fragments.push(fragment)
-      used += fragment.length
-    } catch {
-      // Tool prompt fragments are best-effort and should not block a run.
-    }
-  }
-
-  return fragments
-}
-
-function getMemoryPolicyMode(config: QueryEngineConfig): MemoryPolicyMode {
-  if (!config.memory?.enabled) return 'off'
-  if (config.memory.policy?.mode) return config.memory.policy.mode
-  return config.memory.autoInject === false ? 'off' : 'autoInject'
-}
-
-function getAutonomyMode(config: QueryEngineConfig): AgentAutonomyMode {
-  if (config.autonomyMode) return config.autonomyMode
-  return config.policy.permissionMode === 'trustedAutomation'
-    ? 'autonomous'
-    : 'proactive'
-}
-
-function getAutonomyPrompt(mode: AgentAutonomyMode): string {
-  switch (mode) {
-    case 'supervised':
-      return [
-        'Autonomy mode: supervised.',
-        'Proceed with analysis and low-risk read-only work, but ask the user before choosing between materially different product directions, making broad edits, or taking externally visible actions.',
-        'Still avoid low-value confirmations: if the next step is obvious, safe, and within granted tools, do it.',
-      ].join('\n')
-
-    case 'autonomous':
-      return [
-        'Autonomy mode: autonomous development.',
-        'Default to action. Do not pause for routine confirmations, implementation choices, dependency-free refactors, test runs, focused fixes, or P0-P3 todo execution when the request and allowed tools already authorize the work.',
-        'Choose the best technical solution yourself using current code context, tests, product goals, and risk. When multiple viable approaches exist, select the smallest high-quality path that preserves public compatibility and maximizes verification evidence.',
-        'Use a tight loop: inspect, hypothesize, edit, verify, repair, and summarize. Keep moving until the task is complete, blocked by tool policy, or a defined stop condition is reached.',
-        'Stop and ask only for irreversible or externally visible actions, credential/secret decisions, destructive data loss, publishing/deployment/tagging, legal/compliance ambiguity, spending real money, or mutually exclusive product choices that cannot be inferred from local context.',
-        'Human review is the final acceptance gate; during development, provide evidence-backed progress rather than asking the user to make routine engineering decisions.',
-      ].join('\n')
-
-    case 'proactive':
-    default:
-      return [
-        'Autonomy mode: proactive.',
-        'Prefer proceeding over asking. Ask at most one concise question only when missing information would create a real risk or materially change the solution.',
-        'For ambiguous engineering choices, inspect the codebase, choose a defensible default, document the assumption, and verify the result.',
-        'For todo lists and P0-P3 fixes, execute the next highest-priority safe slice instead of returning only a plan.',
-        'Never claim completion without concrete evidence when verification is available.',
-      ].join('\n')
-  }
-}
-
-async function getInjectedMemories(config: QueryEngineConfig): Promise<{ entries: MemoryEntry[]; trace: AgentRunMemoryTrace }> {
-  const started = performance.now()
-  const policy = getMemoryPolicyMode(config)
-  const repoPath = config.memory?.repoPath || config.cwd
-  const text = typeof config.initialPrompt === 'string' ? config.initialPrompt : undefined
-  const limit = config.memory?.maxInjectedEntries ?? 5
-  const strategy = policy === 'brainFirst' ? 'brain_first' : 'auto_inject'
-  const filters = {
-    repo_path: repoPath,
-    text,
-    limit,
-  }
-  const trace: AgentRunMemoryTrace = {
-    schema_version: MEMORY_TRACE_SCHEMA_VERSION,
-    retrieval_id: `memret_${randomUUID()}`,
-    policy,
-    strategy,
-    query: text,
-    repo_path: repoPath,
-    filters,
-    store: {
-      configured: Boolean(config.memory?.dir),
-      dir: config.memory?.dir,
-    },
-    selected_ids: [],
-    injected_count: 0,
-    injection_status: policy === 'off' || !config.memory?.enabled ? 'off' : 'empty',
-    selection_source: policy === 'off' || !config.memory?.enabled ? 'off' : 'empty',
-    retrieval_steps: [],
-    retrieved_before_first_model_call: true,
-  }
-
-  try {
-    if (policy === 'off' || !config.memory?.enabled) {
-      return { entries: [], trace }
-    }
-
-    const store = { dir: config.memory.dir }
-    const targetedStarted = performance.now()
-    const targeted = await queryMemoryMatches(
-      {
-        repoPath,
-        text,
-        limit,
-      },
-      store,
-    )
-    trace.retrieval_steps?.push({
-      source: 'targeted',
-      strategy,
-      query: text,
-      repo_path: repoPath,
-      filters,
-      candidate_count: targeted.length,
-      selected_count: targeted.length,
-      duration_ms: Math.round(performance.now() - targetedStarted),
-    })
-
-    let matches = targeted
-    if (matches.length > 0) {
-      trace.selection_source = 'targeted'
-    } else {
-      const fallbackFilters = {
-        repo_path: repoPath,
-        limit,
-      }
-      const fallbackStarted = performance.now()
-      matches = await queryMemoryMatches(
-        {
-          repoPath,
-          limit,
-        },
-        store,
-      )
-      trace.retrieval_steps?.push({
-        source: 'repo_fallback',
-        strategy,
-        repo_path: repoPath,
-        filters: fallbackFilters,
-        candidate_count: matches.length,
-        selected_count: matches.length,
-        duration_ms: Math.round(performance.now() - fallbackStarted),
-      })
-      trace.selection_source = matches.length > 0 ? 'repo_fallback' : 'empty'
-    }
-
-    const entries = matches.map(({ entry }) => entry)
-    trace.selected_ids = entries.map((entry) => entry.id)
-    trace.selected = matches.map((match) => toMemorySelectionTrace(match, {
-      includeRichFields: policy === 'brainFirst',
-      queryText: text,
-    }))
-    trace.injected_count = entries.length
-    trace.injection_status = entries.length > 0 ? 'injected' : 'empty'
-    return { entries, trace }
-  } finally {
-    trace.duration_ms = Math.round(performance.now() - started)
-  }
-}
-
-// ============================================================================
-// System Prompt Builder
-// ============================================================================
-
-async function buildSystemPrompt(config: QueryEngineConfig): Promise<{ systemPrompt: string; memoryTrace: AgentRunMemoryTrace }> {
-  if (config.systemPrompt) {
-    const parts = [config.systemPrompt]
-    const { entries: injectedMemories, trace: memoryTrace } = await getInjectedMemories(config)
-    if (injectedMemories.length > 0) {
-      parts.push('\n# Relevant Memory\n')
-      parts.push(formatInjectedMemories(injectedMemories))
-    }
-    if (config.appendSystemPrompt) {
-      parts.push('\n' + config.appendSystemPrompt)
-    }
-    return { systemPrompt: parts.join('\n'), memoryTrace }
-  }
-
-  const parts: string[] = [
-    config.policy.permissionMode === 'trustedAutomation'
-      ? 'You are running in trusted automation mode inside the host application.'
-      : `You are running with permission mode ${config.policy.permissionMode} inside the host application.`,
-    'Use the available tools to complete the user\'s task. Inspect the project, make focused changes, and verify concrete results before claiming completion.',
-  ]
-
-  parts.push('\n# Autonomy And Calibration\n')
-  parts.push(getAutonomyPrompt(getAutonomyMode(config)))
-
-  if (config.policy.permissionMode === 'trustedAutomation') {
-    parts.push('Tool permissions are high trust, but this does not authorize publishing, deployment, credential exposure, destructive data loss, or irreversible external-state changes unless the user explicitly requested them.')
-  } else {
-    parts.push('Tool access is governed by the host application\'s available tool set, canUseTool policy, and hooks.')
-  }
-
-  parts.push(
-    'Keep changes surgical and goal-driven: understand the existing code first, reuse existing patterns, avoid speculative abstractions, and do not expand scope beyond the request.',
-  )
-
-  // List available tools with descriptions
-  parts.push('\n# Available Tools\n')
-  for (const tool of config.tools) {
-    parts.push(`- **${tool.name}**: ${tool.description}`)
-  }
-
-  const toolPromptFragments = await collectToolPromptFragments(config)
-  if (toolPromptFragments.length > 0) {
-    parts.push('\n# Tool Guidance\n')
-    parts.push(toolPromptFragments.join('\n\n'))
-  }
-
-  // Add agent definitions
-  if (config.agents && Object.keys(config.agents).length > 0) {
-    parts.push('\n# Available Subagents\n')
-    for (const [name, def] of Object.entries(config.agents)) {
-      parts.push(`- **${name}**: ${def.description}`)
-    }
-  }
-
-  // System context (git status, etc.)
-  try {
-    const sysCtx = await getSystemContext(config.cwd)
-    if (sysCtx) {
-      parts.push('\n# Environment\n')
-      parts.push(sysCtx)
-    }
-  } catch {
-    // Context is best-effort
-  }
-
-  // User context (AGENT.md, date)
-  try {
-    const userCtx = await getUserContext(config.cwd)
-    if (userCtx) {
-      parts.push('\n# Project Context\n')
-      parts.push(userCtx)
-    }
-  } catch {
-    // Context is best-effort
-  }
-
-  const { entries: injectedMemories, trace: memoryTrace } = await getInjectedMemories(config)
-  if (injectedMemories.length > 0) {
-    parts.push('\n# Relevant Memory\n')
-    parts.push(formatInjectedMemories(injectedMemories))
-  }
-
-  // Working directory
-  parts.push(`\n# Working Directory\n${config.cwd}`)
-
-  if (config.appendSystemPrompt) {
-    parts.push('\n' + config.appendSystemPrompt)
-  }
-
-  return { systemPrompt: parts.join('\n'), memoryTrace }
-}
-
 // ============================================================================
 // QueryEngine
 // ============================================================================
+
 
 export class QueryEngine {
   private config: QueryEngineConfig
@@ -669,6 +116,7 @@ export class QueryEngine {
   private hookRegistry?: HookRegistry
   private activeSkill?: SkillActivation
   private requiredSkillQualityGates: string[] = []
+  private forkedSkills: SkillActivation[] = []
   private evidence: Evidence[] = []
   private qualityGates: QualityGateResult[] = []
 
@@ -724,38 +172,6 @@ export class QueryEngine {
     current.input_tokens += usage.input_tokens
     current.output_tokens += usage.output_tokens
     this.modelUsage[model] = current
-  }
-
-  private createPhaseMessage(
-    runId: string,
-    phase: SDKRunPhase,
-    turn?: number,
-    toolUseId?: string,
-  ): SDKPhaseMessage {
-    return {
-      type: 'system',
-      subtype: 'phase',
-      phase,
-      run_id: runId,
-      session_id: this.sessionId,
-      ...(turn === undefined ? {} : { turn }),
-      ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
-    }
-  }
-
-  private createPendingInputMessage(
-    runId: string,
-    result: ToolResult & { tool_name?: string },
-  ): SDKPendingInputMessage | undefined {
-    if (!result.pending_input) return undefined
-    return {
-      type: 'system',
-      subtype: 'pending_input',
-      run_id: runId,
-      session_id: this.sessionId,
-      tool_use_id: result.tool_use_id,
-      question: result.pending_input,
-    }
   }
 
   private recordPolicyDecision(input: Omit<AgentRunPolicyDecisionTrace, 'timestamp' | 'permission_mode' | 'autonomy_mode' | 'safety'> & { tool: ToolDefinition }): void {
@@ -823,8 +239,8 @@ export class QueryEngine {
       autonomy_mode: getAutonomyMode(this.config),
     } as SDKMessage
 
-    yield this.createPhaseMessage(runId, 'intake')
-    yield this.createPhaseMessage(runId, 'context')
+    yield buildPhaseMessage(this.sessionId, runId, 'intake')
+    yield buildPhaseMessage(this.sessionId, runId, 'context')
 
     // Agentic loop
     let turnsRemaining = this.config.maxTurns
@@ -883,12 +299,38 @@ export class QueryEngine {
         : systemPrompt
 
       // Make API call with retry via provider
-      let response: CreateMessageResponse
+      let response!: CreateMessageResponse
       let apiAttempts = 0
       const apiStart = performance.now()
       const fallbackModel = this.config.fallbackModel && this.config.fallbackModel !== requestModel
         ? this.config.fallbackModel
         : undefined
+
+      // Streaming wiring (P0-4 Phase 2). When `includePartialMessages` is on,
+      // hand the provider a text-delta callback that pushes into a local
+      // queue; the generator drains the queue concurrently with the model
+      // call so the host sees deltas as they arrive. Without this flag the
+      // queue stays empty and the provider takes its non-streaming path.
+      const partialQueue: string[] = []
+      let partialResolve: (() => void) | null = null
+      const wantStreaming = this.config.includePartialMessages === true
+      const releaseDrain = (): void => {
+        if (partialResolve) {
+          const r = partialResolve
+          partialResolve = null
+          r()
+        }
+      }
+      const streamCallbacks = wantStreaming
+        ? {
+            onText: (delta: string) => {
+              if (!delta) return
+              partialQueue.push(delta)
+              releaseDrain()
+            },
+          }
+        : undefined
+
       const createModelMessage = async (model: string) => this.provider.createMessage({
         model,
         maxTokens: this.config.maxTokens,
@@ -904,35 +346,73 @@ export class QueryEngine {
               }
             : undefined,
         abortSignal: this.config.abortSignal,
+        outputSchema: this.config.outputSchema
+          ?? (this.config.jsonSchema
+            ? { schema: this.config.jsonSchema as Record<string, unknown> }
+            : undefined),
+        stream: streamCallbacks,
       })
       let successfulModel = requestModel
-      yield this.createPhaseMessage(runId, 'model_request', this.turnCount)
+      yield buildPhaseMessage(this.sessionId, runId, 'model_request', this.turnCount)
       try {
-        try {
-          response = await withRetry(
-            async () => {
-              apiAttempts += 1
-              return createModelMessage(requestModel)
-            },
-            undefined,
-            this.config.abortSignal,
-          )
-        } catch (primaryErr: any) {
-          if (!fallbackModel || isAbortError(primaryErr) || this.config.abortSignal?.aborted) {
-            throw primaryErr
+        // Kick off the model call (with retry + fallback) as a background task
+        // so the generator can drain streaming partials while it is in flight.
+        let modelDone = false
+        let modelErr: unknown
+        const modelTask = (async () => {
+          try {
+            try {
+              response = await withRetry(
+                async () => {
+                  apiAttempts += 1
+                  return createModelMessage(requestModel)
+                },
+                undefined,
+                this.config.abortSignal,
+              )
+            } catch (primaryErr: any) {
+              if (!fallbackModel || isAbortError(primaryErr) || this.config.abortSignal?.aborted) {
+                throw primaryErr
+              }
+              if (isPromptTooLongError(primaryErr)) {
+                throw primaryErr
+              }
+              if (!shouldUseFallbackModel(primaryErr)) {
+                throw primaryErr
+              }
+              if (this.config.abortSignal?.aborted) throw abortError()
+              response = await createModelMessage(fallbackModel)
+              successfulModel = fallbackModel
+            }
+          } catch (err) {
+            modelErr = err
+          } finally {
+            modelDone = true
+            releaseDrain()
           }
-          if (isPromptTooLongError(primaryErr)) {
-            throw primaryErr
+        })()
+
+        // Drain partial text deltas until the model task resolves.
+        if (wantStreaming) {
+          while (!modelDone || partialQueue.length > 0) {
+            if (partialQueue.length === 0) {
+              await new Promise<void>((resolve) => {
+                partialResolve = resolve
+              })
+              continue
+            }
+            const delta = partialQueue.shift()!
+            yield {
+              type: 'partial_message',
+              partial: { type: 'text', text: delta },
+            }
           }
-          if (!shouldUseFallbackModel(primaryErr)) {
-            throw primaryErr
-          }
-          if (this.config.abortSignal?.aborted) throw abortError()
-          response = await createModelMessage(fallbackModel)
-          successfulModel = fallbackModel
         }
+
+        await modelTask
+        if (modelErr) throw modelErr
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
-        yield this.createPhaseMessage(runId, 'model_response', this.turnCount)
+        yield buildPhaseMessage(this.sessionId, runId, 'model_response', this.turnCount)
       } catch (err: any) {
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
         // Handle prompt-too-long by compacting
@@ -1040,6 +520,11 @@ export class QueryEngine {
           role: 'user',
           content: 'Please continue from where you left off.',
         })
+        // Mirror the compact-retry path: recovery is a continuation of the
+        // same logical turn, so refund the turn we just spent. Otherwise
+        // recovery on the final turn would silently no-op.
+        turnsRemaining++
+        this.turnCount--
         continue
       }
 
@@ -1052,7 +537,7 @@ export class QueryEngine {
       maxOutputRecoveryAttempts = 0
 
       for (const block of toolUseBlocks) {
-        yield this.createPhaseMessage(runId, 'tool_execution', this.turnCount, block.id)
+        yield buildPhaseMessage(this.sessionId, runId, 'tool_execution', this.turnCount, block.id)
       }
 
       // Execute tools while preserving model-requested ordering around mutations.
@@ -1060,7 +545,7 @@ export class QueryEngine {
 
       // Yield tool results
       for (const result of toolResults) {
-        const pendingInputMessage = this.createPendingInputMessage(runId, result)
+        const pendingInputMessage = buildPendingInputMessage(this.sessionId, runId, result)
         if (pendingInputMessage) yield pendingInputMessage
         yield {
           type: 'tool_result',
@@ -1115,8 +600,8 @@ export class QueryEngine {
       ? [`Required quality gate failed: ${gateFailure.name}${gateFailure.summary ? ` - ${gateFailure.summary}` : ''}`]
       : undefined
 
-    yield this.createPhaseMessage(runId, 'verification')
-    yield this.createPhaseMessage(runId, 'finalize')
+    yield buildPhaseMessage(this.sessionId, runId, 'verification')
+    yield buildPhaseMessage(this.sessionId, runId, 'finalize')
 
     yield {
       type: 'result',
@@ -1139,38 +624,17 @@ export class QueryEngine {
   }
 
   private getActiveQualityGatePolicy(): QualityGatePolicy | undefined {
-    const requiredSkillGates = this.requiredSkillQualityGates
-
-    if (requiredSkillGates.length === 0) {
-      return this.config.qualityGatePolicy
-    }
-
-    return mergeQualityGatePolicy(this.config.qualityGatePolicy, requiredSkillGates)
+    return resolveActiveQualityGatePolicy(
+      this.config.qualityGatePolicy,
+      this.requiredSkillQualityGates,
+    )
   }
 
   private getTerminalQualityGateFailure(): QualityGateResult | undefined {
-    const policy = this.getActiveQualityGatePolicy()
-    if (!policy) return undefined
-
-    const failStatuses = new Set(policy.failStatuses ?? ['failed'])
-    const required = policy.required ? new Set(policy.required) : undefined
-
-    if (required) {
-      for (const name of required) {
-        const gate = this.qualityGates.find((entry) => entry.name === name)
-        if (!gate) {
-          return {
-            name,
-            status: 'pending',
-            summary: 'Required quality gate did not report a result',
-          }
-        }
-        if (failStatuses.has(gate.status)) return gate
-      }
-      return undefined
-    }
-
-    return this.qualityGates.find((gate) => failStatuses.has(gate.status))
+    return findTerminalQualityGateFailure(
+      this.getActiveQualityGatePolicy(),
+      this.qualityGates,
+    )
   }
 
   /**
@@ -1365,14 +829,25 @@ export class QueryEngine {
         }
 
         const activation = tool.name === 'Skill' ? parseSkillActivation(toolResult) : undefined
-        if (activation?.status === 'inline') {
-          this.activeSkill = activation
+        if (activation) {
+          // Required quality gates from the activation are part of this turn's
+          // contract whether the skill ran inline or forked into a subagent.
+          // Without this, forked skills could declare gates that the parent
+          // turn never enforces.
           const requiredGateNames = activation.qualityGates
             ?.filter((gate) => gate.required !== false)
             .map((gate) => gate.name) ?? []
-          this.requiredSkillQualityGates = [
-            ...new Set([...this.requiredSkillQualityGates, ...requiredGateNames]),
-          ]
+          if (requiredGateNames.length > 0) {
+            this.requiredSkillQualityGates = [
+              ...new Set([...this.requiredSkillQualityGates, ...requiredGateNames]),
+            ]
+          }
+
+          if (activation.status === 'inline') {
+            this.activeSkill = activation
+          } else if (activation.status === 'forked') {
+            this.forkedSkills.push(activation)
+          }
         }
 
         // Hook: PostToolUse
