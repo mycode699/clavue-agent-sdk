@@ -65,6 +65,8 @@ export interface ToolContext {
   policy?: ToolPolicy
   /** Parent agent autonomy mode inherited by nested agents */
   autonomyMode?: AgentAutonomyMode
+  /** Optional shared file state cache (Slice I): Read populates, Edit verifies stale-ness. */
+  fileStateCache?: import('../utils/fileCache.js').FileStateCache
 }
 
 export interface ToolResult {

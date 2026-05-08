@@ -64,6 +64,19 @@ export const FileReadTool = defineTool({
       const limit = input.limit || 2000
       const selectedLines = lines.slice(offset, offset + limit)
 
+      // Slice I: populate the shared file state cache so Edit can detect
+      // out-of-band modifications. Cache the full content + timestamp;
+      // record offset/limit when this Read returned a partial view.
+      if (context.fileStateCache) {
+        context.fileStateCache.set(filePath, {
+          content,
+          timestamp: fileStat.mtimeMs,
+          offset: input.offset !== undefined ? offset : undefined,
+          limit: input.limit !== undefined ? limit : undefined,
+          isPartialView: lines.length > offset + limit || offset > 0,
+        })
+      }
+
       // Format with line numbers (cat -n style)
       const numbered = selectedLines.map((line: string, i: number) => {
         const lineNum = offset + i + 1

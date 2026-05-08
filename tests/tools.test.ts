@@ -24,6 +24,7 @@ import {
   saveSession,
   loadSession,
   listSessions,
+  createFileStateCache,
 } from '../src/index.ts'
 import { setMcpConnections } from '../src/tools/mcp-resource-tools.ts'
 
@@ -232,4 +233,90 @@ test('session ids cannot escape the configured session store', async () => {
 
   assert.equal(await loadSession('../escaped-session', { dir }), null)
   await assert.rejects(access(outside))
+})
+
+// ---------------------------------------------------------------------------
+// Slice I — File State Cache ↔ Read/Edit interaction
+// ---------------------------------------------------------------------------
+
+test('Slice I: FileReadTool populates the shared file state cache', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'slicei-read-'))
+  const file = join(dir, 'a.txt')
+  await writeFile(file, 'first\nsecond\nthird\n')
+
+  const cache = createFileStateCache()
+  const result = await FileReadTool.call(
+    { file_path: file },
+    { cwd: dir, fileStateCache: cache },
+  )
+
+  assert.equal(result.is_error ?? false, false)
+  const cached = cache.get(file)
+  assert.ok(cached, 'expected cache to be populated by Read')
+  assert.equal(cached!.content, 'first\nsecond\nthird\n')
+  assert.ok(cached!.timestamp > 0)
+})
+
+test('Slice I: FileEditTool refreshes the cache after a successful edit', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'slicei-refresh-'))
+  const file = join(dir, 'b.txt')
+  await writeFile(file, 'hello world')
+
+  const cache = createFileStateCache()
+  const ctx = { cwd: dir, fileStateCache: cache }
+
+  await FileReadTool.call({ file_path: file }, ctx)
+  const beforeEdit = cache.get(file)!.timestamp
+
+  // Wait one tick so mtime can advance on filesystems with millisecond precision.
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  const editResult = await FileEditTool.call(
+    { file_path: file, old_string: 'hello', new_string: 'hi' },
+    ctx,
+  )
+  assert.equal(editResult.is_error ?? false, false)
+
+  const afterEdit = cache.get(file)
+  assert.ok(afterEdit, 'cache should remain populated post-edit')
+  assert.equal(afterEdit!.content, 'hi world')
+  assert.ok(afterEdit!.timestamp >= beforeEdit, 'timestamp should not regress')
+})
+
+test('Slice I: FileEditTool rejects when the file changed out-of-band since last Read', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'slicei-stale-'))
+  const file = join(dir, 'c.txt')
+  await writeFile(file, 'original')
+
+  const cache = createFileStateCache()
+  const ctx = { cwd: dir, fileStateCache: cache }
+
+  await FileReadTool.call({ file_path: file }, ctx)
+
+  // Simulate an out-of-band modification by another process.
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await writeFile(file, 'externally modified')
+
+  const editResult = await FileEditTool.call(
+    { file_path: file, old_string: 'externally', new_string: 'never' },
+    ctx,
+  )
+
+  assert.equal(editResult.is_error, true)
+  assert.match(String(editResult.content), /modified since it was last read|re-read/i)
+  // The on-disk file should remain whatever the external writer left.
+  // (Edit must not have written.)
+})
+
+test('Slice I: FileEditTool works without a cache (back-compat)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'slicei-nocache-'))
+  const file = join(dir, 'd.txt')
+  await writeFile(file, 'a b c')
+
+  const result = await FileEditTool.call(
+    { file_path: file, old_string: 'b', new_string: 'B' },
+    { cwd: dir },
+  )
+
+  assert.equal(result.is_error ?? false, false)
 })

@@ -21,6 +21,17 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice I file state cache ↔ Read/Edit interlock** — `ToolContext` gains
+  an optional `fileStateCache?: FileStateCache`. When provided:
+  - `FileReadTool` populates the cache (content + `mtimeMs`) on every
+    successful read.
+  - `FileEditTool` checks `stat().mtimeMs` against the cached timestamp
+    before reading; if the file changed out-of-band since the last Read,
+    it returns an error directing the agent to re-Read. After a
+    successful edit it refreshes the cache to its own write.
+  Without a cache in context the tools behave exactly as before
+  (back-compat verified by a dedicated test). Covered by 4 new tests in
+  `tests/tools.test.ts`. Zero new runtime deps.
 - **Slice F unified WorkItem core type** (`src/workflow/work-item.ts`) — a
   single `{ id, title, acceptance, status, evidence, links, rawStatus? }`
   shape spanning the three workflow data views (`WorkflowDefinition`,
