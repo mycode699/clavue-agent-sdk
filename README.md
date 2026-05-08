@@ -55,6 +55,39 @@ Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/cla
 - 更好的 GPT / OpenAI-compatible 支持：capability preflight、标准化 provider error、Responses API 路由，以及网关不支持 `/responses` 时的回退。
 - AgentJob batch summary、retro skill evaluator、runtime profile 与更丰富的 policy decision trace。
 
+## v3 capabilities (0.8.x) / v3 能力（0.8.x）
+
+The v3 axes from `docs/v3_rfc.md` are landing one decision at a time. Every capability below is exercised by tests in this repo; line numbers point at the live source so readers can verify, not just trust the README.
+
+`docs/v3_rfc.md` 中规划的 v3 能力轴正在逐项落地。下表的每一项都有真实测试覆盖，行号指向源码本身，方便直接核对。
+
+| Capability / 能力 | Peer comparison / 同层对比 | Where it lives / 实现位置 | Tests |
+|---|---|---|---|
+| Multi-agent graph DSL (6 node kinds: agent, verifier, router, parallel, human, retriever) | `openai-agents` handoffs cover agent + handoff only | `src/graph/runtime.ts`, `src/graph/types.ts` | `tests/graph.test.ts`, `tests/graph-retriever.test.ts` |
+| 4-scope guardrails (`input` / `output` / `tool_input` / `tool_output`) with `'abort' \| 'skip' \| 'continue'` policy hook | `openai-agents` ships 2 scopes, no per-tool gating | `src/guardrails/runtime.ts`, `src/engine.ts` (tool dispatcher) | `tests/guardrails.test.ts`, `tests/engine-guardrails.test.ts`, `tests/engine-guardrails-policy.test.ts` |
+| Live tracing with replay + OTel SDK bridge | `openai-agents` dashboard is hosted-only, no replay | `src/tracing/runtime.ts`, `src/tracing/otel-shim.ts` | `tests/tracing.test.ts`, `tests/tracing-exporter.test.ts`, `tests/tracing-otel-shim.test.ts` |
+| RAG retriever interface + `InMemoryRetriever` + `PgvectorRetriever` | Mastra ships RAG, but only one store profile baked in | `src/rag/runtime.ts`, `src/rag/pgvector.ts` | `tests/rag.test.ts`, `tests/rag-pgvector.test.ts`, `tests/graph-retriever.test.ts` |
+| Capability tokens + sandbox primitives | `openai-agents` has a sandbox, no capability model | `src/sandbox/` | `tests/sandbox.test.ts` |
+| Framework-agnostic Generative UI stream (`UiStreamSink` / `UiStreamSource`) | Vercel AI SDK ties generative UI to React | `src/genui/index.ts` | `tests/genui.test.ts` |
+| Provider-agnostic voice (ASR + TTS) with Deepgram / Whisper-OpenAI / ElevenLabs adapters | `openai-agents` voice is locked to OpenAI Realtime | `src/voice/runtime.ts`, `src/voice/adapters.ts` | `tests/voice.test.ts`, `tests/voice-adapters.test.ts` |
+
+Run the offline examples without an API key to see each axis in action:
+
+```bash
+npx tsx examples/19-graph-dsl.ts          # 6-node-kind graph
+npx tsx examples/20-guardrails.ts         # 4-scope guardrails
+npx tsx examples/21-tracing-replay.ts     # TraceStore + replay
+npx tsx examples/22-capability-tokens.ts  # sandbox capability tokens
+npx tsx examples/23-rag-retriever.ts      # InMemoryRetriever
+npx tsx examples/24-generative-ui.ts      # framework-agnostic GenUI stream
+npx tsx examples/27-trace-exporter.ts     # console + JSONL exporters
+npx tsx examples/28-rag-graph.ts          # retriever node kind
+npx tsx examples/29-otel-shim.ts          # OtelTraceExporter bridge
+npx tsx examples/30-voice-adapters.ts     # Deepgram / Whisper / ElevenLabs (stub fetch)
+```
+
+不需要 API key 即可运行上述 offline example，逐条验证能力。
+
 ## Quick start / 快速开始
 
 ### Use directly with npx / 直接用 npx 运行
