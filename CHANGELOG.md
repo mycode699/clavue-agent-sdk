@@ -11,15 +11,100 @@ explicitly when they bump.
 
 ---
 
-## [Unreleased] — path to 1.0.0
+## [Unreleased] — path to 0.9.0 / 2.0.0
 
 The 1.0.0 work-up is tracked in:
 
 - [docs/v2_audit_report.md](./docs/v2_audit_report.md) — 17-issue audit of 0.7.5
 - [docs/v2_architecture.md](./docs/v2_architecture.md) — turn-pipeline target design
 - [docs/v2_roadmap.md](./docs/v2_roadmap.md) — milestones M0..M7 → 1.0.0
+- [docs/v3_rfc.md](./docs/v3_rfc.md) — v3 capability-layer decisions (D1/D2/D4 shipped, D3 deferred to v4)
+- [docs/v2_v3_v4_upgrade_chain.md](./docs/v2_v3_v4_upgrade_chain.md) — full peer-comparison + v2/v3/v4 timeline
+- [docs/v2_implementation_slices.md](./docs/v2_implementation_slices.md) — worker-disjoint slice catalog for the 12 remaining P1/P2/P3 items
 
-### Planned (not yet started)
+### Added — v3 seven-axis capability layer (additive, zero engine API breakage)
+
+- **Multi-agent graph DSL** (`src/graph/`) with 6 node kinds — `agent`,
+  `verifier`, `router`, `parallel`, `human`, `retriever` — plus `runGraph`
+  runtime. Trace-aware and guardrail-aware out of the box. Covered by
+  `tests/graph.test.ts` + `tests/graph-retriever.test.ts`. Examples:
+  `examples/19-graph-dsl.ts`, `examples/28-rag-graph.ts`.
+- **4-scope Guardrails** (`src/guardrails/`) — `input`, `output`,
+  `tool_input`, `tool_output` — with policy hook
+  (`'abort' | 'skip' | 'continue'`, default `'skip'` for tool scopes).
+  `GuardrailAbortError` sentinel + `error_guardrail_abort` terminal
+  subtype. Engine integration in `src/engine.ts` fires pre/post `runTool`.
+  Covered by `tests/guardrails.test.ts`,
+  `tests/engine-guardrails.test.ts`,
+  `tests/engine-guardrails-policy.test.ts`. Example:
+  `examples/20-guardrails.ts`.
+- **Live Tracing + replay + OTel SDK bridge** (`src/tracing/`) —
+  `TraceStore` records every step; `OtelTraceExporter`
+  (`src/tracing/otel-shim.ts`) bridges into any
+  `@opentelemetry/api` tracer via the structural `OtelTracerLike`
+  interface. Covered by `tests/tracing.test.ts`,
+  `tests/tracing-exporter.test.ts`,
+  `tests/tracing-otel-shim.test.ts`. Examples:
+  `examples/21-tracing-replay.ts`, `examples/27-trace-exporter.ts`,
+  `examples/29-otel-shim.ts`.
+- **Capability tokens / sandbox primitives** (`src/sandbox/`). Covered by
+  `tests/sandbox.test.ts`. Example: `examples/22-capability-tokens.ts`.
+- **RAG retriever interface + `InMemoryRetriever` + `PgvectorRetriever`**
+  (`src/rag/`). Pgvector adapter uses structural `PgClientLike`, no `pg`
+  npm dep. `retriever` graph node kind feeds hits into downstream
+  `agent` nodes by default. Covered by `tests/rag.test.ts`,
+  `tests/rag-pgvector.test.ts`, `tests/graph-retriever.test.ts`.
+  Examples: `examples/23-rag-retriever.ts`, `examples/28-rag-graph.ts`.
+- **Framework-agnostic Generative UI stream**
+  (`src/genui/` — `UiStreamSink` / `UiStreamSource`). Covered by
+  `tests/genui.test.ts`. Example: `examples/24-generative-ui.ts`.
+- **Provider-agnostic voice (ASR + TTS)** (`src/voice/`) — stubs +
+  `DeepgramAsrProvider`, `WhisperOpenAiAsrProvider`,
+  `ElevenLabsTtsProvider` real adapters. All three use structural
+  `FetchLike`, no `axios` / `node-fetch` deps. Covered by
+  `tests/voice.test.ts`, `tests/voice-adapters.test.ts`. Examples:
+  `examples/25-voice.ts`, `examples/30-voice-adapters.ts`.
+- **Subpath exports** (`package.json` `exports`) — every v3 axis ships
+  its own subpath for tree-shaken imports:
+  - `clavue-agent-sdk/graph`
+  - `clavue-agent-sdk/guardrails`
+  - `clavue-agent-sdk/tracing`
+  - `clavue-agent-sdk/sandbox`
+  - `clavue-agent-sdk/rag`
+  - `clavue-agent-sdk/genui`
+  - `clavue-agent-sdk/voice`
+  Resolvability + symbol smoke tests in `tests/subpath-exports.test.ts`.
+- **Test coverage net additions** beyond the v3 axes:
+  - `tests/tokens.test.ts` (12 cases) — `estimateTokens`,
+    `estimateMessagesTokens`, `getContextWindowSize`,
+    `getAutoCompactThreshold`, `estimateCost` branches.
+  - `tests/memory-policy.test.ts` (9 cases) —
+    `extractSessionMemoryCandidates` classification + dedup + tag
+    building behavior pinned.
+- **Capability comparison matrix** (`README.md`) — 7-row matrix vs
+  `claude-agent-sdk-python` / `openai-agents-python` / `Mastra` /
+  `Vercel AI SDK` with clickable source + test paths for every claim.
+
+### Verification (post-v3 axes)
+
+- `npm run build` (tsc) — 0 errors
+- `npm test` — 500/500 pass (was 472 at audit baseline)
+- 12/12 offline examples (`examples/19~30`) green without API keys
+- Zero new runtime npm dependencies (all external integrations use
+  structural typing: `FetchLike`, `PgClientLike`, `OtelTracerLike`)
+
+### Out of scope (explicit, not yet shipped)
+
+- Realtime websocket voice (Deepgram Live, OpenAI Realtime API).
+- Local Whisper binary runner (`whisper.cpp` / `faster-whisper`).
+- pgvector real-Postgres integration test (CI runs against a stub
+  `PgClientLike`).
+- D3 (`runIssueWorkflow` → graph DSL internal replacement) — deferred
+  to v4 after honest cost/benefit re-analysis; `runIssueWorkflowWithAgent`
+  is already the real path.
+- v4 `clavue-orchestrator` platform layer (separate repository).
+
+### Planned (carry-overs from v2 audit)
 
 - M2 turn pipeline (`Guard → Compact → Render → Call → Stream → Tools → Decide`)
   replacing the monolithic `QueryEngine.submitMessage` hot path.
