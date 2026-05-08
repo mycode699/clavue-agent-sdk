@@ -77,3 +77,66 @@ test('package.json declares all 7 subpath exports', async () => {
     assert.ok(exports[sub].import, `subpath ${sub} import path present`)
   }
 })
+
+// v3 seven-axis subpaths: graph / guardrails / tracing / sandbox / rag / genui / voice
+
+test('package.json declares all 7 v3 axis subpaths', async () => {
+  const fs = await import('node:fs/promises')
+  const pkg = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const exports = pkg.exports
+  for (const sub of ['./graph', './guardrails', './tracing', './sandbox', './rag', './genui', './voice']) {
+    assert.ok(exports[sub], `v3 subpath ${sub} present`)
+    assert.ok(exports[sub].types, `v3 subpath ${sub} types path present`)
+    assert.ok(exports[sub].import, `v3 subpath ${sub} import path present`)
+  }
+})
+
+test('every package.json exports entry resolves to an existing dist file', async () => {
+  const fs = await import('node:fs/promises')
+  const path = await import('node:path')
+  const pkg = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const repoRoot = path.dirname(new URL('../package.json', import.meta.url).pathname)
+  const missing: string[] = []
+  for (const [name, entry] of Object.entries(pkg.exports as Record<string, { types: string; import: string }>)) {
+    for (const target of [entry.types, entry.import]) {
+      const abs = path.join(repoRoot, target)
+      try {
+        await fs.access(abs)
+      } catch {
+        missing.push(`${name} → ${target}`)
+      }
+    }
+  }
+  assert.deepEqual(missing, [], `Unresolved exports:\n  ${missing.join('\n  ')}`)
+})
+
+test('subpath/graph exports v3 graph runtime', async () => {
+  const mod = await import('../dist/graph/index.js')
+  assert.equal(typeof mod.runGraph, 'function')
+})
+
+test('subpath/guardrails exports GuardrailRegistry', async () => {
+  const mod = await import('../dist/guardrails/index.js')
+  assert.equal(typeof mod.GuardrailRegistry, 'function')
+})
+
+test('subpath/tracing exports TraceStore + OtelTraceExporter', async () => {
+  const mod = await import('../dist/tracing/index.js')
+  assert.equal(typeof mod.TraceStore, 'function')
+  assert.equal(typeof mod.OtelTraceExporter, 'function')
+})
+
+test('subpath/rag exports retriever primitives', async () => {
+  const mod = await import('../dist/rag/index.js')
+  assert.equal(typeof mod.InMemoryRetriever, 'function')
+  assert.equal(typeof mod.PgvectorRetriever, 'function')
+})
+
+test('subpath/voice exports stub + real provider adapters', async () => {
+  const mod = await import('../dist/voice/index.js')
+  assert.equal(typeof mod.StubAsrProvider, 'function')
+  assert.equal(typeof mod.StubTtsProvider, 'function')
+  assert.equal(typeof mod.DeepgramAsrProvider, 'function')
+  assert.equal(typeof mod.WhisperOpenAiAsrProvider, 'function')
+  assert.equal(typeof mod.ElevenLabsTtsProvider, 'function')
+})

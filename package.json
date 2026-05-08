@@ -53,6 +53,34 @@
     "./testing": {
       "types": "./dist/subpath/testing.d.ts",
       "import": "./dist/subpath/testing.js"
+    },
+    "./graph": {
+      "types": "./dist/graph/index.d.ts",
+      "import": "./dist/graph/index.js"
+    },
+    "./guardrails": {
+      "types": "./dist/guardrails/index.d.ts",
+      "import": "./dist/guardrails/index.js"
+    },
+    "./tracing": {
+      "types": "./dist/tracing/index.d.ts",
+      "import": "./dist/tracing/index.js"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "import": "./dist/sandbox/index.js"
+    },
+    "./rag": {
+      "types": "./dist/rag/index.d.ts",
+      "import": "./dist/rag/index.js"
+    },
+    "./genui": {
+      "types": "./dist/genui/index.d.ts",
+      "import": "./dist/genui/index.js"
+    },
+    "./voice": {
+      "types": "./dist/voice/index.d.ts",
+      "import": "./dist/voice/index.js"
     }
   },
   "scripts": {
