@@ -12,8 +12,6 @@
  * 8. Retry with exponential backoff on transient errors
  */
 
-import { randomUUID } from 'node:crypto'
-
 import {
   AGENT_RUN_TRACE_SCHEMA_VERSION,
   SDK_EVENT_SCHEMA_VERSION,
