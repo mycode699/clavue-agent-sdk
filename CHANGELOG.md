@@ -21,6 +21,16 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice H tool dispatch planner** (`planToolDispatch`) — extracts the
+  order-preserving concurrent grouping algorithm from
+  `QueryEngine.executeTools` into a pure helper in
+  `src/engine/tool-helpers.ts`. Same semantics: consecutive
+  concurrency-safe tools collapse into a single `concurrent` batch;
+  non-concurrent tools become `serial` singletons that fence the run.
+  The engine now consumes the plan instead of maintaining inline
+  pending-batch state. Separately testable without spinning up the
+  engine. Covered by `tests/tool-dispatch-plan.test.ts` (6 tests).
+  Zero new runtime deps.
 - **Slice G token counter API warmup (additive)** —
   `src/tokens/api-counter.ts` introduces a structural `TokenCounter`
   interface and an `ApiBackedCounter` that calibrates an EMA-smoothed

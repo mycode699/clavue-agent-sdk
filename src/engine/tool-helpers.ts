@@ -38,6 +38,54 @@ export function canRunConcurrently(tool?: ToolDefinition): boolean {
   return tool?.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
 }
 
+/**
+ * Slice H — pure tool dispatch planner.
+ *
+ * Walks `toolUseBlocks` in order, grouping consecutive concurrency-safe
+ * tools into a single concurrent batch and emitting non-concurrent
+ * tools as serial singletons. The plan is order-preserving with respect
+ * to the model's emitted tool_use sequence; consumers schedule each
+ * concurrent batch as `Promise.all` and serial singletons as awaits.
+ *
+ * Splitting this out of `executeTools` makes the grouping algorithm
+ * separately testable without spinning up the full engine.
+ */
+export interface ToolDispatchEntry<TBlock> {
+  block: TBlock
+  tool?: ToolDefinition
+}
+
+export interface ToolDispatchBatch<TBlock> {
+  kind: 'concurrent' | 'serial'
+  entries: ToolDispatchEntry<TBlock>[]
+}
+
+export function planToolDispatch<TBlock extends { name: string }>(
+  toolUseBlocks: TBlock[],
+  lookup: (name: string) => ToolDefinition | undefined,
+): ToolDispatchBatch<TBlock>[] {
+  const batches: ToolDispatchBatch<TBlock>[] = []
+  let pending: ToolDispatchEntry<TBlock>[] = []
+
+  const flushPending = () => {
+    if (pending.length === 0) return
+    batches.push({ kind: 'concurrent', entries: pending })
+    pending = []
+  }
+
+  for (const block of toolUseBlocks) {
+    const tool = lookup(block.name)
+    if (canRunConcurrently(tool)) {
+      pending.push({ block, tool })
+      continue
+    }
+    flushPending()
+    batches.push({ kind: 'serial', entries: [{ block, tool }] })
+  }
+  flushPending()
+  return batches
+}
+
 export function summarizeToolInput(input: unknown): AgentRunToolInputSummary {
   if (input === null) return { type: 'null', size_bytes: 4 }
   if (input === undefined) return { type: 'undefined' }

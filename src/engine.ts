@@ -63,6 +63,7 @@ import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import {
   canRunConcurrently,
+  planToolDispatch,
   resolveMaxToolConcurrency,
   summarizeToolInput,
   summarizeToolSafety,
@@ -686,15 +687,28 @@ export class QueryEngine {
     const context = createToolContext(this.config, toolsForThisTurn)
     const toolsByName = new Map(toolsForThisTurn.map((tool) => [tool.name, tool]))
     const results: (ToolResult & { tool_name?: string })[] = []
-    let concurrentRun: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
 
-    const flushConcurrentRun = async () => {
-      for (let i = 0; i < concurrentRun.length; i += maxConcurrency) {
-        const batch = concurrentRun.slice(i, i + maxConcurrency)
-        this.trace.concurrency_batches.push(batch.length)
+    // Slice H — delegate order-preserving concurrent grouping to the
+    // pure `planToolDispatch` helper so the algorithm is separately
+    // testable. Semantics are identical to the previous inline loop:
+    // concurrent-safe runs fan out in Promise.all batches bounded by
+    // `maxConcurrency`; non-concurrent tools are serial singletons.
+    const plan = planToolDispatch(toolUseBlocks, (name) => toolsByName.get(name))
+
+    for (const batch of plan) {
+      if (batch.kind === 'serial') {
+        const { block, tool } = batch.entries[0]!
+        this.trace.concurrency_batches.push(1)
+        results.push(await this.executeSingleTool(block, tool, context))
+        continue
+      }
+
+      for (let i = 0; i < batch.entries.length; i += maxConcurrency) {
+        const slice = batch.entries.slice(i, i + maxConcurrency)
+        this.trace.concurrency_batches.push(slice.length)
         const batchTraces: AgentRunToolTrace[] = []
         const batchResults = await Promise.all(
-          batch.map((item, index) =>
+          slice.map((item, index) =>
             this.executeSingleTool(item.block, item.tool, context, (trace) => {
               batchTraces[index] = trace
             }),
@@ -703,22 +717,7 @@ export class QueryEngine {
         this.trace.tools.push(...batchTraces)
         results.push(...batchResults)
       }
-      concurrentRun = []
     }
-
-    for (const block of toolUseBlocks) {
-      const tool = toolsByName.get(block.name)
-      if (canRunConcurrently(tool)) {
-        concurrentRun.push({ block, tool })
-        continue
-      }
-
-      await flushConcurrentRun()
-      this.trace.concurrency_batches.push(1)
-      results.push(await this.executeSingleTool(block, tool, context))
-    }
-
-    await flushConcurrentRun()
 
     return results
   }
