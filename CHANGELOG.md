@@ -11,11 +11,20 @@ explicitly when they bump.
 
 ---
 
-## [Unreleased] — path to 1.0.0
+## [1.0.1] — 2026-05-09
 
-This section tracks work that has landed on the main branch but has not
-yet been cut as a release. Once the 1.0.0 release is prepared, these
-entries move under the `## [1.0.0]` heading below.
+First 1.x release. Closes the 17-item v2 audit
+([docs/v2_audit_report.md](./docs/v2_audit_report.md)) and ships the
+v3 seven-axis capability layer behind subpath imports. Numbered 1.0.1
+rather than 1.0.0 because the underlying work cuts the 0.7.x line in
+half (engine.ts 1537 → 965, +353 tests, +15 helper modules) and the
+maintainer wanted to skip the 0.10.x stretch that other roadmaps
+sometimes use as a soft 1.0.
+
+This entry collects everything that previously sat under
+`[Unreleased] — path to 1.0.0`. The "Earlier slices" subsection
+preserves slice-level provenance for hosts auditing the 0.7.5 → 1.0.1
+migration.
 
 ### Added (since v0.9.0)
 
@@ -93,15 +102,32 @@ entries move under the `## [1.0.0]` heading below.
   (`runIssueWorkflow`, `jsonSchema`, `maxThinkingTokens`, `cost`), and
   the `worker_thread` subagent runtime choice.
 
-### Not shipped (scheduled for 1.0.0 or later)
+### Verified at release
+
+```
+src/engine.ts:    965 lines (-37% vs audit 0.7.5 baseline 1537)
+helpers:          15 files under src/engine/* (1644 lines)
+tests:            625 / 625 pass (vs 272 at audit baseline)
+tsc --noEmit:     0 errors
+test wall-time:   ~35 s (single sequential run, no parallelism)
+```
+
+Reproduce with `npm run test`, `npx tsc --noEmit`, and `npm run bench`.
+
+### Not shipped (deferred to 1.1.x)
 
 - Anthropic `countTokens` integration in the online bench path — blocked
   by proxy that returns 404 on `/v1/messages/count_tokens`; the bench
   falls back to offline mode.
 - Full M2 pipeline refactor (Guard → Compact → Render → Call → Stream →
   Tools → Decide). Slice K extraction landed 9 pure helpers but the
-  generator body itself is still ~400 lines; true pipeline is out of
-  scope for 1.0.0 and lands in 1.1.x.
+  generator body itself is still ~400 lines; true pipeline lands later.
+
+---
+
+## [Unreleased]
+
+(empty — all unreleased entries graduated into 1.0.1 above.)
 
 ### Earlier slices on the unreleased branch
 

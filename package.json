@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "0.9.0",
+  "version": "1.0.1",
   "description": "In-process TypeScript agent SDK for controlled autonomous workflows, workflow contracts, proof-of-work artifacts, durable AgentJobs, memory, and orchestration policy.",
   "type": "module",
   "main": "./dist/index.js",
