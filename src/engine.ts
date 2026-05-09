@@ -37,12 +37,6 @@ import type {
   NormalizedTool,
 } from './providers/types.js'
 import {
-  estimateMessagesTokens,
-  estimateCost,
-  getAutoCompactThreshold,
-} from './utils/tokens.js'
-import {
-  compactConversation,
   createAutoCompactState,
   type AutoCompactState,
 } from './utils/compact.js'
@@ -87,6 +81,10 @@ import {
 } from './engine/compact-stage.js'
 import { buildTurnRequest } from './engine/turn-request.js'
 import { runResilientCall } from './engine/resilient-call.js'
+import {
+  recordTurnUsage,
+  tryCompactOnPromptTooLong,
+} from './engine/turn-bookkeeping.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -169,13 +167,6 @@ export class QueryEngine {
     } catch {
       return []
     }
-  }
-
-  private recordModelUsage(model: string, usage: TokenUsage): void {
-    const current = this.modelUsage[model] ?? { input_tokens: 0, output_tokens: 0 }
-    current.input_tokens += usage.input_tokens
-    current.output_tokens += usage.output_tokens
-    this.modelUsage[model] = current
   }
 
   private recordPolicyDecision(input: Omit<AgentRunPolicyDecisionTrace, 'timestamp' | 'permission_mode' | 'autonomy_mode' | 'safety'> & { tool: ToolDefinition }): void {
@@ -367,27 +358,24 @@ export class QueryEngine {
         yield buildPhaseMessage(this.sessionId, runId, 'model_response', this.turnCount)
       } catch (err: any) {
         this.trace.retry_count += Math.max(0, apiAttempts - 1)
-        // Handle prompt-too-long by compacting
-        if (isPromptTooLongError(err) && !this.compactState.compacted) {
-          try {
-            const result = await compactConversation(
-              this.provider,
-              this.config.model,
-              this.messages as any[],
-              this.compactState,
-              this.config.abortSignal,
-              { trigger: 'prompt_too_long' },
-            )
-            this.messages = result.compactedMessages as NormalizedMessageParam[]
-            this.compactState = result.state
-            this.trace.compaction_count += 1
-            this.trace.compactions?.push(result.trace)
+        // Handle prompt-too-long by compacting (Slice K3: extracted helper).
+        if (isPromptTooLongError(err)) {
+          const recovery = await tryCompactOnPromptTooLong({
+            provider: this.provider,
+            model: this.config.model,
+            messages: this.messages,
+            state: this.compactState,
+            abortSignal: this.config.abortSignal,
+            trace: this.trace,
+          })
+          if (recovery.recovered) {
+            this.messages = recovery.messages
+            this.compactState = recovery.state
             turnsRemaining++ // Retry this turn
             this.turnCount--
             continue
-          } catch {
-            // Can't compact, give up
           }
+          // Fall through to error result if compact didn't recover.
         }
 
         yield {
@@ -415,33 +403,20 @@ export class QueryEngine {
       const turnApiTimeMs = performance.now() - apiStart
       this.apiTimeMs += turnApiTimeMs
 
-      const inputTokens = response.usage?.input_tokens ?? 0
-      const outputTokens = response.usage?.output_tokens ?? 0
-      this.trace.turns.push({
-        turn: this.turnCount,
-        duration_api_ms: Math.round(turnApiTimeMs),
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        tool_calls: response.content.filter((block) => block.type === 'tool_use').length,
+      // Slice K3: per-turn usage / cost / trace bookkeeping is now a pure
+      // helper. Mutates trace, totalUsage, modelUsage in place; returns the
+      // new total cost so the engine keeps its scalar state.
+      const usageResult = recordTurnUsage({
+        response,
+        successfulModel,
+        turnApiTimeMs,
+        trace: this.trace,
+        totalUsage: this.totalUsage,
+        totalCost: this.totalCost,
+        modelUsage: this.modelUsage,
+        turnCount: this.turnCount,
       })
-
-      // Track usage (normalized by provider)
-      if (response.usage) {
-        this.totalUsage.input_tokens += response.usage.input_tokens
-        this.totalUsage.output_tokens += response.usage.output_tokens
-        if (response.usage.cache_creation_input_tokens) {
-          this.totalUsage.cache_creation_input_tokens =
-            (this.totalUsage.cache_creation_input_tokens || 0) +
-            response.usage.cache_creation_input_tokens
-        }
-        if (response.usage.cache_read_input_tokens) {
-          this.totalUsage.cache_read_input_tokens =
-            (this.totalUsage.cache_read_input_tokens || 0) +
-            response.usage.cache_read_input_tokens
-        }
-        this.recordModelUsage(successfulModel, response.usage)
-        this.totalCost += estimateCost(successfulModel, response.usage)
-      }
+      this.totalCost = usageResult.totalCost
 
       // Add assistant message to conversation
       this.messages.push({ role: 'assistant', content: response.content as any })
