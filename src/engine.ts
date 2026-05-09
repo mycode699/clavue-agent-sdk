@@ -14,7 +14,6 @@
 
 import {
   AGENT_RUN_TRACE_SCHEMA_VERSION,
-  SDK_EVENT_SCHEMA_VERSION,
   type SDKMessage,
   type QueryEngineConfig,
   type ToolDefinition,
@@ -69,7 +68,6 @@ import {
 } from './engine/prompt-helpers.js'
 import {
   buildPhaseMessage,
-  buildPendingInputMessage,
 } from './engine/message-helpers.js'
 import {
   findTerminalQualityGateFailure,
@@ -85,6 +83,15 @@ import {
   recordTurnUsage,
   tryCompactOnPromptTooLong,
 } from './engine/turn-bookkeeping.js'
+import {
+  buildErrorResultEvent,
+  buildFinalResultEvent,
+} from './engine/result-events.js'
+import {
+  buildToolResultEvents,
+  buildToolResultsUserMessage,
+} from './engine/tool-results.js'
+import { executeDispatchPlan } from './engine/dispatch-executor.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -199,16 +206,20 @@ export class QueryEngine {
     })
     // Check if any hook blocks the submission
     if (userHookResults.some((r) => r.block)) {
-      yield {
-        type: 'result',
-        schema_version: SDK_EVENT_SCHEMA_VERSION,
+      yield buildErrorResultEvent({
         subtype: 'error_during_execution',
-        is_error: true,
-        usage: this.totalUsage,
-        num_turns: 0,
-        cost: 0,
+        sessionId: this.sessionId,
+        totalUsage: this.totalUsage,
+        numTurns: 0,
+        totalCost: 0,
+        durationApiMs: 0,
+        modelUsage: this.getModelUsage(),
+        permissionDenials: this.trace.permission_denials,
+        evidence: this.getEvidence(),
+        qualityGates: this.getQualityGates(),
+        trace: this.getTrace(),
         errors: ['Blocked by UserPromptSubmit hook'],
-      }
+      })
       return
     }
 
@@ -378,24 +389,20 @@ export class QueryEngine {
           // Fall through to error result if compact didn't recover.
         }
 
-        yield {
-          type: 'result',
-          schema_version: SDK_EVENT_SCHEMA_VERSION,
+        yield buildErrorResultEvent({
           subtype: 'error',
-          session_id: this.sessionId,
-          is_error: true,
-          usage: this.totalUsage,
-          num_turns: this.turnCount,
-          total_cost_usd: this.totalCost,
-          duration_api_ms: Math.round(this.apiTimeMs + performance.now() - apiStart),
-          model_usage: this.getModelUsage(),
-          permission_denials: this.trace.permission_denials,
+          sessionId: this.sessionId,
+          totalUsage: this.totalUsage,
+          numTurns: this.turnCount,
+          totalCost: this.totalCost,
+          durationApiMs: this.apiTimeMs + performance.now() - apiStart,
+          modelUsage: this.getModelUsage(),
+          permissionDenials: this.trace.permission_denials,
           evidence: this.getEvidence(),
-          quality_gates: this.getQualityGates(),
+          qualityGates: this.getQualityGates(),
           trace: this.getTrace(),
           errors: [err?.message || String(err)],
-          cost: this.totalCost,
-        }
+        })
         return
       }
 
@@ -476,61 +483,30 @@ export class QueryEngine {
         // dedicated subtype so callers can distinguish it from other
         // failures.
         if (err instanceof GuardrailAbortError) {
-          yield {
-            type: 'result',
-            schema_version: SDK_EVENT_SCHEMA_VERSION,
+          yield buildErrorResultEvent({
             subtype: 'error_guardrail_abort',
-            session_id: this.sessionId,
-            is_error: true,
-            usage: this.totalUsage,
-            num_turns: this.turnCount,
-            total_cost_usd: this.totalCost,
-            duration_api_ms: Math.round(this.apiTimeMs),
-            model_usage: this.getModelUsage(),
-            permission_denials: this.trace.permission_denials,
+            sessionId: this.sessionId,
+            totalUsage: this.totalUsage,
+            numTurns: this.turnCount,
+            totalCost: this.totalCost,
+            durationApiMs: this.apiTimeMs,
+            modelUsage: this.getModelUsage(),
+            permissionDenials: this.trace.permission_denials,
             evidence: this.getEvidence(),
-            quality_gates: this.getQualityGates(),
+            qualityGates: this.getQualityGates(),
             trace: this.getTrace(),
             errors: [err.message],
-            cost: this.totalCost,
-          }
+          })
           return
         }
         throw err
       }
 
-      // Yield tool results
-      for (const result of toolResults) {
-        const pendingInputMessage = buildPendingInputMessage(this.sessionId, runId, result)
-        if (pendingInputMessage) yield pendingInputMessage
-        yield {
-          type: 'tool_result',
-          result: {
-            tool_use_id: result.tool_use_id,
-            tool_name: result.tool_name || '',
-            output:
-              typeof result.content === 'string'
-                ? result.content
-                : JSON.stringify(result.content),
-            evidence: result.evidence,
-            quality_gates: result.quality_gates,
-          },
-        }
+      // Yield tool results + record them in conversation history (Slice K4a).
+      for (const event of buildToolResultEvents(this.sessionId, runId, toolResults)) {
+        yield event
       }
-
-      // Add tool results to conversation
-      this.messages.push({
-        role: 'user',
-        content: toolResults.map((r) => ({
-          type: 'tool_result' as const,
-          tool_use_id: r.tool_use_id,
-          content:
-            typeof r.content === 'string'
-              ? r.content
-              : JSON.stringify(r.content),
-          is_error: r.is_error,
-        })),
-      })
+      this.messages.push(buildToolResultsUserMessage(toolResults))
 
       if (response.stopReason === 'end_turn') {
         completedNormally = true
@@ -559,24 +535,20 @@ export class QueryEngine {
     yield buildPhaseMessage(this.sessionId, runId, 'verification')
     yield buildPhaseMessage(this.sessionId, runId, 'finalize')
 
-    yield {
-      type: 'result',
-      schema_version: SDK_EVENT_SCHEMA_VERSION,
+    yield buildFinalResultEvent({
       subtype: endSubtype,
-      session_id: this.sessionId,
-      is_error: endSubtype !== 'success',
-      num_turns: this.turnCount,
-      total_cost_usd: this.totalCost,
-      duration_api_ms: Math.round(this.apiTimeMs),
-      usage: this.totalUsage,
-      model_usage: this.getModelUsage(),
-      permission_denials: this.trace.permission_denials,
+      sessionId: this.sessionId,
+      numTurns: this.turnCount,
+      totalCost: this.totalCost,
+      durationApiMs: this.apiTimeMs,
+      totalUsage: this.totalUsage,
+      modelUsage: this.getModelUsage(),
+      permissionDenials: this.trace.permission_denials,
       evidence: this.getEvidence(),
-      quality_gates: this.getQualityGates(),
+      qualityGates: this.getQualityGates(),
       trace: this.getTrace(),
       errors,
-      cost: this.totalCost,
-    }
+    })
   }
 
   private getActiveQualityGatePolicy(): QualityGatePolicy | undefined {
@@ -608,40 +580,21 @@ export class QueryEngine {
       : this.config.tools
     const context = createToolContext(this.config, toolsForThisTurn)
     const toolsByName = new Map(toolsForThisTurn.map((tool) => [tool.name, tool]))
-    const results: (ToolResult & { tool_name?: string })[] = []
 
-    // Slice H — delegate order-preserving concurrent grouping to the
-    // pure `planToolDispatch` helper so the algorithm is separately
-    // testable. Semantics are identical to the previous inline loop:
-    // concurrent-safe runs fan out in Promise.all batches bounded by
-    // `maxConcurrency`; non-concurrent tools are serial singletons.
+    // Slice H — order-preserving concurrent grouping (pure helper).
     const plan = planToolDispatch(toolUseBlocks, (name) => toolsByName.get(name))
 
-    for (const batch of plan) {
-      if (batch.kind === 'serial') {
-        const { block, tool } = batch.entries[0]!
-        this.trace.concurrency_batches.push(1)
-        results.push(await this.executeSingleTool(block, tool, context))
-        continue
-      }
-
-      for (let i = 0; i < batch.entries.length; i += maxConcurrency) {
-        const slice = batch.entries.slice(i, i + maxConcurrency)
-        this.trace.concurrency_batches.push(slice.length)
-        const batchTraces: AgentRunToolTrace[] = []
-        const batchResults = await Promise.all(
-          slice.map((item, index) =>
-            this.executeSingleTool(item.block, item.tool, context, (trace) => {
-              batchTraces[index] = trace
-            }),
-          ),
-        )
-        this.trace.tools.push(...batchTraces)
-        results.push(...batchResults)
-      }
-    }
-
-    return results
+    // Slice K4c — batch execution + trace bookkeeping (pure helper, the
+    // single-tool runner is injected so policy/hook/guardrail logic stays
+    // local to the engine).
+    return executeDispatchPlan<ToolUseBlock>({
+      plan,
+      context,
+      trace: this.trace,
+      maxConcurrency,
+      executeSingle: (block, tool, ctx, recordTrace) =>
+        this.executeSingleTool(block, tool, ctx, recordTrace),
+    })
   }
 
   /**
