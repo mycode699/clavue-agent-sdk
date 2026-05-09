@@ -42,24 +42,19 @@ import {
   getAutoCompactThreshold,
 } from './utils/tokens.js'
 import {
-  shouldAutoCompact,
   compactConversation,
-  microCompactMessages,
   createAutoCompactState,
   type AutoCompactState,
 } from './utils/compact.js'
 import {
-  withRetry,
   isPromptTooLongError,
 } from './utils/retry.js'
-import { abortError } from './utils/abort.js'
 import { GuardrailAbortError } from './guardrails/errors.js'
 import type {
   GuardrailEvaluation,
   ToolGuardrailAction,
   ToolGuardrailPhase,
 } from './guardrails/types.js'
-import { normalizeMessagesForAPI } from './utils/messages.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import {
   canRunConcurrently,
@@ -73,12 +68,10 @@ import {
   parseSkillActivation,
   type SkillActivation,
 } from './engine/skill-helpers.js'
-import { isAbortError, shouldUseFallbackModel } from './engine/error-helpers.js'
 import {
   buildSystemPrompt,
   createToolContext,
   getAutonomyMode,
-  toProviderTool,
 } from './engine/prompt-helpers.js'
 import {
   buildPhaseMessage,
@@ -88,6 +81,12 @@ import {
   findTerminalQualityGateFailure,
   resolveActiveQualityGatePolicy,
 } from './engine/quality-gate-helpers.js'
+import {
+  applyMicroCompactForApi,
+  maybeAutoCompactBeforeTurn,
+} from './engine/compact-stage.js'
+import { buildTurnRequest } from './engine/turn-request.js'
+import { runResilientCall } from './engine/resilient-call.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -263,53 +262,25 @@ export class QueryEngine {
         break
       }
 
-      // Auto-compact if context is too large
-      if (shouldAutoCompact(this.messages as any[], this.config.model, this.compactState)) {
-        await this.executeHooks('PreCompact')
-        try {
-          const result = await compactConversation(
-            this.provider,
-            this.config.model,
-            this.messages as any[],
-            this.compactState,
-            this.config.abortSignal,
-            { trigger: 'auto_threshold' },
-          )
-          this.messages = result.compactedMessages as NormalizedMessageParam[]
-          this.compactState = result.state
-          this.trace.compaction_count += 1
-          this.trace.compactions?.push(result.trace)
-          await this.executeHooks('PostCompact')
-        } catch {
-          // Continue with uncompacted messages
-        }
-      }
+      // Auto-compact if context is too large (Slice K1: extracted helper).
+      const compacted = await maybeAutoCompactBeforeTurn({
+        provider: this.provider,
+        model: this.config.model,
+        messages: this.messages,
+        state: this.compactState,
+        abortSignal: this.config.abortSignal,
+        trace: this.trace,
+        onPreCompact: () => this.executeHooks('PreCompact').then(() => undefined),
+        onPostCompact: () => this.executeHooks('PostCompact').then(() => undefined),
+      })
+      this.messages = compacted.messages
+      this.compactState = compacted.state
 
       // Micro-compact: truncate large tool results
-      const apiMessages = microCompactMessages(
-        normalizeMessagesForAPI(this.messages as any[]),
-      ) as NormalizedMessageParam[]
+      const apiMessages = applyMicroCompactForApi(this.messages)
 
       this.turnCount++
       turnsRemaining--
-
-      const activeSkill = this.activeSkill
-      const activeTools = activeSkill
-        ? filterToolsForSkill(this.config.tools, activeSkill.allowedTools)
-        : this.config.tools
-      const providerTools = activeTools.map(toProviderTool)
-      const requestModel = activeSkill?.model || this.config.model
-      const requestSystemPrompt = activeSkill
-        ? `${systemPrompt}\n\n# Active Skill: ${activeSkill.skillName || activeSkill.commandName || 'unknown'}\n${activeSkill.prompt}\n\nRemain within this active skill until the current workflow is complete. Use only the tools available for this request.`
-        : systemPrompt
-
-      // Make API call with retry via provider
-      let response!: CreateMessageResponse
-      let apiAttempts = 0
-      const apiStart = performance.now()
-      const fallbackModel = this.config.fallbackModel && this.config.fallbackModel !== requestModel
-        ? this.config.fallbackModel
-        : undefined
 
       // Streaming wiring (P0-4 Phase 2). When `includePartialMessages` is on,
       // hand the provider a text-delta callback that pushes into a local
@@ -326,69 +297,45 @@ export class QueryEngine {
           r()
         }
       }
-      const streamCallbacks = wantStreaming
-        ? {
-            onText: (delta: string) => {
-              if (!delta) return
-              partialQueue.push(delta)
-              releaseDrain()
-            },
-          }
-        : undefined
 
-      const createModelMessage = async (model: string) => this.provider.createMessage({
-        model,
-        maxTokens: this.config.maxTokens,
-        system: requestSystemPrompt,
-        messages: apiMessages,
-        tools: providerTools.length > 0 ? providerTools : undefined,
-        thinking:
-          this.config.thinking?.type === 'enabled' &&
-          this.config.thinking.budgetTokens
-            ? {
-                type: 'enabled',
-                budget_tokens: this.config.thinking.budgetTokens,
-              }
-            : undefined,
-        abortSignal: this.config.abortSignal,
-        outputSchema: this.config.outputSchema
-          ?? (this.config.jsonSchema
-            ? { schema: this.config.jsonSchema as Record<string, unknown> }
-            : undefined),
-        stream: streamCallbacks,
+      // Build request (Slice K1: extracted helper — skill scope, model,
+      // tools, streaming callback, and outputSchema routing all live there).
+      const turnRequest = buildTurnRequest({
+        config: this.config,
+        provider: this.provider,
+        systemPrompt,
+        apiMessages,
+        activeSkill: this.activeSkill,
+        partialQueue,
+        releaseDrain,
       })
+      const { requestModel, fallbackModel, createModelMessage } = turnRequest
+
+      // Make API call with retry via provider
+      let response!: CreateMessageResponse
+      let apiAttempts = 0
+      const apiStart = performance.now()
+
       let successfulModel = requestModel
       yield buildPhaseMessage(this.sessionId, runId, 'model_request', this.turnCount)
       try {
         // Kick off the model call (with retry + fallback) as a background task
         // so the generator can drain streaming partials while it is in flight.
+        // Slice K2 / P1-4: retry + fallback + category guards all live in
+        // runResilientCall now — this block only owns the streaming drain.
         let modelDone = false
         let modelErr: unknown
         const modelTask = (async () => {
           try {
-            try {
-              response = await withRetry(
-                async () => {
-                  apiAttempts += 1
-                  return createModelMessage(requestModel)
-                },
-                undefined,
-                this.config.abortSignal,
-              )
-            } catch (primaryErr: any) {
-              if (!fallbackModel || isAbortError(primaryErr) || this.config.abortSignal?.aborted) {
-                throw primaryErr
-              }
-              if (isPromptTooLongError(primaryErr)) {
-                throw primaryErr
-              }
-              if (!shouldUseFallbackModel(primaryErr)) {
-                throw primaryErr
-              }
-              if (this.config.abortSignal?.aborted) throw abortError()
-              response = await createModelMessage(fallbackModel)
-              successfulModel = fallbackModel
-            }
+            const outcome = await runResilientCall({
+              primaryModel: requestModel,
+              fallbackModel,
+              abortSignal: this.config.abortSignal,
+              call: createModelMessage,
+              onAttempt: () => { apiAttempts += 1 },
+            })
+            response = outcome.response
+            successfulModel = outcome.model
           } catch (err) {
             modelErr = err
           } finally {
