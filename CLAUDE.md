@@ -39,6 +39,12 @@ npx tsx examples/14-openai-compat.ts
 # Local web demo server:
 npm run web
 
+# Benchmarks (regression-detection thresholds in docs/v2_benchmark_report.md):
+npm run bench                   # all scripts/bench/*.ts
+npm run bench:tokens            # token estimator content-class accuracy
+npm run bench:worker            # worker_thread spawn / abort latency
+npm run bench:engine            # engine footprint (lines, helper count)
+
 # CLI smoke test from built dist:
 node dist/cli.js --help
 echo "Summarize package.json" | CLAVUE_AGENT_API_KEY=... node dist/cli.js
@@ -64,7 +70,7 @@ should not leak across these boundaries.
                          │
         ┌────────────────┴──────────────────┐
         │ src/engine.ts  (QueryEngine)      │  agentic loop, streaming,
-        │                                   │  concurrent read-only tools,
+        │ + src/engine/*.ts (15 helpers)    │  concurrent read-only tools,
         │                                   │  auto-compact, retry, traces,
         │                                   │  quality gates, policy decisions
         └────────────────┬──────────────────┘
@@ -75,6 +81,18 @@ should not leak across these boundaries.
    │ openai      │ tools │ + reg. │ tool/use     │ HTTP        │
    │ + caps      │       │        │ + compact    │             │
    └─────────────┴───────┴────────┴──────────────┴─────────────┘
+                         │
+   ┌─────────────────────┴──────────────────────────────────────┐
+   │ v3 capability axes (each ships as a subpath import):       │
+   │   graph/        multi-agent graph DSL                      │
+   │   guardrails/   4-scope (input/output/tool/system) policy  │
+   │   tracing/      live span emit + replay + OTEL shim        │
+   │   sandbox/      capability-token-gated tool execution      │
+   │   rag/          retriever + pgvector + graph retriever     │
+   │   genui/        framework-agnostic Generative UI           │
+   │   voice/        provider-agnostic STT/TTS adapters         │
+   │   runtime/      worker_thread subagent isolate runtime     │
+   └────────────────────────────────────────────────────────────┘
                          │
    ┌─────────────────────┴──────────────────────────────────────┐
    │ Durable / contract layer (host-neutral; no host runtime    │
@@ -141,6 +159,29 @@ should not leak across these boundaries.
   ledger persists → optional `runRetroLoop` retries with bounded attempts. It composes with
   `selfImprovement.retro` in `Agent` config. When changing scoring or dimensions, update
   `RETRO_DIMENSIONS` in `src/retro/types.ts` and the evaluators that depend on it.
+
+- **Engine helpers (`src/engine/*.ts`).** `engine.ts` was deliberately split into 15 helper modules
+  (compact-stage, dispatch-executor, error-helpers, memory-helpers, message-helpers,
+  prompt-helpers, quality-gate-helpers, resilient-call, result-events, single-tool-helpers,
+  skill-helpers, tool-helpers, tool-results, turn-bookkeeping, turn-request) to keep `engine.ts`
+  under ~1000 lines. When adding logic to the agent loop, prefer extending an existing helper or
+  adding a new one over inlining into `engine.ts`. The benchmark `npm run bench:engine` enforces
+  the line-count regression threshold.
+
+- **Subpath exports (`src/subpath/*` + v3 axis directories).** The package publishes 13 entry
+  points: root + `/core`, `/tools`, `/contracts`, `/workflow`, `/retro`, `/testing`, `/graph`,
+  `/guardrails`, `/tracing`, `/sandbox`, `/rag`, `/genui`, `/voice`. The first seven are barrel
+  files in `src/subpath/`; the v3 axes export their own `index.ts`. The root `src/index.ts`
+  re-exports everything for back-compat. **Adding a new public symbol means updating both** the
+  root barrel AND the relevant subpath entry — otherwise tree-shaken consumers won't see it.
+  Mappings live in `package.json#exports`; keep them aligned with the actual files.
+
+- **Worker-thread subagent runtime (`src/runtime/worker-thread-*.ts`).** When a subagent is
+  configured with `runtime: 'worker_thread'`, it spawns a fresh V8 isolate via
+  `worker-thread-subagent.ts` and the `worker-thread-entry.ts` bootstrap. Pre-flight abort
+  short-circuits before spawn; env forwarding is curated (no implicit leakage). Latency SLOs are
+  enforced by `npm run bench:worker`. Don't add shared registries or globals that assume a single
+  process — the isolate has its own.
 
 ## TypeScript / module conventions
 
