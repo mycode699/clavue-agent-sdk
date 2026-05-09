@@ -115,6 +115,16 @@ export type {
 } from './workflow/work-item.js'
 export { NotImplementedError } from './runtime/worker-thread-subagent.js'
 export type { SubagentRuntime } from './tools/agent-tool.js'
+export {
+  ApiBackedCounter,
+  createApiBackedCounter,
+  heuristicCounter,
+} from './tokens/api-counter.js'
+export type {
+  TokenCounter,
+  CountTokensClientLike,
+  ApiBackedCounterOptions,
+} from './tokens/api-counter.js'
 
 // --------------------------------------------------------------------------
 // v3.1 Multi-Agent Graph DSL (prototype) — see docs/v2_v3_v4_upgrade_chain.md

@@ -21,6 +21,23 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice G token counter API warmup (additive)** —
+  `src/tokens/api-counter.ts` introduces a structural `TokenCounter`
+  interface and an `ApiBackedCounter` that calibrates an EMA-smoothed
+  correction factor against a host-supplied
+  `client.messages.countTokens` endpoint. The synchronous `count(text)`
+  always returns immediately (heuristic until the first calibration
+  resolves), so this is a drop-in counter for hosts that want better
+  accuracy than the chars-per-token heuristic. Engine integration is
+  intentionally deferred to keep this slice non-breaking; hosts can
+  opt-in directly by constructing the counter and feeding observations
+  via `observeUsage`.
+  New public exports: `TokenCounter`, `CountTokensClientLike`,
+  `ApiBackedCounter`, `ApiBackedCounterOptions`,
+  `createApiBackedCounter`, `heuristicCounter`. Covered by
+  `tests/token-counter.test.ts` (8 tests including async warmup,
+  EMA blending, throwing-API fallback, periodic re-probe). Zero new
+  runtime deps.
 - **Slice D phase 1 subagent runtime + isolation** —
   `runAgentSubagent` accepts two new options:
   - `runtime?: 'inprocess' | 'worker_thread'` — defaults to `'inprocess'`
