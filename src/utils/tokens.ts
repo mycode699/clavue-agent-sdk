@@ -56,8 +56,12 @@ function classifyContent(text: string): keyof typeof CHARS_PER_TOKEN {
   }
   if (cjk / sample.length > 0.2) return 'cjk'
 
-  // Code detection: lots of punctuation / brackets / semicolons relative to
-  // word characters indicates source code or structured text.
+  // Code detection: punctuation / brackets / operators relative to word
+  // chars. The symbol set covers common source-code punctuation across
+  // most languages, not just C-style. The 0.08 threshold is calibrated
+  // against scripts/bench/token-estimator.ts so real TypeScript/JS snippets
+  // classify as code instead of degenerating to english (which underestimated
+  // tokens by ~15% on typical agent payloads).
   let symbols = 0
   let words = 0
   for (let i = 0; i < sample.length; i++) {
@@ -67,19 +71,29 @@ function classifyContent(text: string): keyof typeof CHARS_PER_TOKEN {
       ch === 0x7d /*}*/ ||
       ch === 0x28 /*(*/ ||
       ch === 0x29 /*)*/ ||
+      ch === 0x5b /*[*/ ||
+      ch === 0x5d /*]*/ ||
       ch === 0x3b /*;*/ ||
+      ch === 0x3a /*:*/ ||
       ch === 0x3d /*=*/ ||
       ch === 0x3c /*<*/ ||
       ch === 0x3e /*>*/ ||
       ch === 0x2f /*/*/ ||
-      ch === 0x5c /*\*/
+      ch === 0x5c /*\*/ ||
+      ch === 0x7c /*|*/ ||
+      ch === 0x26 /*&*/ ||
+      ch === 0x2a /***/ ||
+      ch === 0x2b /*+*/ ||
+      ch === 0x2d /*-*/ ||
+      ch === 0x21 /*!*/ ||
+      ch === 0x3f /*?*/
     ) {
       symbols++
     } else if ((ch >= 0x41 && ch <= 0x5a) || (ch >= 0x61 && ch <= 0x7a)) {
       words++
     }
   }
-  if (words > 0 && symbols / Math.max(words, 1) > 0.18) return 'code'
+  if (words > 0 && symbols / Math.max(words, 1) > 0.08) return 'code'
 
   return 'english'
 }

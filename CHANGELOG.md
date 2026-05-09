@@ -13,6 +13,98 @@ explicitly when they bump.
 
 ## [Unreleased] — path to 1.0.0
 
+This section tracks work that has landed on the main branch but has not
+yet been cut as a release. Once the 1.0.0 release is prepared, these
+entries move under the `## [1.0.0]` heading below.
+
+### Added (since v0.9.0)
+
+- **P1-6 phase 2: real `worker_thread` subagent runtime**
+  (`src/runtime/worker-thread-subagent.ts` rewritten,
+  `src/runtime/worker-thread-entry.ts` added). `runtime: 'worker_thread'`
+  now spawns a Node `Worker` that runs a fresh `Agent` isolated from the
+  parent: separate V8 isolate, re-initialized tool registries (tasks,
+  teams, jobs, mailboxes, cron — none leak to the parent), pre-flight
+  abort short-circuit, `execArgv` forwarding so tsx/loaders survive into
+  the worker, hard 5-minute default timeout. Benchmarks
+  (`npm run bench:worker`) report spawnLatency p50 ~56ms,
+  abortResolveLatency p50 ~0.1ms, preflightAbort p95 ~0ms. The Phase 1
+  `NotImplementedError` class is preserved as a public export for
+  backwards compat. Covered by `tests/worker-thread-subagent.test.ts`
+  (8 tests) + 5 updated tests under `tests/subagent-isolation.test.ts`.
+  Example: `examples/31-worker-thread-subagent.ts`.
+- **Slice K1-K5: engine refactor continuation** (audit P1-1). Extracted
+  9 more pure helpers from `QueryEngine.submitMessage` so the
+  generator method shrinks without behavior change:
+  - `src/engine/compact-stage.ts` — pre-turn auto-compaction + micro-compact.
+  - `src/engine/turn-request.ts` — skill scope, model selection, streaming
+    callback wiring, outputSchema routing.
+  - `src/engine/resilient-call.ts` — single retry + fallback + abort/oversize
+    guard wrapper; closes audit P1-4 (previously three overlapping paths).
+  - `src/engine/turn-bookkeeping.ts` — prompt-too-long compact-and-rewind
+    recovery + per-turn usage / cost / trace bookkeeping.
+  - `src/engine/result-events.ts` — uniform `SDKResultMessage` builders
+    for error (model / guardrail-abort / UserPromptSubmit-block) and
+    final (success / max-turns / max-budget / gate-failed) paths.
+  - `src/engine/tool-results.ts` — per-tool-call SDK event stream and
+    history append in Anthropic's tool_result shape.
+  - `src/engine/dispatch-executor.ts` — serial/concurrent batch execution
+    with per-call trace callbacks.
+  - `src/engine/single-tool-helpers.ts` — uniform error result
+    construction, 4-scope guardrail evaluator, skill activation
+    side-effect ingestion.
+
+  Net `src/engine.ts`: 1162 → 965 lines (-17%, audit baseline was 1537
+  so cumulative reduction is 37%). 15 helper modules under
+  `src/engine/*.ts`. `tests/resilient-call.test.ts` (+8),
+  `tests/turn-bookkeeping.test.ts` (+7),
+  `tests/result-events.test.ts` (+8),
+  `tests/tool-results.test.ts` (+7),
+  `tests/dispatch-executor.test.ts` (+6),
+  `tests/single-tool-helpers.test.ts` (+12).
+- **`scripts/bench/` benchmark suite**. Three offline, no-API-key-required
+  benches: token estimator accuracy (`bench:tokens`), worker_thread
+  spawn/abort latency (`bench:worker`), engine LoC + suite wall-time
+  (`bench:engine`). Results pasted into
+  [docs/v2_benchmark_report.md](./docs/v2_benchmark_report.md). Added
+  npm scripts: `bench`, `bench:tokens`, `bench:worker`, `bench:engine`.
+- **Token estimator classifier tuning**. Lowered the code-detection
+  threshold from 0.18 to 0.08 and extended the symbol set to cover
+  `[ ] , . : | & * + - ! ?` in addition to the C-style punctuation.
+  TypeScript and Python snippets now classify as `code` (density
+  0.333 tokens/char) instead of degrading to `english` (0.253). Verified
+  by `bench:tokens` v2 density spread = 0.373 across 4 content classes.
+- **Honest test hygiene fix for Slice D**. `tests/subagent-isolation.test.ts:39`
+  was passing silently on CI/dev machines that set `ANTHROPIC_BASE_URL`
+  + `ANTHROPIC_AUTH_TOKEN` (such as Claude Code itself) because the
+  Anthropic SDK silently picked up the ambient proxy and returned 200s
+  instead of failing. Fixed by pinning an explicit throwing
+  `LLMProvider` via `context.provider` so the envelope assertion is
+  deterministic and offline. Runtime dropped from ~13s to ~0.8s.
+
+### Documentation
+
+- [docs/v2_benchmark_report.md](./docs/v2_benchmark_report.md) — every
+  v2 improvement paired with a reproducible measurement, plus explicit
+  "what was NOT measured" list. Reproduce with `npm run bench`.
+- [docs/v1_to_v2_migration.md](./docs/v1_to_v2_migration.md) — upgrade
+  guide for 0.7.x hosts. Covers streaming adoption, Anthropic caching
+  verification, subpath imports, deprecations
+  (`runIssueWorkflow`, `jsonSchema`, `maxThinkingTokens`, `cost`), and
+  the `worker_thread` subagent runtime choice.
+
+### Not shipped (scheduled for 1.0.0 or later)
+
+- Anthropic `countTokens` integration in the online bench path — blocked
+  by proxy that returns 404 on `/v1/messages/count_tokens`; the bench
+  falls back to offline mode.
+- Full M2 pipeline refactor (Guard → Compact → Render → Call → Stream →
+  Tools → Decide). Slice K extraction landed 9 pure helpers but the
+  generator body itself is still ~400 lines; true pipeline is out of
+  scope for 1.0.0 and lands in 1.1.x.
+
+### Earlier slices on the unreleased branch
+
 The 1.0.0 work-up continues per:
 
 - [docs/v2_audit_report.md](./docs/v2_audit_report.md) — 17-issue audit of 0.7.5
