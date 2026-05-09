@@ -11,6 +11,46 @@ explicitly when they bump.
 
 ---
 
+## [1.0.2] — 2026-05-09
+
+Documentation-only patch. No source changes; same 625/625 tests, same
+`tsc --noEmit` clean, same dist contents apart from the bumped version
+string. Published so the npm registry page reflects the 1.0.x scope
+correctly (description + keywords only travel through `npm publish`).
+
+### Documentation
+
+- **README.md rewritten head-to-toe**: replaces the 0.7.x-era "What is
+  new in 0.7.x" + "v3 capabilities (0.8.x)" sections with a single
+  "What's in 1.0.1" block that lists hard numbers reproducible via
+  `npm run bench` (engine 1537→965 lines, 272→625 tests, token estimator
+  density spread 0.000→0.373, worker_thread spawn p50 56ms). The v3
+  axis table now points to `examples/19` through `31` and to
+  `docs/USAGE.md` for per-axis instructions.
+- **`docs/USAGE.md` (NEW, 946 lines)**: feature-by-feature usage guide
+  covering all 20 capabilities — three Agent entrypoints, streaming,
+  `outputSchema`, prompt caching verification, toolsets, autonomy/
+  permission axes, hooks vs middleware, `worker_thread` subagent
+  isolation, the seven v3 axes (graph DSL, guardrails, tracing,
+  sandbox, RAG, generative UI, voice), `runIssueWorkflowWithAgent`,
+  background AgentJobs, quality gates / proof-of-work, structured
+  memory + vector retrieval, and schema-version contracts. Each
+  section answers four questions: 是什么 / 何时用 / 怎么用 / 要小心
+  什么.
+- **`package.json` description + keywords**: rewritten to surface the
+  v3 axes (graph, tracing, guardrails, sandbox, RAG, generative UI,
+  voice) plus 1.0.x-era capabilities (streaming, prompt-caching,
+  structured-outputs, worker-threads). The 0.7.x description that
+  only mentioned "controlled autonomous workflows, workflow contracts,
+  proof-of-work artifacts, durable AgentJobs, memory, and orchestration
+  policy" is gone. Added 17 new keyword tags (claude, streaming,
+  prompt-caching, structured-outputs, multi-agent, agent-graph,
+  guardrails, tracing, opentelemetry, rag, retriever, pgvector,
+  sandbox, capability-tokens, generative-ui, voice, worker-threads,
+  esm).
+
+---
+
 ## [1.0.1] — 2026-05-09
 
 First 1.x release. Closes the 17-item v2 audit

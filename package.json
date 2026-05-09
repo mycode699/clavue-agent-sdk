@@ -12,8 +12,8 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "1.0.1",
-  "description": "In-process TypeScript agent SDK for controlled autonomous workflows, workflow contracts, proof-of-work artifacts, durable AgentJobs, memory, and orchestration policy.",
+  "version": "1.0.2",
+  "description": "In-process TypeScript agent runtime with multi-agent graph DSL, live tracing, 4-scope guardrails, capability-token sandbox, RAG, framework-agnostic Generative UI, voice adapters, worker_thread subagent isolation, Anthropic prompt caching, streaming, and structured outputs. Anthropic + OpenAI-compatible.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -122,13 +122,31 @@
     "mcp",
     "openai",
     "anthropic",
+    "claude",
+    "streaming",
+    "prompt-caching",
+    "structured-outputs",
+    "multi-agent",
+    "agent-graph",
+    "guardrails",
+    "tracing",
+    "opentelemetry",
+    "rag",
+    "retriever",
+    "pgvector",
+    "sandbox",
+    "capability-tokens",
+    "generative-ui",
+    "voice",
+    "worker-threads",
     "workflow-automation",
     "ci-automation",
     "issue-workflow",
     "workflow-contract",
     "proof-of-work",
     "orchestration-policy",
-    "typescript"
+    "typescript",
+    "esm"
   ],
   "license": "MIT"
 }

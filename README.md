@@ -3,75 +3,100 @@
 [![npm version](https://img.shields.io/npm/v/clavue-agent-sdk)](https://www.npmjs.com/package/clavue-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-625%2F625-brightgreen)](./tests)
 
-Clavue Agent SDK is a production-oriented TypeScript SDK for building controlled autonomous agents, workflow agents, coding agents, research agents, and repair loops. It runs the full agent loop **in-process** for library integrations, with no subprocess or local CLI dependency. An optional `npx` CLI is available for terminal and CI automation. The same runtime supports **Anthropic** and **OpenAI-compatible** APIs, including modern GPT models through the OpenAI Responses API when available.
+Production-grade TypeScript agent runtime. Embed `run()`, `query()`, or
+`createAgent()` directly in your Node.js process — no daemon, no subprocess,
+no local CLI dependency. Multi-provider (Anthropic + OpenAI-compatible),
+streaming-first, prompt-cache-aware, with a v3 capability layer that ships
+multi-agent graph, live tracing, 4-scope guardrails, capability-token sandbox,
+RAG, framework-agnostic Generative UI, and provider-agnostic voice.
 
-Clavue Agent SDK 是面向生产环境的 TypeScript agent runtime，可用于构建 coding agent、research agent、workflow agent 与自主修复循环。作为库集成时，它会在你的应用进程内直接运行完整 agent loop，**不需要子进程，也不依赖本地 CLI**。同时提供可选的 `npx` CLI，方便终端和 CI 自动化使用。它支持 **Anthropic** 与 **OpenAI-compatible** API，并可在可用时为现代 GPT 模型使用 OpenAI Responses API。
+生产级 TypeScript agent runtime。在你的 Node.js 进程内直接运行
+`run()` / `query()` / `createAgent()` —— 无守护进程、无子进程、无本地 CLI 依赖。
+多 provider（Anthropic + OpenAI 兼容），流式优先，自动 prompt cache，
+v3 能力层提供：多 agent graph、实时 tracing、4 scope guardrails、
+capability-token sandbox、RAG、框架无关的 Generative UI 与 provider 无关的
+voice 接入。
+
+```bash
+npm install clavue-agent-sdk             # latest = 1.0.1
+```
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
 
-## Documentation / 文档
+---
 
-- [Programmatic Integration Guide](./docs/programmatic-integration-guide.md): complete usage patterns for embedding the SDK in services, CI, workers, internal platforms, and agent products.
-- [Capability Upgrade Program](./docs/agent-sdk-capability-upgrade-program.md): roadmap and capability planning for controlled autonomous workflows.
-- [Production Capabilities](./docs/production-agent-sdk-capabilities.md): deeper analysis of production runtime capabilities and gaps.
-- [v2 Audit Report](./docs/v2_audit_report.md) (draft): audit of 0.7.x covering 17 prioritized issues across the engine, providers, workflow, and contracts.
-- [v2 Architecture](./docs/v2_architecture.md) (draft): proposed pipeline, streaming-first provider, real token counter, real issue-workflow loop, middleware, subagent isolation, subpath exports, and telemetry.
-- [v2 Roadmap](./docs/v2_roadmap.md) (draft): milestone plan from 0.8.0 to 1.0.0 with benchmark SLOs, breaking-change table, and rollback paths.
+## What's in 1.0.1 / 1.0.1 速览
 
-## Why Clavue / 为什么选择 Clavue
+The 1.0.1 release closes the 17-item v2 audit and ships the v3 seven-axis
+capability layer. Hard numbers (reproduce with `npm run bench`):
 
-- **Library-first agent runtime:** embed `run()`, `query()`, or `createAgent()` directly in Node.js services, CI, workers, web backends, and internal platforms.
-- **Low-confirmation autonomy:** use `autonomyMode` plus `permissionMode` to let strong models act proactively on approved work without bypassing safety policy.
-- **Production controls:** named toolsets, allow/deny filters, hooks, permission modes, workspace path guards, schema-versioned events, policy traces, quality gates, and budget controls.
-- **Durable workflow contracts:** background AgentJobs, local issue workflows, `WORKFLOW.md` parsing, proof-of-work artifacts, orchestration policy helpers, runtime namespaces, session persistence, memory injection, self-improvement capture, and retro/eval loops.
-- **Provider portability:** Anthropic Messages and OpenAI-compatible providers share the same tool, memory, event, and result contracts.
+1.0.1 关闭了 v2 审计的 17 项问题，同时发布 v3 七轴能力层。下面这些数字
+都可以用 `npm run bench` 复现：
 
-- **库优先的 agent runtime：** 可直接把 `run()`、`query()` 或 `createAgent()` 嵌入 Node.js 服务、CI、worker、Web 后端和内部平台。
-- **低确认自主执行：** 通过 `autonomyMode` 与 `permissionMode`，让强模型在已授权任务中主动推进，同时不绕过安全策略。
-- **生产级控制：** 命名工具集、allow/deny、hooks、权限模式、workspace 路径防护、带 schema version 的事件、policy trace、quality gates 与预算控制。
-- **持久化工作流契约：** background AgentJobs、local issue workflow、`WORKFLOW.md` 解析、proof-of-work artifact、orchestration policy helper、runtime namespace、session persistence、memory injection、self-improvement capture 与 retro/eval loop。
-- **多 provider 可移植：** Anthropic Messages 与 OpenAI-compatible provider 共用同一套工具、记忆、事件和结果协议。
+| Metric / 指标 | 0.7.5 baseline | 1.0.1 | Δ |
+|---|---:|---:|---:|
+| `src/engine.ts` lines | 1537 | **965** | -37% |
+| Engine helper modules | 0 | **15** | +15 files |
+| Tests passing | 272 | **625** | +130% |
+| Token estimator content classes separated | 1 (constant 0.25) | **4** (0.25 / 0.33 / 0.39 / 0.63) | — |
+| Worker_thread spawn p50 | n/a (stub) | **56 ms** | runtime real |
+| Worker_thread preflight abort p95 | n/a | **<0.1 ms** | short-circuit |
 
-## What is new in 0.7.x / 0.7.x 新能力
+See [`docs/v2_benchmark_report.md`](./docs/v2_benchmark_report.md) for
+methodology, raw output, and SLO thresholds for regression detection.
 
-- Controlled autonomous development mode: `--autonomy autonomous` with `--permission-mode trustedAutomation` or safer local-edit-only `acceptEdits`.
-- Public schema metadata for SDK events, run results, traces, AgentJobs, and memory traces.
-- Local issue workflow commands for builder, reviewer, fixer, and verifier loops.
-- SDK-native workflow contracts: parse `WORKFLOW.md`, render strict issue prompts, resolve runtime config, normalize workspaces, and validate dispatch preflight.
-- Host-neutral proof-of-work artifacts for runs, AgentJobs, and issue workflows, including evidence, quality gates, risks, next actions, and external references.
-- Host-neutral orchestration policy helpers for candidate selection, active/terminal state handling, global/per-state concurrency, blocker handling, and capped retry backoff.
-- Stronger workspace safety: path containment for file tools and pre-execution blocking for destructive shell patterns.
-- Better GPT/OpenAI-compatible handling: capability preflight, normalized provider errors, Responses API routing, and fallback when gateways do not support `/responses`.
-- AgentJob batch summaries, retro skill evaluators, runtime profiles, and richer policy decision traces.
+### Headline capabilities at 1.0.1
 
-- 受控自主开发模式：`--autonomy autonomous` 可与 `--permission-mode trustedAutomation` 或更安全的本地编辑模式 `acceptEdits` 配合使用。
-- SDK event、run result、trace、AgentJob 与 memory trace 都带有公开 schema metadata。
-- 本地 issue workflow 命令支持 builder、reviewer、fixer、verifier 循环。
-- SDK 原生 workflow contract：解析 `WORKFLOW.md`、严格渲染 issue prompt、解析运行配置、规范化 workspace，并做 dispatch preflight 校验。
-- 与宿主解耦的 proof-of-work artifact：覆盖 run、AgentJob 与 issue workflow，包含 evidence、quality gates、risks、next actions 与外部引用。
-- 与宿主解耦的 orchestration policy helper：支持候选任务选择、active/terminal state 处理、全局/按状态并发、blocker 判断与有上限的 retry backoff。
-- 更强 workspace 安全：文件工具路径限制，以及 shell 破坏性命令的执行前阻断。
-- 更好的 GPT / OpenAI-compatible 支持：capability preflight、标准化 provider error、Responses API 路由，以及网关不支持 `/responses` 时的回退。
-- AgentJob batch summary、retro skill evaluator、runtime profile 与更丰富的 policy decision trace。
+- **Streaming first.** `client.messages.stream(...)` for Anthropic,
+  SSE for OpenAI Chat. Set `includePartialMessages: true` and consume
+  `partial_message` events for sub-second first-token latency in your UI.
+- **Prompt caching on by default.** Anthropic `cache_control: ephemeral`
+  is applied to `system` and the trailing tool — multi-turn input cost
+  drops 70-80% on cache hits, with no code change required from hosts.
+- **Real subagent isolation.** `runtime: 'worker_thread'` spawns a fresh
+  V8 isolate per subagent. Pre-flight abort short-circuit, hard timeout,
+  curated env forwarding, no shared registries.
+- **Structured outputs that actually work.** `outputSchema` synthesizes
+  an `_output` tool with `tool_choice` (Anthropic) or
+  `response_format: { type: 'json_schema' }` (OpenAI). The 0.7.x
+  `jsonSchema` field was wired but never read; in 1.0.1 it's a
+  deprecated alias that's actually plumbed through.
+- **Real issue-workflow loop.** `runIssueWorkflowWithAgent(input)` now
+  drives a build → verify → review → fix loop with an Agent and a
+  `Verifier` you supply (default `CommandVerifier` shells `npm test` /
+  `npm run lint`). The legacy `runIssueWorkflow` is kept for
+  back-compat but only records what the host evaluates.
+- **Subpath imports.** `clavue-agent-sdk/core`, `/tools`, `/contracts`,
+  `/workflow`, `/retro`, `/testing`, plus the v3 axes
+  (`/graph`, `/guardrails`, `/tracing`, `/sandbox`, `/rag`, `/genui`,
+  `/voice`). Root barrel still re-exports everything for back-compat.
+- **Honest deprecations.** `jsonSchema`, `maxThinkingTokens`,
+  `runIssueWorkflow`, and the `cost` result field have ≥90 days of
+  overlap before removal in 1.1.0. See
+  [`docs/v1_to_v2_migration.md`](./docs/v1_to_v2_migration.md).
 
-## v3 capabilities (0.8.x) / v3 能力（0.8.x）
+---
 
-The v3 axes from `docs/v3_rfc.md` are landing one decision at a time. Every capability below is exercised by tests in this repo; line numbers point at the live source so readers can verify, not just trust the README.
+## v3 capability layer / v3 能力层
 
-`docs/v3_rfc.md` 中规划的 v3 能力轴正在逐项落地。下表的每一项都有真实测试覆盖，行号指向源码本身，方便直接核对。
+Every axis is exercised by tests in this repo. Line numbers below point
+at live source so you can verify, not just trust the README.
 
-| Capability / 能力 | Peer comparison / 同层对比 | Where it lives / 实现位置 | Tests |
+每个能力轴都有测试覆盖，下表行号指向源码本身。
+
+| Capability / 能力 | Where it lives / 实现位置 | Tests | Example |
 |---|---|---|---|
-| Multi-agent graph DSL (6 node kinds: agent, verifier, router, parallel, human, retriever) | `openai-agents` handoffs cover agent + handoff only | `src/graph/runtime.ts`, `src/graph/types.ts` | `tests/graph.test.ts`, `tests/graph-retriever.test.ts` |
-| 4-scope guardrails (`input` / `output` / `tool_input` / `tool_output`) with `'abort' \| 'skip' \| 'continue'` policy hook | `openai-agents` ships 2 scopes, no per-tool gating | `src/guardrails/runtime.ts`, `src/engine.ts` (tool dispatcher) | `tests/guardrails.test.ts`, `tests/engine-guardrails.test.ts`, `tests/engine-guardrails-policy.test.ts` |
-| Live tracing with replay + OTel SDK bridge | `openai-agents` dashboard is hosted-only, no replay | `src/tracing/runtime.ts`, `src/tracing/otel-shim.ts` | `tests/tracing.test.ts`, `tests/tracing-exporter.test.ts`, `tests/tracing-otel-shim.test.ts` |
-| RAG retriever interface + `InMemoryRetriever` + `PgvectorRetriever` | Mastra ships RAG, but only one store profile baked in | `src/rag/runtime.ts`, `src/rag/pgvector.ts` | `tests/rag.test.ts`, `tests/rag-pgvector.test.ts`, `tests/graph-retriever.test.ts` |
-| Capability tokens + sandbox primitives | `openai-agents` has a sandbox, no capability model | `src/sandbox/` | `tests/sandbox.test.ts` |
-| Framework-agnostic Generative UI stream (`UiStreamSink` / `UiStreamSource`) | Vercel AI SDK ties generative UI to React | `src/genui/index.ts` | `tests/genui.test.ts` |
-| Provider-agnostic voice (ASR + TTS) with Deepgram / Whisper-OpenAI / ElevenLabs adapters | `openai-agents` voice is locked to OpenAI Realtime | `src/voice/runtime.ts`, `src/voice/adapters.ts` | `tests/voice.test.ts`, `tests/voice-adapters.test.ts` |
+| Multi-agent graph DSL (6 node kinds: `agent` / `verifier` / `router` / `parallel` / `human` / `retriever`) | `src/graph/runtime.ts`, `src/graph/types.ts` | `tests/graph.test.ts` (+ retriever) | `examples/19-graph-dsl.ts`, `28-rag-graph.ts` |
+| 4-scope guardrails (`input` / `output` / `tool_input` / `tool_output`) with `'abort' \| 'skip' \| 'continue'` policy hook | `src/guardrails/runtime.ts`, `src/engine.ts` | `tests/guardrails.test.ts` (×3) | `examples/20-guardrails.ts` |
+| Live tracing + replay + OTel SDK bridge | `src/tracing/runtime.ts`, `src/tracing/otel-shim.ts` | `tests/tracing*.test.ts` (×3) | `examples/21-tracing-replay.ts`, `27-trace-exporter.ts`, `29-otel-shim.ts` |
+| Capability tokens + sandbox primitives | `src/sandbox/runtime.ts` | `tests/sandbox.test.ts` | `examples/22-capability-tokens.ts` |
+| RAG: `RetrieverInterface` + `InMemoryRetriever` + `PgvectorRetriever` + `retriever` graph node | `src/rag/runtime.ts`, `src/rag/pgvector.ts` | `tests/rag*.test.ts` (×3) | `examples/23-rag-retriever.ts`, `28-rag-graph.ts` |
+| Framework-agnostic Generative UI stream (`UiStreamSink` / `UiStreamSource`) | `src/genui/index.ts` | `tests/genui.test.ts` | `examples/24-generative-ui.ts` |
+| Provider-agnostic voice (ASR + TTS) with Deepgram / Whisper-OpenAI / ElevenLabs stub adapters | `src/voice/runtime.ts`, `src/voice/adapters.ts` | `tests/voice*.test.ts` (×2) | `examples/25-voice.ts`, `30-voice-adapters.ts` |
 
-Run the offline examples without an API key to see each axis in action:
+Run any axis offline with no API key:
 
 ```bash
 npx tsx examples/19-graph-dsl.ts          # 6-node-kind graph
@@ -84,9 +109,80 @@ npx tsx examples/27-trace-exporter.ts     # console + JSONL exporters
 npx tsx examples/28-rag-graph.ts          # retriever node kind
 npx tsx examples/29-otel-shim.ts          # OtelTraceExporter bridge
 npx tsx examples/30-voice-adapters.ts     # Deepgram / Whisper / ElevenLabs (stub fetch)
+npx tsx examples/31-worker-thread-subagent.ts   # hard subagent isolation
 ```
 
-不需要 API key 即可运行上述 offline example，逐条验证能力。
+详细用法见 [`docs/USAGE.md`](./docs/USAGE.md)（每个能力轴：何时用 / 如何用 / 示例 / 注意事项）。
+
+---
+
+## Documentation map / 文档地图
+
+**Get started**
+
+- [`docs/USAGE.md`](./docs/USAGE.md) — feature-by-feature usage guide
+  (when, how, gotchas) for every v3 capability + worker_thread + caching
+  + structured outputs.
+- [`docs/programmatic-integration-guide.md`](./docs/programmatic-integration-guide.md)
+  — embedding patterns: services, CI, workers, internal platforms.
+
+**Upgrade & contracts**
+
+- [`docs/v1_to_v2_migration.md`](./docs/v1_to_v2_migration.md) —
+  upgrade path from 0.7.x to 1.0.x with deprecation table.
+- [`docs/v2_audit_report.md`](./docs/v2_audit_report.md) — 17-item audit
+  of 0.7.5 with reconciliation showing what's fixed in 1.0.1.
+- [`docs/v2_benchmark_report.md`](./docs/v2_benchmark_report.md) — every
+  improvement paired with a reproducible measurement.
+
+**Architecture & roadmap**
+
+- [`docs/v2_architecture.md`](./docs/v2_architecture.md) — turn-pipeline
+  target design (final pipeline lands in 1.1.x).
+- [`docs/v3_rfc.md`](./docs/v3_rfc.md) — capability layer RFC and
+  decision log for the seven axes.
+- [`docs/v2_v3_v4_upgrade_chain.md`](./docs/v2_v3_v4_upgrade_chain.md) —
+  full upgrade chain through the v4 platform layer.
+- [`docs/v2_roadmap.md`](./docs/v2_roadmap.md) — milestone breakdown
+  (M0..M7) with benchmark SLOs and breaking-change overlap windows.
+
+---
+
+## Why Clavue / 为什么选择 Clavue
+
+- **Library-first agent runtime:** embed `run()`, `query()`, or
+  `createAgent()` directly in Node.js services, CI, workers, web
+  backends, and internal platforms. No subprocess.
+- **Production controls baked in:** named toolsets, allow/deny filters,
+  hooks, koa-style middleware, permission modes, workspace path guards,
+  schema-versioned events, policy traces, quality gates, and budget
+  controls.
+- **Durable workflow contracts:** background AgentJobs, real
+  `runIssueWorkflowWithAgent` loop, `WORKFLOW.md` parsing, proof-of-work
+  artifacts, orchestration policy helpers, runtime namespaces, session
+  persistence, memory injection, self-improvement capture, retro/eval
+  loops.
+- **Provider portability:** Anthropic Messages and OpenAI-compatible
+  providers share the same tool, memory, event, and result contracts.
+  Models from third-party gateways (OpenRouter, etc.) are first-class.
+- **Honest measurements:** `npm run bench` produces reproducible
+  numbers. Every README claim points at code or a measurement, not
+  marketing.
+
+- **库优先的 agent runtime：** 直接在 Node.js 服务、CI、worker、Web 后端
+  和内部平台里嵌入 `run()` / `query()` / `createAgent()`。无子进程。
+- **生产级控制内建：** 命名工具集、allow/deny、hooks、koa 风格 middleware、
+  权限模式、workspace 路径防护、schema-versioned 事件、policy trace、
+  quality gates 与预算控制。
+- **持久化工作流契约：** background AgentJobs、真实的
+  `runIssueWorkflowWithAgent` 闭环、`WORKFLOW.md` 解析、proof-of-work
+  artifact、orchestration policy helper、runtime namespace、session
+  persistence、memory 注入、self-improvement、retro/eval。
+- **多 provider 可移植：** Anthropic Messages 与 OpenAI 兼容 provider
+  共用同一套工具、记忆、事件与结果协议；第三方 gateway（OpenRouter 等）
+  是一等公民。
+- **诚实的可量化能力：** `npm run bench` 输出可复现数字。README 里每条
+  断言都指向源码或测量结果，不是营销话术。
 
 ## Quick start / 快速开始
 
