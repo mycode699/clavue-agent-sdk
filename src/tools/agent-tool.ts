@@ -12,6 +12,7 @@ import { QueryEngine } from '../engine.js'
 import { getAllBaseTools, filterTools } from './index.js'
 import { createProvider, type ApiType } from '../providers/index.js'
 import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
+import { runWorkerThreadSubagent, NotImplementedError } from '../runtime/worker-thread-subagent.js'
 import {
   createAgentJob,
   createAgentJobBatch,
@@ -20,6 +21,8 @@ import {
   runAgentJob,
   type AgentJobCompletion,
 } from '../agent-jobs.js'
+
+export type SubagentRuntime = 'inprocess' | 'worker_thread'
 
 const agentDefinitionNamespaces = new Map<string, Record<string, AgentDefinition>>()
 
@@ -81,6 +84,33 @@ interface SubagentRunOptions {
   abortSignal?: AbortSignal
   allowedTools?: string[]
   appendSystemPrompt?: string
+  /** Runtime to execute the subagent in. Defaults to 'inprocess'. Slice D. */
+  runtime?: SubagentRuntime
+  /** When true, throw if subagent's allowedTools is not a subset of parent's availableTools. Default false (silent intersection). */
+  strictToolSubset?: boolean
+}
+
+/**
+ * Slice D phase 1 — fork an AbortController whose signal aborts when
+ * either the parent or the local controller fires. Returned `dispose`
+ * removes the parent listener so finished subagents don't pin the
+ * parent signal in the listener list.
+ */
+function linkAbortSignal(parent?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController()
+  if (!parent) {
+    return { signal: controller.signal, dispose: () => {} }
+  }
+  if (parent.aborted) {
+    controller.abort(parent.reason)
+    return { signal: controller.signal, dispose: () => {} }
+  }
+  const onParentAbort = () => controller.abort(parent.reason)
+  parent.addEventListener('abort', onParentAbort, { once: true })
+  return {
+    signal: controller.signal,
+    dispose: () => parent.removeEventListener('abort', onParentAbort),
+  }
 }
 
 function narrowAllowedTools(requested: unknown, availableTools?: string[]): string[] | undefined {
@@ -90,6 +120,18 @@ function narrowAllowedTools(requested: unknown, availableTools?: string[]): stri
   if (!availableTools) return requestedTools
   if (!requestedTools) return [...availableTools]
   return requestedTools.filter((name) => availableTools.includes(name))
+}
+
+/**
+ * Slice D phase 1 — strict subset check: every requested tool must be in
+ * the parent's availableTools. Returns the offending tool names.
+ */
+function findToolsNotInParent(requested: unknown, availableTools?: string[]): string[] {
+  if (!Array.isArray(requested) || !availableTools) return []
+  const allowed = new Set(availableTools)
+  return requested
+    .filter((name): name is string => typeof name === 'string')
+    .filter((name) => !allowed.has(name))
 }
 
 function createReplayableSubagentInput(input: any, allowedTools?: string[]): any {
@@ -111,100 +153,128 @@ export async function runAgentSubagent({
   abortSignal,
   allowedTools,
   appendSystemPrompt,
+  runtime = 'inprocess',
+  strictToolSubset = false,
 }: SubagentRunOptions): Promise<AgentJobCompletion> {
-  const agentType = input.subagent_type || 'general-purpose'
-
-  // Find agent definition
-  const registeredAgents = getRegisteredAgents(context)
-  const agentDef = registeredAgents[agentType] || BUILTIN_AGENTS[agentType]
-
-  // Determine tools for subagent
-  let tools = getAllBaseTools()
-  if (agentDef?.tools) {
-    tools = filterTools(tools, agentDef.tools)
-  }
-  if (allowedTools) {
-    tools = filterTools(tools, allowedTools)
-  }
-
-  // Remove AgentTool from subagent to prevent infinite recursion
-  tools = tools.filter(t => t.name !== 'Agent')
-
-  // Inherit provider and model from parent agent context, fall back to env vars
-  const subModel = input.model || context.model || process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6'
-  const provider = context.provider ?? createProvider(
-    (context.apiType || process.env.CLAVUE_AGENT_API_TYPE as ApiType) || 'anthropic-messages',
-    {
-      apiKey: process.env.CLAVUE_AGENT_API_KEY,
-      baseURL: process.env.CLAVUE_AGENT_BASE_URL,
-    },
-  )
-
-  const policy = context.policy ?? createDefaultToolPolicy()
-  const engine = new QueryEngine({
-    cwd: context.cwd,
-    model: subModel,
-    provider,
-    tools,
-    appendSystemPrompt: [agentDef?.prompt, appendSystemPrompt].filter(Boolean).join('\n\n') || undefined,
-    initialPrompt: input.prompt,
-    maxTurns: agentDef?.maxTurns || 10,
-    maxTokens: 16384,
-    policy,
-    autonomyMode: context.autonomyMode,
-    includePartialMessages: false,
-    agents: registeredAgents,
-    runtimeNamespace: context.runtimeNamespace,
-    abortSignal: abortSignal ?? context.abortSignal,
-  })
-
-  let finalResult = ''
-  let lastAssistantText = ''
-  const toolCalls: string[] = []
-  let trace: AgentJobCompletion['trace']
-  let evidence: AgentJobCompletion['evidence']
-  let qualityGates: AgentJobCompletion['quality_gates']
-
-  for await (const event of engine.submitMessage(input.prompt)) {
-    if (event.type === 'assistant') {
-      const fragments: string[] = []
-      for (const block of event.message.content) {
-        if (block.type === 'text' && block.text.trim()) {
-          fragments.push(block.text)
-        } else if (block.type === 'image') {
-          fragments.push(formatImageBlockForText(block))
-        }
-        if ('name' in block && typeof block.name === 'string') {
-          toolCalls.push(block.name)
-        }
-      }
-      if (fragments.length > 0) {
-        lastAssistantText = fragments.join('\n')
-      }
-    } else if (event.type === 'result') {
-      if (event.result?.trim()) finalResult = event.result
-      trace = event.trace
-      evidence = event.evidence
-      qualityGates = event.quality_gates
-      if (event.is_error) {
-        throw new Error(event.errors?.join('; ') || event.subtype)
-      }
+  // Slice D phase 1: enforce strict subset before doing any work.
+  if (strictToolSubset) {
+    const offending = findToolsNotInParent(allowedTools, context.availableTools)
+    if (offending.length > 0) {
+      throw new Error(
+        `Subagent requested tools not available to parent: ${offending.join(', ')}`,
+      )
     }
   }
 
-  const output = finalResult || lastAssistantText || '(Subagent completed with no text output)'
-  const uniqueToolCalls = [...new Set(toolCalls)]
-  const displayedTools = uniqueToolCalls.slice(0, 10)
-  const toolSummary = displayedTools.length > 0
-    ? `\n[Tools used: ${displayedTools.join(', ')}${uniqueToolCalls.length > displayedTools.length ? `, ...${uniqueToolCalls.length - displayedTools.length} more` : ''}]`
-    : ''
+  // Slice D phase 1: worker_thread runtime is a stable type signature
+  // backed by a NotImplemented stub. Real implementation lands in phase 2.
+  if (runtime === 'worker_thread') {
+    return runWorkerThreadSubagent({ input, context, abortSignal, allowedTools, appendSystemPrompt })
+  }
 
-  return {
-    output: output + toolSummary,
-    toolCalls: uniqueToolCalls,
-    trace,
-    evidence,
-    quality_gates: qualityGates,
+  // Slice D phase 1: fork the parent's abort signal so the child is
+  // aborted when the parent is, without forcing the parent to be the
+  // direct owner of the child's controller.
+  const parentSignal = abortSignal ?? context.abortSignal
+  const { signal: linkedSignal, dispose: disposeAbortLink } = linkAbortSignal(parentSignal)
+
+  try {
+    const agentType = input.subagent_type || 'general-purpose'
+
+    // Find agent definition
+    const registeredAgents = getRegisteredAgents(context)
+    const agentDef = registeredAgents[agentType] || BUILTIN_AGENTS[agentType]
+
+    // Determine tools for subagent
+    let tools = getAllBaseTools()
+    if (agentDef?.tools) {
+      tools = filterTools(tools, agentDef.tools)
+    }
+    if (allowedTools) {
+      tools = filterTools(tools, allowedTools)
+    }
+
+    // Remove AgentTool from subagent to prevent infinite recursion
+    tools = tools.filter(t => t.name !== 'Agent')
+
+    // Inherit provider and model from parent agent context, fall back to env vars
+    const subModel = input.model || context.model || process.env.CLAVUE_AGENT_MODEL || 'claude-sonnet-4-6'
+    const provider = context.provider ?? createProvider(
+      (context.apiType || process.env.CLAVUE_AGENT_API_TYPE as ApiType) || 'anthropic-messages',
+      {
+        apiKey: process.env.CLAVUE_AGENT_API_KEY,
+        baseURL: process.env.CLAVUE_AGENT_BASE_URL,
+      },
+    )
+
+    const policy = context.policy ?? createDefaultToolPolicy()
+    const engine = new QueryEngine({
+      cwd: context.cwd,
+      model: subModel,
+      provider,
+      tools,
+      appendSystemPrompt: [agentDef?.prompt, appendSystemPrompt].filter(Boolean).join('\n\n') || undefined,
+      initialPrompt: input.prompt,
+      maxTurns: agentDef?.maxTurns || 10,
+      maxTokens: 16384,
+      policy,
+      autonomyMode: context.autonomyMode,
+      includePartialMessages: false,
+      agents: registeredAgents,
+      runtimeNamespace: context.runtimeNamespace,
+      abortSignal: linkedSignal,
+    })
+
+    let finalResult = ''
+    let lastAssistantText = ''
+    const toolCalls: string[] = []
+    let trace: AgentJobCompletion['trace']
+    let evidence: AgentJobCompletion['evidence']
+    let qualityGates: AgentJobCompletion['quality_gates']
+
+    for await (const event of engine.submitMessage(input.prompt)) {
+      if (event.type === 'assistant') {
+        const fragments: string[] = []
+        for (const block of event.message.content) {
+          if (block.type === 'text' && block.text.trim()) {
+            fragments.push(block.text)
+          } else if (block.type === 'image') {
+            fragments.push(formatImageBlockForText(block))
+          }
+          if ('name' in block && typeof block.name === 'string') {
+            toolCalls.push(block.name)
+          }
+        }
+        if (fragments.length > 0) {
+          lastAssistantText = fragments.join('\n')
+        }
+      } else if (event.type === 'result') {
+        if (event.result?.trim()) finalResult = event.result
+        trace = event.trace
+        evidence = event.evidence
+        qualityGates = event.quality_gates
+        if (event.is_error) {
+          throw new Error(event.errors?.join('; ') || event.subtype)
+        }
+      }
+    }
+
+    const output = finalResult || lastAssistantText || '(Subagent completed with no text output)'
+    const uniqueToolCalls = [...new Set(toolCalls)]
+    const displayedTools = uniqueToolCalls.slice(0, 10)
+    const toolSummary = displayedTools.length > 0
+      ? `\n[Tools used: ${displayedTools.join(', ')}${uniqueToolCalls.length > displayedTools.length ? `, ...${uniqueToolCalls.length - displayedTools.length} more` : ''}]`
+      : ''
+
+    return {
+      output: output + toolSummary,
+      toolCalls: uniqueToolCalls,
+      trace,
+      evidence,
+      quality_gates: qualityGates,
+    }
+  } finally {
+    disposeAbortLink()
   }
 }
 

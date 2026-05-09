@@ -21,6 +21,25 @@ The 1.0.0 work-up continues per:
 
 ### Added
 
+- **Slice D phase 1 subagent runtime + isolation** —
+  `runAgentSubagent` accepts two new options:
+  - `runtime?: 'inprocess' | 'worker_thread'` — defaults to `'inprocess'`
+    (existing behavior). `'worker_thread'` is a stable type signature
+    backed by `runWorkerThreadSubagent`, which throws `NotImplementedError`
+    in phase 1; phase 2 will swap in the real worker_thread runtime.
+  - `strictToolSubset?: boolean` — when true, throws synchronously if the
+    subagent's `allowedTools` contains any name not in the parent's
+    `availableTools`. Default false preserves the legacy silent
+    intersection behavior.
+
+  Parent abort signals are now linked through a forked
+  `AbortController`, so a parent abort propagates to the child engine
+  while the child cannot abort the parent. The fork is disposed
+  deterministically when the subagent finishes (success or throw).
+
+  New public exports: `SubagentRuntime`, `NotImplementedError`,
+  `runWorkerThreadSubagent`. Covered by
+  `tests/subagent-isolation.test.ts` (5 tests). Zero new runtime deps.
 - **Slice I file state cache ↔ Read/Edit interlock** — `ToolContext` gains
   an optional `fileStateCache?: FileStateCache`. When provided:
   - `FileReadTool` populates the cache (content + `mtimeMs`) on every
