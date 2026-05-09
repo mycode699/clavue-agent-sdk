@@ -1013,7 +1013,7 @@ Update README usage examples only. Do not modify source files. After editing, ru
 ```
 
 ```text
-Resolve the P0-P3 todo list in docs/version-upgrade-todolist.md. Work autonomously within the repo. Run npm test before final output.
+Resolve the open P0-P3 items tracked in CHANGELOG.md "Unreleased". Work autonomously within the repo. Run npm test before final output.
 ```
 
 Avoid:

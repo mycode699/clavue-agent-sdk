@@ -29,7 +29,7 @@ M7  迁移文档 + benchmark + 1.0.0        (1 周)
 ### 交付物
 
 - `CHANGELOG.md` 起 1.0.0 frame
-- `docs/v2_breaking_changes.md` —— 写出所有计划中的破坏性变更
+- breaking changes 清单（最终落地在 `CHANGELOG.md` + [`docs/v1_to_v2_migration.md`](./v1_to_v2_migration.md)）
 - 标注 `@deprecated` 的现有 API 清单
 - v1→v2 兼容层骨架（`src/v1-compat/`）
 
@@ -46,7 +46,7 @@ M7  迁移文档 + benchmark + 1.0.0        (1 周)
 
 ### 验收
 
-- [ ] `docs/v2_breaking_changes.md` review by maintainer
+- [ ] breaking changes 清单 review by maintainer（落地在 `CHANGELOG.md` + [`docs/v1_to_v2_migration.md`](./v1_to_v2_migration.md)）
 - [ ] 兼容层目录结构创建并加 README
 - [ ] 0.8.0-rc.0 发布到 npm dist-tag `next`
 
@@ -248,7 +248,7 @@ M7  迁移文档 + benchmark + 1.0.0        (1 周)
 
 ### 子任务
 
-1. **迁移指南**: `docs/v1-to-v2-migration.md`
+1. **迁移指南**: [`docs/v1_to_v2_migration.md`](./v1_to_v2_migration.md)
 2. **基准报告**: `docs/v2_benchmark_report.md`（v1 vs v2 实测数字）
 3. **README 重写**（拆成主题页）
 4. **examples/web 升级**（用流式 + 中间件 demo）
