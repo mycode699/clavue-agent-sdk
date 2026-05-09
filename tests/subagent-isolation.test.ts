@@ -20,16 +20,30 @@ function makeFailingProvider(message = 'no provider configured for test'): LLMPr
   }
 }
 
-test('Slice D: runtime="worker_thread" throws NotImplementedError but type signature is stable', async () => {
-  const context: ToolContext = { cwd: process.cwd() }
-  await assert.rejects(
-    () => runAgentSubagent({
-      input: { prompt: 'noop', description: 'noop' },
-      context,
-      runtime: 'worker_thread',
-    }),
-    (err: Error) => err instanceof NotImplementedError && /worker_thread/i.test(err.message),
+test('Slice D phase 2: runtime="worker_thread" spawns a worker (no longer the NotImplemented stub)', async () => {
+  // Phase 2 replaces the stub with a real worker_thread runtime. The
+  // stub error class (NotImplementedError) is retained as a public export
+  // for backwards compat, but the runtime no longer throws it.
+  // We can't run a full subagent here without a live LLM provider, so we
+  // verify the worker is reachable via a stub entry script that posts a
+  // synthetic completion. That proves the parent-side wiring (spawn +
+  // message + terminate) without booting the real Agent.
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const stubEntry = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'worker-thread-stub-entry.mjs',
   )
+
+  const { runWorkerThreadSubagent } = await import('../src/runtime/worker-thread-subagent.ts')
+  const completion = await runWorkerThreadSubagent({
+    input: { prompt: 'noop', description: 'noop' },
+    context: { cwd: process.cwd() },
+    workerEntryPathOverride: stubEntry,
+    timeoutMs: 5000,
+  })
+  assert.equal(completion.output, 'stub-completion')
 })
 
 test('Slice D: strictToolSubset rejects subagent tools not in parent availableTools', async () => {
@@ -75,13 +89,11 @@ test('Slice D: strictToolSubset accepts a true subset (then fails later — that
   assert.match(String((err as Error).message), /synthetic engine failure/i)
 })
 
-test('Slice D: parent abort signal propagates to subagent (worker_thread path observes parent.aborted via stub)', async () => {
-  // We cannot directly observe the linked signal inside runAgentSubagent
-  // without an engine. But we can verify that when the parent signal is
-  // already aborted before invocation and runtime is worker_thread, the
-  // stub still throws NotImplemented (i.e. the runtime dispatch happens
-  // before the signal is consumed). This pins the contract: the runtime
-  // branch is checked first, then signals are linked for inprocess.
+test('Slice D phase 2: pre-existing parent abort rejects worker_thread with "Aborted before ... started"', async () => {
+  // Once phase 2 landed, an already-aborted parent signal short-circuits
+  // before any Worker is spawned. The rejection message is the explicit
+  // pre-flight sentinel — not NotImplementedError, which only applied to
+  // the phase 1 stub.
   const controller = new AbortController()
   controller.abort(new Error('cancelled'))
   const context: ToolContext = { cwd: process.cwd(), abortSignal: controller.signal }
@@ -91,7 +103,7 @@ test('Slice D: parent abort signal propagates to subagent (worker_thread path ob
       context,
       runtime: 'worker_thread',
     }),
-    NotImplementedError,
+    /aborted before worker_thread subagent started/i,
   )
 })
 
