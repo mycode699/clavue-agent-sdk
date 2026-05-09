@@ -92,6 +92,11 @@ import {
   buildToolResultsUserMessage,
 } from './engine/tool-results.js'
 import { executeDispatchPlan } from './engine/dispatch-executor.js'
+import {
+  applyGuardrailToolPhase,
+  buildErrorToolResult,
+  ingestToolSideEffects,
+} from './engine/single-tool-helpers.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -598,13 +603,6 @@ export class QueryEngine {
   }
 
   /**
-   * Format violation messages for the denied-ToolResult content.
-   */
-  private formatViolations(evaluation: GuardrailEvaluation): string {
-    return evaluation.violations.map((v) => v.message ?? v.guardrail).join('; ')
-  }
-
-  /**
    * Resolve the tool-scope guardrail action for a failed evaluation (RFC D2).
    * Default = `'skip'`. Callback returns one of `'abort' | 'skip' | 'continue'`;
    * throwing → `'abort'` (mirrors graph `onViolation`).
@@ -642,25 +640,13 @@ export class QueryEngine {
 
     try {
       if (!tool) {
-        result = {
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: `Error: Unknown tool "${block.name}"`,
-          is_error: true,
-          tool_name: block.name,
-        }
+        result = buildErrorToolResult(block, `Error: Unknown tool "${block.name}"`)
         return result
       }
 
       // Check enabled
       if (tool.isEnabled && !tool.isEnabled(context)) {
-        result = {
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: `Error: Tool "${block.name}" is not enabled`,
-          is_error: true,
-          tool_name: block.name,
-        }
+        result = buildErrorToolResult(block, `Error: Tool "${block.name}" is not enabled`)
         return result
       }
 
@@ -681,13 +667,7 @@ export class QueryEngine {
             input_summary: summarizeToolInput(block.input),
             input_rewritten: false,
           })
-          result = {
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: reason,
-            is_error: true,
-            tool_name: block.name,
-          }
+          result = buildErrorToolResult(block, reason)
           return result
         }
         this.recordPolicyDecision({
@@ -717,13 +697,7 @@ export class QueryEngine {
           input_summary: summarizeToolInput(block.input),
           input_rewritten: false,
         })
-        result = {
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: reason,
-          is_error: true,
-          tool_name: block.name,
-        }
+        result = buildErrorToolResult(block, reason)
         return result
       }
 
@@ -746,13 +720,7 @@ export class QueryEngine {
           input_summary: summarizeToolInput(block.input),
           input_rewritten: false,
         })
-        result = {
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: msg,
-          is_error: true,
-          tool_name: block.name,
-        }
+        result = buildErrorToolResult(block, msg)
         return result
       }
 
@@ -773,28 +741,17 @@ export class QueryEngine {
               // Telemetry must never break a run.
             }
           }
-          if (!evalIn.passed) {
-            const action = await this.resolveToolGuardrailAction(evalIn, block.name, 'request')
-            if (action === 'abort') {
-              throw new GuardrailAbortError(
-                `Guardrail aborted tool input for "${block.name}": ${this.formatViolations(evalIn)}`,
-                evalIn,
-                block.name,
-                'request',
-              )
-            }
-            if (action === 'skip') {
-              result = {
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: `Guardrail denied tool input: ${this.formatViolations(evalIn)}`,
-                is_error: true,
-                tool_name: block.name,
-              }
-              return result
-            }
-            // 'continue' → fall through, call the tool anyway (audit-only).
+          const outcome = await applyGuardrailToolPhase({
+            evaluation: evalIn,
+            block,
+            phase: 'request',
+            resolveAction: (e, n, p) => this.resolveToolGuardrailAction(e, n, p),
+          })
+          if (outcome.kind === 'skip') {
+            result = outcome.result
+            return result
           }
+          // 'pass' or 'continue' → fall through.
         }
 
         const toolResult = await tool.call(block.input, context)
@@ -813,58 +770,34 @@ export class QueryEngine {
               // Telemetry must never break a run.
             }
           }
-          if (!evalOut.passed) {
-            const action = await this.resolveToolGuardrailAction(evalOut, block.name, 'response')
-            if (action === 'abort') {
-              throw new GuardrailAbortError(
-                `Guardrail aborted tool output for "${block.name}": ${this.formatViolations(evalOut)}`,
-                evalOut,
-                block.name,
-                'response',
-              )
-            }
-            if (action === 'skip') {
-              result = {
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: `Guardrail denied tool output: ${this.formatViolations(evalOut)}`,
-                is_error: true,
-                tool_name: block.name,
-              }
-              return result
-            }
-            // 'continue' → fall through, pass original result through (audit-only).
+          const outcome = await applyGuardrailToolPhase({
+            evaluation: evalOut,
+            block,
+            phase: 'response',
+            resolveAction: (e, n, p) => this.resolveToolGuardrailAction(e, n, p),
+          })
+          if (outcome.kind === 'skip') {
+            result = outcome.result
+            return result
           }
+          // 'pass' or 'continue' → fall through.
         }
 
-        if (toolResult.evidence) {
-          this.evidence.push(...toolResult.evidence)
+        // Slice K5: side-effect ingestion (evidence/quality_gates/skill).
+        const skillOutcome = ingestToolSideEffects(
+          toolResult,
+          this.evidence,
+          this.qualityGates,
+          parseSkillActivation,
+          tool.name,
+        )
+        if (skillOutcome.requiredGateNames.length > 0) {
+          this.requiredSkillQualityGates = [
+            ...new Set([...this.requiredSkillQualityGates, ...skillOutcome.requiredGateNames]),
+          ]
         }
-        if (toolResult.quality_gates) {
-          this.qualityGates.push(...toolResult.quality_gates)
-        }
-
-        const activation = tool.name === 'Skill' ? parseSkillActivation(toolResult) : undefined
-        if (activation) {
-          // Required quality gates from the activation are part of this turn's
-          // contract whether the skill ran inline or forked into a subagent.
-          // Without this, forked skills could declare gates that the parent
-          // turn never enforces.
-          const requiredGateNames = activation.qualityGates
-            ?.filter((gate) => gate.required !== false)
-            .map((gate) => gate.name) ?? []
-          if (requiredGateNames.length > 0) {
-            this.requiredSkillQualityGates = [
-              ...new Set([...this.requiredSkillQualityGates, ...requiredGateNames]),
-            ]
-          }
-
-          if (activation.status === 'inline') {
-            this.activeSkill = activation
-          } else if (activation.status === 'forked') {
-            this.forkedSkills.push(activation)
-          }
-        }
+        if (skillOutcome.activeSkill) this.activeSkill = skillOutcome.activeSkill
+        if (skillOutcome.forked) this.forkedSkills.push(skillOutcome.forked)
 
         // Hook: PostToolUse
         await this.executeHooks('PostToolUse', {
@@ -892,13 +825,7 @@ export class QueryEngine {
           error: err.message,
         })
 
-        result = {
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: `Tool execution error: ${err.message}`,
-          is_error: true,
-          tool_name: block.name,
-        }
+        result = buildErrorToolResult(block, `Tool execution error: ${err.message}`)
         return result
       }
     } finally {
