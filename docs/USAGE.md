@@ -45,6 +45,7 @@
 18. [Quality Gates + Proof-of-Work](#18-quality-gates--proof-of-work)
 19. [Memory（结构化 + 向量检索）](#19-memory)
 20. [Schema Versions 与 Trace](#20-schema-versions-与-trace)
+21. [List caches & invalidation hatches](#21-list-caches--invalidation-hatches)
 
 ---
 
@@ -933,6 +934,51 @@ import {
 
 - 在你的 trace consumer / artifact storage 里硬编码版本检查
 - 升级 SDK 后比对，schema bump 就跟随升级 reader
+
+---
+
+## 21. List caches & invalidation hatches
+
+**是什么**：四个 list 类型的持久化读路径都有 in-memory cache，写路径自动 invalidate，外部写者用 `invalidateXxxCache(dir?)` 公开导出。详见 [`tier-a-summary.md`](./tier-a-summary.md)。
+
+| Layer | List API | Public escape hatch |
+|---|---|---|
+| Memory | `listMemories` / `queryMemoryMatches` | `invalidateMemoryCache(dir?)` |
+| AgentJobs | `listAgentJobs` / `summarizeAgentJobs` | `invalidateAgentJobsCache(dir?)` |
+| Sessions | `listSessions` | `invalidateSessionCache(dir?)` |
+| IssueWorkflow runs | `listIssueWorkflowRuns` | `invalidateIssueWorkflowRunsCache(dir?)` |
+
+**何时用**
+
+- ✅ 默认零成本——SDK 写路径会自动 invalidate
+- ✅ Sibling 进程也写同一 dir → 调对应 hatch 同步 view
+- ✅ 维护脚本批量 raw-write 后调 `invalidateXxxCache()`（无 arg = 清所有 dir）
+
+**怎么用**
+
+```ts
+import {
+  invalidateMemoryCache,
+  invalidateAgentJobsCache,
+  invalidateSessionCache,
+  invalidateIssueWorkflowRunsCache,
+} from 'clavue-agent-sdk'
+
+// Sibling 进程对 memory dir 做了 raw 写：
+invalidateMemoryCache('/path/to/.clavue-agent-sdk/memory')
+
+// 清所有进程内 cache（测试 setup / 全局热重载）：
+invalidateMemoryCache()
+invalidateAgentJobsCache()
+invalidateSessionCache()
+invalidateIssueWorkflowRunsCache()
+```
+
+**要小心什么**
+
+- Cache 是 module-scoped，跨 worker_thread 不共享——每个 V8 isolate 独立
+- 返回值通过 `slice()` / `map(clone)` 隔离，caller 可以放心 mutate
+- AgentJobs 的 stale-refresh 仍每次跑，cache 只 saves disk I/O 不 saves status check
 
 ---
 

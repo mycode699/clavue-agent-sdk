@@ -13,8 +13,12 @@ import type { AgentAutonomyMode } from './runtime.js'
 export interface QueryEngineConfig {
   cwd: string
   model: string
-  /** Optional model to try once after the primary model fails. */
-  fallbackModel?: string
+  /**
+   * Optional fallback model(s) tried in order after the primary model
+   * fails with a retryable error. Single string = one attempt; array =
+   * multi-provider chain (Tier A #3).
+   */
+  fallbackModel?: string | string[]
   /** LLM provider instance (created from apiType) */
   provider: import('../providers/types.js').LLMProvider
   tools: ToolDefinition[]
@@ -24,6 +28,12 @@ export interface QueryEngineConfig {
   initialPrompt?: string
   maxTurns: number
   maxToolConcurrency?: number
+  /**
+   * Tier A #2 opt-in. See `AgentOptions.adaptiveToolConcurrency`. The
+   * engine instantiates an AIMD controller when this is set; otherwise it
+   * uses a static no-op pass-through.
+   */
+  adaptiveToolConcurrency?: boolean | { min?: number; max?: number; initial?: number }
   maxBudgetUsd?: number
   maxTokens: number
   thinking?: ThinkingConfig

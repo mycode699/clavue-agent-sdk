@@ -6,3 +6,9 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Ephemeral retro / coordination state — not committed.
+.clavue/retro/
+.clavue/coordination/
+.clavue/goals/
+.clavue/runs/

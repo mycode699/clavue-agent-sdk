@@ -8,10 +8,17 @@
  * The single-tool executor is injected so the engine keeps ownership of
  * the `executeSingleTool` method (which touches policy, hooks, guardrails,
  * skill activation, etc.). This helper only does batching + bookkeeping.
+ *
+ * Tier A #2: when an optional `concurrencyController` is supplied, the
+ * concurrent-chunk size is sourced from `controller.current()` (can shrink
+ * / grow between chunks) and `controller.onBatchComplete()` is notified
+ * after each chunk. The static path (no controller) keeps the original
+ * behavior byte-identical.
  */
 
 import type { AgentRunTrace, AgentRunToolTrace, ToolContext, ToolDefinition, ToolResult } from '../types.js'
 import type { ToolDispatchBatch } from './tool-helpers.js'
+import type { ConcurrencyController } from './concurrency-controller.js'
 
 export type ToolResultWithMeta = ToolResult & { tool_name?: string }
 
@@ -28,6 +35,8 @@ export interface ExecuteDispatchPlanInput<TBlock> {
   trace: AgentRunTrace
   maxConcurrency: number
   executeSingle: ExecuteSingleToolFn<TBlock>
+  /** Optional Tier A #2 adaptive controller. Absent = static maxConcurrency. */
+  concurrencyController?: ConcurrencyController
 }
 
 /**
@@ -38,7 +47,7 @@ export interface ExecuteDispatchPlanInput<TBlock> {
 export async function executeDispatchPlan<TBlock>(
   input: ExecuteDispatchPlanInput<TBlock>,
 ): Promise<ToolResultWithMeta[]> {
-  const { plan, context, trace, maxConcurrency, executeSingle } = input
+  const { plan, context, trace, maxConcurrency, executeSingle, concurrencyController } = input
   const results: ToolResultWithMeta[] = []
 
   for (const batch of plan) {
@@ -51,9 +60,12 @@ export async function executeDispatchPlan<TBlock>(
       continue
     }
 
-    // Concurrent batch: split into Promise.all chunks bounded by maxConcurrency.
-    for (let i = 0; i < batch.entries.length; i += maxConcurrency) {
-      const slice = batch.entries.slice(i, i + maxConcurrency)
+    // Concurrent batch: split into Promise.all chunks bounded by the current
+    // adaptive limit (or `maxConcurrency` when no controller is wired).
+    let i = 0
+    while (i < batch.entries.length) {
+      const chunkSize = concurrencyController?.current() ?? maxConcurrency
+      const slice = batch.entries.slice(i, i + chunkSize)
       trace.concurrency_batches.push(slice.length)
       const batchTraces: AgentRunToolTrace[] = []
       const batchResults = await Promise.all(
@@ -65,6 +77,15 @@ export async function executeDispatchPlan<TBlock>(
       )
       trace.tools.push(...batchTraces)
       results.push(...batchResults)
+
+      // Notify the controller AFTER we see the results so the next chunk can
+      // react. A chunk counts as errored if any result is `is_error: true`.
+      if (concurrencyController) {
+        const errors = batchResults.reduce((n, r) => n + (r.is_error ? 1 : 0), 0)
+        concurrencyController.onBatchComplete({ size: slice.length, errors })
+      }
+
+      i += slice.length
     }
   }
 

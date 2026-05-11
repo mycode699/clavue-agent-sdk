@@ -78,6 +78,59 @@ async function ensureMemoryDir(options?: MemoryStoreOptions): Promise<string> {
   return dir
 }
 
+// ---------------------------------------------------------------------------
+// In-memory list cache (Tier A #7)
+// ---------------------------------------------------------------------------
+//
+// `listMemories()` is on the hot path: it's invoked by `queryMemoryMatches`
+// (every retrieval), `getMemoryStoreInfo`, and consolidation. With N
+// entries on disk it does N file reads + JSON.parses on every call.
+//
+// We keep a module-scoped cache keyed by absolute dir path. All write paths
+// (`saveMemory`, `deleteMemory`) invalidate the entry for their dir, so a
+// single host process sees a consistent view. External writers must call
+// `invalidateMemoryCache()` (exported) — this is the documented escape
+// hatch and matches the same trade-off `git status` makes with its index.
+//
+// The cache stores already-sorted (newest-first) entries so repeat listers
+// don't pay the sort either. Entries are returned via `slice()` so callers
+// can safely mutate the returned array.
+
+const listCache = new Map<string, MemoryEntry[]>()
+
+/**
+ * Drop the cached `listMemories()` result for a directory (or all
+ * directories when `dir` is omitted). Use after writing memory files
+ * outside this module — e.g. an external consolidation script or a
+ * sibling process.
+ */
+export function invalidateMemoryCache(dir?: string): void {
+  if (dir === undefined) {
+    listCache.clear()
+    return
+  }
+  listCache.delete(dir)
+}
+
+async function loadAllFromDisk(dir: string): Promise<MemoryEntry[]> {
+  const entries = await readdir(dir)
+  const memories = await Promise.all(
+    entries
+      .filter((entry) => entry.endsWith('.json'))
+      .map(async (entry) => {
+        try {
+          const content = await readFile(join(dir, entry), 'utf-8')
+          return JSON.parse(content) as MemoryEntry
+        } catch {
+          return null
+        }
+      }),
+  )
+  return memories
+    .filter((entry): entry is MemoryEntry => entry !== null)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
 function normalizeArray<T>(value?: T | T[]): T[] | undefined {
   if (value === undefined) return undefined
   return Array.isArray(value) ? value : [value]
@@ -185,6 +238,7 @@ export async function saveMemory(
   }
 
   await writeFile(getMemoryPath(entry.id, options), JSON.stringify(entry, null, 2), 'utf-8')
+  invalidateMemoryCache(getMemoryDir(options))
   return entry
 }
 
@@ -203,23 +257,11 @@ export async function loadMemory(
 export async function listMemories(options?: MemoryStoreOptions): Promise<MemoryEntry[]> {
   try {
     const dir = await ensureMemoryDir(options)
-    const entries = await readdir(dir)
-    const memories = await Promise.all(
-      entries
-        .filter((entry) => entry.endsWith('.json'))
-        .map(async (entry) => {
-          try {
-            const content = await readFile(join(dir, entry), 'utf-8')
-            return JSON.parse(content) as MemoryEntry
-          } catch {
-            return null
-          }
-        }),
-    )
-
-    return memories
-      .filter((entry): entry is MemoryEntry => entry !== null)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    const cached = listCache.get(dir)
+    if (cached !== undefined) return cached.slice()
+    const fresh = await loadAllFromDisk(dir)
+    listCache.set(dir, fresh)
+    return fresh.slice()
   } catch {
     return []
   }
@@ -307,6 +349,7 @@ export async function queryMemories(
 export async function deleteMemory(id: string, options?: MemoryStoreOptions): Promise<boolean> {
   try {
     await rm(getMemoryPath(id, options), { force: true })
+    invalidateMemoryCache(getMemoryDir(options))
     return true
   } catch {
     return false

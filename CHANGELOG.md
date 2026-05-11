@@ -11,6 +11,104 @@ explicitly when they bump.
 
 ---
 
+## [1.0.3] — 2026-05-11
+
+Tier A 性能落地 + Tier B list-cache 家族扩展。**默认行为字节级不变**——所有
+Tier A 项都是 opt-in 或纯 additive；list cache 全部 transparent + 通过公开
+`invalidateXxxCache(dir?)` 提供逃生口。无 `*_SCHEMA_VERSION` bump（保留给
+1.1.0）。测试 645 → **698 / 698** passing；`npm run build` clean。
+
+### Tier A — Performance & resilience
+
+完整清单见 [`docs/tier-a-summary.md`](./docs/tier-a-summary.md)。
+
+- **#1 Turn-scoped tool result cache** *(always-on, transparent)*. Read-only
+  + concurrency-safe 工具在同一 turn 内被相同参数调用第二次，直接复用首次
+  结果。Cache key = tool name + canonical-stringified `tool_input`；turn
+  边界自动清空。Trace 增量字段 `AgentRunTrace.tool_cache?: { hits, misses }`
+  （无 cacheable 命中时整字段省略）。Files: `src/engine/tool-result-cache.ts`。
+  Tests: `tests/engine-tool-cache.test.ts`。
+- **#2 Adaptive tool concurrency (AIMD)** *(opt-in)*. 一个 batch 出错时
+  并发上限减半，干净批次 +1，clamp 在 `[min, max]`。Static path 完全
+  no-op，trace 不写新字段，旧行为字节级不变。**新公开 API**:
+  `AgentOptions.adaptiveToolConcurrency: boolean | { min?, max?, initial? }`
+  与 `QueryEngineConfig.adaptiveToolConcurrency`；Trace
+  `AgentRunTrace.tool_concurrency_adaptive?: AgentRunAdaptiveConcurrencyTrace`。
+  Files: `src/engine/concurrency-controller.ts`, `src/engine/dispatch-executor.ts`。
+- **#3 Multi-provider fallback chain**. `fallbackModel` 现在接受
+  `string | string[]`，按顺序遍历直到一个成功或链耗尽。Single-string
+  保持原语义。**API**:
+  `AgentOptions.fallbackModel`、`QueryEngineConfig.fallbackModel`。
+  复用既有 `retry_count` trace 字段，不新增。Files: `src/engine/resilient-call.ts`。
+- **#4 OpenAI `prompt_cache_key`** *(always-on, provider-internal)*. 从
+  system prompt + tools fingerprint 派生稳定 key 透传给 OpenAI Responses
+  / Chat Completions。无 prefix 时省略。无新 trace。Files: `src/providers/openai.ts`。
+- **#7 `listMemories` in-memory cache** *(always-on, transparent)*. 缓存
+  按 absolute dir path 索引，`saveMemory` / `deleteMemory` 透过公共 API
+  自动 invalidate；返回 `slice()` 副本，调用方 mutation 不会污染缓存。
+  **新公开 API**: `invalidateMemoryCache(dir?: string): void`。
+  Files: `src/memory.ts`、`src/memory/consolidate.ts`。
+- **#8 Memory consolidation** *(opt-in, manual maintenance)*. 按 identity
+  key (type + scope + normalized title + repo_path + session_id) 合并近重
+  memories，单条 canonical 保留最新状态，其它独有 content lines 追加。
+  **新公开 API**: `consolidateMemories(options?)`、
+  `findDuplicateMemories(options?)`、`ConsolidateMemoriesOptions`、
+  `ConsolidateMemoriesReport`。可选 embedder + `similarityThreshold`
+  门控拆分。Files: `src/memory/consolidate.ts`。
+
+### Tier B — List-cache family
+
+与 `listMemories` 同形状的三个额外缓存层，全部 transparent，全部带
+`invalidateXxxCache(dir?)` 公开逃生口。
+
+- **`listAgentJobs` cache**. 缓存按 namespace dir 索引；`createAgentJob`/
+  `runAgentJob`/`replayAgentJob`/`stopAgentJob`/`clearAgentJobs` 通过
+  `writeAgentJobFile` 或 `rm` 透传 invalidation。Stale-refresh 逻辑保留
+  在 cache 之外，状态迁移会写穿 `saveAgentJob` 自动失效缓存。
+  **新公开 API**: `invalidateAgentJobsCache(dir?: string): void`。
+  Files: `src/agent-jobs.ts`. Tests: `tests/agent-jobs-list-cache.test.ts`。
+- **`listSessions` cache**. 缓存 + 并行化每个 session 的 `loadSession`
+  读盘（此前是 serial）。`saveSession`/`deleteSession` 自动失效。
+  **新公开 API**: `invalidateSessionCache(dir?: string): void`。
+  Files: `src/session.ts`. Tests: `tests/session-list-cache.test.ts`。
+- **`listIssueWorkflowRuns` cache**. 所有 create/stop/update 都从单一
+  `writeIssueWorkflowRun` 漏斗写穿。**新公开 API**:
+  `invalidateIssueWorkflowRunsCache(dir?: string): void`。
+  Files: `src/issue-workflow.ts`. Tests: `tests/issue-workflow-list-cache.test.ts`。
+
+### Documentation
+
+- **`docs/tier-a-summary.md` (NEW)** — Tier A 6 项 + Tier B 3 项的 single
+  source of truth：每项列 goal/files/默认行为/公开 API/trace 表面/验证用例。
+- **`docs/USAGE.md` §21 (NEW section)** — 四个 list cache 的 `invalidate*`
+  公开 API 用法（何时手动调用、跨进程并发写入注意事项）。
+- **`README.md` — Key internals** — 新增 4 行 list cache + Tier A 适配
+  指引；docs 索引补上 `tier-a-summary.md`。
+- **`examples/32-tier-a-performance.ts` (NEW)** — 一个 offline-runnable
+  示例同时跑通 #1 / #2 / #3 / #8（无需 API key），已纳入
+  `npm run test:examples:offline`。
+- **`.gitignore`** — 新增 `.clavue/{retro,coordination,goals,runs}/`，
+  避免临时 retro/coordination 状态污染 working tree。
+
+### Tests / build / bench
+
+- `npm run test`: **698 / 698** passing。增量轨迹 645 → 652 (+#3) →
+  665 (+#2) → 673 (+#8) → 679 (+#7) → 686 (+agent-jobs) → 692 (+session)
+  → 698 (+issue-workflow)。
+- `npm run build` clean (`tsc --strict`)。
+- `npm run bench:engine`: `src/engine.ts` 1537 → **1041** lines (-32.3%)。
+- `npm run bench:worker`: spawn p50 = 60.2 ms; abort-resolve p95 = 0.2 ms;
+  pre-flight abort p95 = 0.0 ms。
+
+### Compatibility
+
+- 无 `*_SCHEMA_VERSION` 改动。
+- 所有新公开 API 都是 **additive**（新字段、新导出、新方法）。
+- Tier A #2 / #3 / #8 必须 opt-in 才会改变默认 trace；其余四项 trace 表面
+  与 1.0.2 一致（要么不写新字段，要么字段在无活动时省略）。
+
+---
+
 ## [1.0.2] — 2026-05-09
 
 Documentation-only patch. No source changes; same 625/625 tests, same

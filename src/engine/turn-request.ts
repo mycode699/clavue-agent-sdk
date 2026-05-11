@@ -33,7 +33,7 @@ export interface BuildTurnRequestInput {
     abortSignal?: AbortSignal
     outputSchema?: OutputSchema
     jsonSchema?: unknown
-    fallbackModel?: string
+    fallbackModel?: string | string[]
     includePartialMessages?: boolean
     tools: ToolDefinition[]
   }
@@ -53,8 +53,8 @@ export interface BuildTurnRequestInput {
 export interface BuiltTurnRequest {
   /** Final model id used for this turn (skill-overridden if applicable). */
   requestModel: string
-  /** Optional fallback model for retry-after-failure. */
-  fallbackModel?: string
+  /** Optional fallback model(s) for retry-after-failure. */
+  fallbackModel?: string | string[]
   /** Provider-shaped tool list this turn is allowed to call. */
   providerTools: NormalizedTool[]
   /**
@@ -79,9 +79,9 @@ export function buildTurnRequest(input: BuildTurnRequestInput): BuiltTurnRequest
 
   // A separate fallback model is only meaningful if it differs from the model
   // we'll actually try first (otherwise the "fallback" is just the same call).
-  const fallbackModel = config.fallbackModel && config.fallbackModel !== requestModel
-    ? config.fallbackModel
-    : undefined
+  // For chains, drop any entry equal to the primary so we don't burn an attempt
+  // on the same model.
+  const fallbackModel = normalizeFallback(config.fallbackModel, requestModel)
 
   const wantStreaming = config.includePartialMessages === true
   const streamCallbacks = wantStreaming
@@ -121,4 +121,17 @@ export function buildTurnRequest(input: BuildTurnRequestInput): BuiltTurnRequest
   }
 
   return { requestModel, fallbackModel, providerTools, createModelMessage }
+}
+
+function normalizeFallback(
+  input: string | string[] | undefined,
+  primary: string,
+): string | string[] | undefined {
+  if (!input) return undefined
+  if (Array.isArray(input)) {
+    const filtered = input.filter((m) => typeof m === 'string' && m.length > 0 && m !== primary)
+    if (filtered.length === 0) return undefined
+    return filtered.length === 1 ? filtered[0] : filtered
+  }
+  return input !== primary ? input : undefined
 }

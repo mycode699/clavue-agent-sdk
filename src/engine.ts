@@ -93,10 +93,15 @@ import {
 } from './engine/tool-results.js'
 import { executeDispatchPlan } from './engine/dispatch-executor.js'
 import {
+  buildConcurrencyController,
+  type ConcurrencyController,
+} from './engine/concurrency-controller.js'
+import {
   applyGuardrailToolPhase,
   buildErrorToolResult,
   ingestToolSideEffects,
 } from './engine/single-tool-helpers.js'
+import { ToolResultCache } from './engine/tool-result-cache.js'
 
 // ============================================================================
 // ToolUseBlock (internal type for extracted tool_use blocks)
@@ -124,6 +129,7 @@ export class QueryEngine {
   private turnCount = 0
   private trace: AgentRunTrace
   private readonly maxToolConcurrency: number
+  private readonly concurrencyController: ConcurrencyController
   private compactState: AutoCompactState
   private sessionId: string
   private apiTimeMs = 0
@@ -138,6 +144,10 @@ export class QueryEngine {
     this.config = { ...config, runtimeNamespace: config.runtimeNamespace ?? config.sessionId }
     const toolConcurrency = resolveMaxToolConcurrency(config.maxToolConcurrency)
     this.maxToolConcurrency = toolConcurrency.limit
+    this.concurrencyController = buildConcurrencyController(
+      config.adaptiveToolConcurrency,
+      toolConcurrency.limit,
+    )
     this.trace = {
       schema_version: AGENT_RUN_TRACE_SCHEMA_VERSION,
       turns: [],
@@ -589,17 +599,45 @@ export class QueryEngine {
     // Slice H — order-preserving concurrent grouping (pure helper).
     const plan = planToolDispatch(toolUseBlocks, (name) => toolsByName.get(name))
 
+    // Tier A #1 — turn-scoped tool result cache. Built fresh per turn so
+    // two model-emitted tool_use blocks that ask for the same read with
+    // the same input share one `tool.call()`. Cache is only consulted for
+    // tools that declare `isReadOnly() && isConcurrencySafe()`.
+    const toolCache = new ToolResultCache()
+
     // Slice K4c — batch execution + trace bookkeeping (pure helper, the
     // single-tool runner is injected so policy/hook/guardrail logic stays
     // local to the engine).
-    return executeDispatchPlan<ToolUseBlock>({
+    const results = await executeDispatchPlan<ToolUseBlock>({
       plan,
       context,
       trace: this.trace,
       maxConcurrency,
+      concurrencyController: this.concurrencyController,
       executeSingle: (block, tool, ctx, recordTrace) =>
-        this.executeSingleTool(block, tool, ctx, recordTrace),
+        this.executeSingleTool(block, tool, ctx, recordTrace, toolCache),
     })
+
+    // Merge per-turn cache counters into the run-level aggregate. Only
+    // surface the trace field when at least one lookup happened (keeps
+    // traces that never saw a tool call unchanged).
+    const { hits, misses } = toolCache.stats()
+    if (hits > 0 || misses > 0) {
+      const prev = this.trace.tool_cache
+      this.trace.tool_cache = prev
+        ? { hits: prev.hits + hits, misses: prev.misses + misses }
+        : { hits, misses }
+    }
+
+    // Tier A #2 — refresh adaptive concurrency snapshot after every turn.
+    // The static no-op controller returns `undefined`, so default-mode
+    // traces stay byte-identical with prior versions.
+    const adaptiveSnapshot = this.concurrencyController.snapshot()
+    if (adaptiveSnapshot) {
+      this.trace.tool_concurrency_adaptive = adaptiveSnapshot
+    }
+
+    return results
   }
 
   /**
@@ -634,6 +672,7 @@ export class QueryEngine {
     tool: ToolDefinition | undefined,
     context: ToolContext,
     recordTrace: ((trace: AgentRunToolTrace) => void) | true = true,
+    toolCache?: ToolResultCache,
   ): Promise<ToolResult & { tool_name?: string }> {
     const start = performance.now()
     let result: ToolResult & { tool_name?: string } | undefined
@@ -754,7 +793,37 @@ export class QueryEngine {
           // 'pass' or 'continue' → fall through.
         }
 
-        const toolResult = await tool.call(block.input, context)
+        // Tier A #1 — turn-scoped tool result cache. Only consult the
+        // cache for tools that declare `isReadOnly() && isConcurrencySafe()`
+        // — everything else (writes, side-effecting tools, host plugins
+        // without those hints) bypasses entirely. `getOrCompute` dedupes
+        // both sequential and concurrent duplicate calls; on a hit we
+        // skip downstream side effects (PostToolUse hook, evidence
+        // ingestion, skill activation) — those already ran when the
+        // result was first produced, and re-firing them per duplicate
+        // tool_use would double-count evidence/quality_gates.
+        const cacheable = tool.isReadOnly?.() === true && tool.isConcurrencySafe?.() === true
+        let toolResult: ToolResult
+        let fromCache = false
+        if (cacheable && toolCache) {
+          const outcome = await toolCache.getOrCompute(
+            block.name,
+            block.input,
+            () => tool.call(block.input, context),
+          )
+          toolResult = outcome.result
+          fromCache = outcome.cached
+        } else {
+          toolResult = await tool.call(block.input, context)
+        }
+
+        if (fromCache) {
+          // Cached result still needs to be echoed to the model with this
+          // tool_use_id, but evidence / hooks / guardrail_output already
+          // ran for the producing call.
+          result = { ...toolResult, tool_use_id: block.id, tool_name: block.name }
+          return result
+        }
 
         // v3.4 Guardrails — tool_output scope
         if (this.config.guardrails) {
@@ -959,6 +1028,13 @@ export class QueryEngine {
         if (entry.store) memoryEntry.store = { ...entry.store }
         return memoryEntry
       }),
+      tool_cache: this.trace.tool_cache ? { ...this.trace.tool_cache } : undefined,
+      tool_concurrency_adaptive: this.trace.tool_concurrency_adaptive
+        ? {
+            ...this.trace.tool_concurrency_adaptive,
+            adjustments: this.trace.tool_concurrency_adaptive.adjustments.map((a) => ({ ...a })),
+          }
+        : undefined,
     }
   }
 }

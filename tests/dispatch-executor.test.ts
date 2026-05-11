@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { executeDispatchPlan } from '../src/engine/dispatch-executor.ts'
 import type { ToolDispatchBatch } from '../src/engine/tool-helpers.ts'
+import { createAdaptiveConcurrencyController } from '../src/engine/concurrency-controller.ts'
 import type { AgentRunTrace, AgentRunToolTrace, ToolContext, ToolDefinition, ToolResult } from '../src/types.ts'
 
 function makeTrace(): AgentRunTrace {
@@ -209,4 +210,103 @@ test('executeDispatchPlan returns results in plan order across mixed batches', a
   assert.deepEqual(results.map((r) => r.tool_use_id), ['t1', 't2', 't3', 't4'])
   // Trace records: concurrent(2), serial(1), concurrent(1).
   assert.deepEqual(trace.concurrency_batches, [2, 1, 1])
+})
+
+// ---------------------------------------------------------------------------
+// Tier A #2 — adaptive concurrency
+// ---------------------------------------------------------------------------
+
+test('executeDispatchPlan with adaptive controller halves chunk size after errored batch', async () => {
+  const trace = makeTrace()
+  const controller = createAdaptiveConcurrencyController({ initial: 4, min: 1, max: 4 })
+  const plan: ToolDispatchBatch<FakeBlock>[] = [
+    {
+      kind: 'concurrent',
+      entries: Array.from({ length: 8 }, (_, i) => ({
+        block: { id: `t${i + 1}`, name: 'Read' },
+        tool: undefined,
+      })),
+    },
+  ]
+
+  const results = await executeDispatchPlan<FakeBlock>({
+    plan,
+    context: makeContext(),
+    trace,
+    maxConcurrency: 4, // ignored when controller is wired
+    concurrencyController: controller,
+    executeSingle: async (block) => {
+      // First chunk's first call errors; everything else succeeds.
+      const errored = block.id === 't1'
+      return makeResult(block.id, block.name, errored)
+    },
+  })
+
+  assert.equal(results.length, 8)
+  // First chunk = 4 (controller starts at initial=4), errored → halve to 2.
+  // Second chunk = 2 (current limit), clean → 3.
+  // Third chunk = 2 entries left (controller wants 3 but only 2 remain),
+  // clean → 4 (size > 1 still triggers an adjustment).
+  // 8 entries with [4, 2, 2] = 8 → exactly three chunks.
+  assert.deepEqual(trace.concurrency_batches, [4, 2, 2])
+  const snap = controller.snapshot()!
+  assert.equal(snap.final, 4, 'after error→halve→clean→clean: 4→2→3→4')
+  assert.equal(snap.adjustments.length, 3)
+  assert.equal(snap.adjustments[0]!.reason, 'error')
+})
+
+test('executeDispatchPlan with adaptive controller grows chunk size on clean batches', async () => {
+  const trace = makeTrace()
+  const controller = createAdaptiveConcurrencyController({ initial: 1, min: 1, max: 4 })
+  const plan: ToolDispatchBatch<FakeBlock>[] = [
+    {
+      kind: 'concurrent',
+      entries: Array.from({ length: 6 }, (_, i) => ({
+        block: { id: `t${i + 1}`, name: 'Read' },
+        tool: undefined,
+      })),
+    },
+  ]
+
+  await executeDispatchPlan<FakeBlock>({
+    plan,
+    context: makeContext(),
+    trace,
+    maxConcurrency: 99,
+    concurrencyController: controller,
+    executeSingle: async (block) => makeResult(block.id, block.name),
+  })
+
+  // Initial=1 → size-1 chunks do NOT trigger adjustment (controller ignores
+  // size<=1). So chunk sizes stay at 1 through the run; final stays 1.
+  assert.deepEqual(trace.concurrency_batches, [1, 1, 1, 1, 1, 1])
+  assert.equal(controller.snapshot()!.final, 1)
+})
+
+test('executeDispatchPlan with adaptive controller honours max=initial=2 growth', async () => {
+  const trace = makeTrace()
+  const controller = createAdaptiveConcurrencyController({ initial: 2, min: 1, max: 4 })
+  const plan: ToolDispatchBatch<FakeBlock>[] = [
+    {
+      kind: 'concurrent',
+      entries: Array.from({ length: 10 }, (_, i) => ({
+        block: { id: `t${i + 1}`, name: 'Read' },
+        tool: undefined,
+      })),
+    },
+  ]
+
+  await executeDispatchPlan<FakeBlock>({
+    plan,
+    context: makeContext(),
+    trace,
+    maxConcurrency: 99,
+    concurrencyController: controller,
+    executeSingle: async (block) => makeResult(block.id, block.name),
+  })
+
+  // 10 entries; chunks: 2 → +1=3 → +1=4 → cap at 4 → 4.
+  // Sizes consumed: 2, 3, 4, ?(remaining). 2+3+4 = 9; remaining 1.
+  assert.deepEqual(trace.concurrency_batches, [2, 3, 4, 1])
+  assert.equal(controller.snapshot()!.final, 4)
 })

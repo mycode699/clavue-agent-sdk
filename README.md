@@ -134,6 +134,11 @@ npx tsx examples/31-worker-thread-subagent.ts   # hard subagent isolation
   of 0.7.5 with reconciliation showing what's fixed in 1.0.1.
 - [`docs/v2_benchmark_report.md`](./docs/v2_benchmark_report.md) — every
   improvement paired with a reproducible measurement.
+- [`docs/tier-a-summary.md`](./docs/tier-a-summary.md) — Tier A
+  performance landings (tool-result cache, adaptive concurrency, fallback
+  chain, `prompt_cache_key`, memory list cache, memory consolidation)
+  and the Tier B list-cache family (`listMemories`, `listAgentJobs`,
+  `listSessions`, `listIssueWorkflowRuns`).
 
 **Architecture & roadmap**
 
@@ -180,7 +185,8 @@ npx tsx examples/31-worker-thread-subagent.ts   # hard subagent isolation
   persistence、memory 注入、self-improvement、retro/eval。
 - **多 provider 可移植：** Anthropic Messages 与 OpenAI 兼容 provider
   共用同一套工具、记忆、事件与结果协议；第三方 gateway（OpenRouter 等）
-  是一等公民。
+  是一等公民。`fallbackModel` 支持单字符串或有序数组，在主 provider
+  失败时按链路依次尝试（如 GPT → Claude → GLM）。
 - **诚实的可量化能力：** `npm run bench` 输出可复现数字。README 里每条
   断言都指向源码或测量结果，不是营销话术。
 
@@ -547,9 +553,9 @@ const result = await agent.prompt("What files are in this project?");
 console.log(result.text);
 ```
 
-The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `deepseek`, `qwen`, `mistral`, etc. automatically use `openai-completions`.
+The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `o4`, `deepseek`, `qwen`, `glm`, `grok`, `kimi`, `moonshot`, `gemini`, `mistral`, `gemma`, `yi-`, etc. automatically use `openai-completions`.
 
-`apiType` 也可以根据模型名自动推断：包含 `gpt-`、`o1`、`o3`、`deepseek`、`qwen`、`mistral` 等关键字时，会自动选择 `openai-completions`。
+`apiType` 也可以根据模型名自动推断：包含 `gpt-`、`o1`、`o3`、`o4`、`deepseek`、`qwen`、`glm`、`grok`、`kimi`、`moonshot`、`gemini`、`mistral`、`gemma`、`yi-` 等关键字时，会自动选择 `openai-completions`。
 
 ### 7. Web demo / Web 演示
 
@@ -1233,6 +1239,18 @@ The engine only parallelizes tool calls when a tool declares both `isReadOnly()`
 
 引擎只会并行执行同时声明 `isReadOnly()` 与 `isConcurrencySafe()` 的工具调用。会修改状态的工具，以及只读但非并发安全的工具，会串行执行。可通过每次运行的 `maxToolConcurrency` 限制安全并行批次；未设置时回退使用 `AGENT_SDK_MAX_TOOL_CONCURRENCY`。无效、零或负数会回退到 `10`，避免运行卡住。运行 trace 会包含 `tool_concurrency_limit`、`tool_concurrency_source` 和已有的 `concurrency_batches`。
 
+#### Tool result memoization (turn-scoped)
+
+When a turn dispatches multiple `tool_use` blocks for the same read-only concurrency-safe tool with the same input — including duplicates within a single concurrent batch — the engine reuses one `tool.call()` instead of running it once per block. Permission checks, `PreToolUse` / `PostToolUse` hooks, and `tool_input` / `tool_output` guardrails still run on every block; only the tool's own work is elided. The cache resets between turns, so model state never sees a stale read. `is_error: true` results are never retained. Aggregate counters land in `trace.tool_cache = { hits, misses }`.
+
+每个 turn 内对同一个只读且并发安全工具、相同输入的重复 `tool_use` 块（含同一并发批次内的重复请求）只会执行一次 `tool.call()`，其它块直接复用已有结果。权限检查、`PreToolUse` / `PostToolUse` hooks 和 `tool_input` / `tool_output` guardrails 仍按块执行；只是跳过工具本体的副作用。每个 turn 结束后缓存清空，确保模型状态不会读到陈旧数据。`is_error: true` 结果不会被缓存。聚合计数会写到 `trace.tool_cache = { hits, misses }`。
+
+#### OpenAI prompt prefix caching
+
+Both Chat Completions and Responses requests now include a stable `prompt_cache_key` derived from `(model, system prompt, tool schema)`. When the prefix is unchanged across turns, OpenAI's prompt cache reuses the cached prefix and bills only the suffix tokens. The key intentionally excludes the conversation `input`, since that grows every turn. Gateways that don't recognize the field simply ignore it. Anthropic's `cache_control: ephemeral` markers continue to be applied automatically in the Anthropic provider.
+
+每个 OpenAI 请求（Chat Completions 与 Responses 同时支持）会附带一个稳定的 `prompt_cache_key`，由 `(model, system prompt, tool schema)` 派生。当前缀稳定时 OpenAI 仅按差异部分计费。该 key 不包含会话 `input`，避免随每个 turn 变动。不识别此字段的网关会自动忽略。Anthropic 端继续自动添加 `cache_control: ephemeral` 标记。
+
 ### Provider retries and tolerance
 
 Provider calls automatically retry transient API and network failures with exponential backoff. Retryable conditions include rate limits, common 5xx/overload statuses, fetch/socket failures, and `Retry-After` headers; abort signals are honored during backoff.
@@ -1533,11 +1551,20 @@ Register custom skills with `registerSkill()`.
 | **Auto-compact**      | Summarizes conversation when context window fills up               |
 | **Micro-compact**     | Truncates oversized tool results                                   |
 | **Retry**             | Exponential backoff for rate limits, transient errors, and Retry-After responses |
+| **Fallback chain**    | `fallbackModel: string \| string[]` — multi-provider chain tried in order on retryable errors (e.g. primary GPT → Claude → GLM) |
 | **Token estimation**  | Rough token counting with pricing for Claude, GPT, DeepSeek models |
 | **File cache**        | LRU cache (100 entries, 25 MB) for file reads                      |
+| **Tool result cache** | Turn-scoped memoization: duplicate `tool_use` blocks for the same read-only concurrency-safe tool share one `tool.call()` |
+| **Adaptive concurrency** | Opt-in AIMD controller (`adaptiveToolConcurrency`): halves the concurrent chunk size after a batch with any tool error, +1 after a clean batch, bounded by `[min, max]` |
+| **OpenAI prefix cache** | Stable `prompt_cache_key` over `(model, system prompt, tool schema)` for both Responses and Chat Completions |
 | **Session storage**   | Persist / resume / fork sessions on disk                           |
+| **Session list cache** | In-memory cache for `listSessions()` keyed by absolute dir; invalidated on `saveSession` / `deleteSession`. Escape hatch: `invalidateSessionCache(dir?)` |
 | **AgentJob storage**  | Durable background subagent records with output, trace, evidence, quality gates, cancellation, and stale-heartbeat detection |
+| **AgentJob list cache** | In-memory cache for `listAgentJobs()` / `summarizeAgentJobs()` keyed by namespace dir; invalidated on create / update / stop / clear. Escape hatch: `invalidateAgentJobsCache(dir?)` |
+| **IssueWorkflow list cache** | In-memory cache for `listIssueWorkflowRuns()` keyed by namespace dir; invalidated on every `writeIssueWorkflowRun` (create / stop / update). Escape hatch: `invalidateIssueWorkflowRunsCache(dir?)` |
 | **Structured memory** | Queryable user/project/reference/feedback/decision/improvement entries |
+| **Memory list cache** | In-memory cache for `listMemories()` keyed by absolute dir; invalidated on `saveMemory` / `deleteMemory`. Escape hatch: `invalidateMemoryCache(dir?)` |
+| **Memory consolidation** | `consolidateMemories()` / `findDuplicateMemories()` — merge near-duplicate entries by `(type, scope, title, repoPath, sessionId)` identity, optional embedder cosine guard, dry-run preview |
 | **Self-improvement**  | Opt-in run learning from failures plus optional retro verification  |
 | **Context injection** | Git status + AGENT.md automatically injected into system prompt    |
 
@@ -1569,6 +1596,7 @@ Register custom skills with `registerSkill()`.
 | 14  | `examples/14-openai-compat.ts`       | OpenAI / DeepSeek models               |
 | 15  | `examples/15-self-improvement.ts`    | Opt-in run learning and improvement memories |
 | 16  | `examples/16-background-agent-jobs.ts` | Durable background AgentJob APIs       |
+| 32  | `examples/32-tier-a-performance.ts`  | **Offline** demo: tool cache, adaptive concurrency, fallback chain, memory consolidation |
 | web | `examples/web/`                       | Web chat UI for testing                |
 
 Run the offline smoke-tested example:

@@ -148,6 +148,31 @@ function cloneIssueWorkflowRun(run: IssueWorkflowRunRecord): IssueWorkflowRunRec
   return JSON.parse(JSON.stringify(run)) as IssueWorkflowRunRecord
 }
 
+// ---------------------------------------------------------------------------
+// In-memory list cache (same shape as memory / agent-jobs / session caches)
+// ---------------------------------------------------------------------------
+//
+// `listIssueWorkflowRuns()` is the poll path for orchestration hosts. With
+// N runs per namespace it does N readFile + JSON.parse on every call. The
+// only writer is `writeIssueWorkflowRun()` (all of create / update / stop
+// funnel through it), so cache invalidation has a single chokepoint.
+
+const listCache = new Map<string, IssueWorkflowRunRecord[]>()
+
+/**
+ * Drop the cached `listIssueWorkflowRuns()` result for a directory (or
+ * all directories when `dir` is omitted). Use after writing issue-run
+ * files outside this module — e.g. an external maintenance script or a
+ * sibling process.
+ */
+export function invalidateIssueWorkflowRunsCache(dir?: string): void {
+  if (dir === undefined) {
+    listCache.clear()
+    return
+  }
+  listCache.delete(dir)
+}
+
 function splitFrontmatter(input: string): ParsedFrontmatter {
   const normalized = input.replace(/\r\n/g, '\n').trim()
   if (!normalized.startsWith('---\n')) return { metadata: {}, markdown: normalized }
@@ -229,11 +254,13 @@ export async function writeIssueWorkflowRun(
   run: IssueWorkflowRunRecord,
   options?: AgentJobStoreOptions,
 ): Promise<IssueWorkflowRunRecord> {
-  await mkdir(getIssueRunsDir(options), { recursive: true })
+  const dir = getIssueRunsDir(options)
+  await mkdir(dir, { recursive: true })
   const path = getIssueRunPath(run.id, options)
   const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`
   await writeFile(tmpPath, JSON.stringify(run, null, 2), 'utf-8')
   await rename(tmpPath, path)
+  invalidateIssueWorkflowRunsCache(dir)
   return cloneIssueWorkflowRun(run)
 }
 
@@ -309,17 +336,23 @@ export async function listIssueWorkflowRuns(
   options?: AgentJobStoreOptions & RuntimeNamespaceContext,
 ): Promise<IssueWorkflowRunRecord[]> {
   try {
-    const entries = await readdir(getIssueRunsDir(options))
+    const dir = getIssueRunsDir(options)
+    const cached = listCache.get(dir)
+    if (cached !== undefined) return cached.map(cloneIssueWorkflowRun)
+
+    const entries = await readdir(dir)
     const runs = await Promise.all(
       entries
         .filter((entry) => entry.endsWith('.json'))
         .map(async (entry) => loadIssueWorkflowRun(entry.slice(0, -'.json'.length), options)),
     )
 
-    return runs
+    const sorted = runs
       .filter((run): run is IssueWorkflowRunRecord => run !== null)
-      .map(cloneIssueWorkflowRun)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+
+    listCache.set(dir, sorted)
+    return sorted.map(cloneIssueWorkflowRun)
   } catch {
     return []
   }

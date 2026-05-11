@@ -78,6 +78,14 @@ export interface AgentOptions {
   maxTurns?: number
   /** Maximum concurrent read-only concurrency-safe tool calls per query */
   maxToolConcurrency?: number
+  /**
+   * Tier A #2 — opt-in adaptive concurrency. When set, the engine uses an
+   * AIMD controller that halves the concurrent chunk size after a batch
+   * with any tool error and adds 1 after a fully clean batch. Bounded by
+   * `[min, max]` (defaults: `min=1`, `max=maxToolConcurrency` resolved).
+   * Static behavior (current default) is preserved when this is omitted.
+   */
+  adaptiveToolConcurrency?: boolean | { min?: number; max?: number; initial?: number }
   /** Maximum USD budget per query */
   maxBudgetUsd?: number
   /** Extended thinking configuration */
@@ -158,8 +166,14 @@ export interface AgentOptions {
   maxTokens?: number
   /** Effort level for reasoning */
   effort?: 'low' | 'medium' | 'high' | 'max'
-  /** Fallback model for retryable provider errors after primary model failure. */
-  fallbackModel?: string
+  /**
+   * Fallback model(s) for retryable provider errors after the primary
+   * model fails. Accepts either a single model id (legacy) or an ordered
+   * list — the engine tries each in turn until one succeeds or the list
+   * is exhausted. Used for multi-provider resilience (e.g. primary GPT,
+   * secondary Claude, tertiary GLM).
+   */
+  fallbackModel?: string | string[]
   /** Continue the most recent session in cwd */
   continue?: boolean
   /** Resume a specific session by ID */

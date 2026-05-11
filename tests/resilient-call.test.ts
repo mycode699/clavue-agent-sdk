@@ -148,3 +148,139 @@ test('runResilientCall throws primary error when no fallback configured', async 
     (err: Error) => /fake provider error/.test(err.message),
   )
 })
+
+// ---------------------------------------------------------------------------
+// Tier A #3 — multi-provider fallback chain
+// ---------------------------------------------------------------------------
+
+test('runResilientCall chain: first fallback succeeds, later steps not tried', async () => {
+  const calls: string[] = []
+  const result = await runResilientCall({
+    primaryModel: 'm-primary',
+    fallbackModel: ['m-fb1', 'm-fb2', 'm-fb3'],
+    retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+    call: async (model) => {
+      calls.push(model)
+      if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+      if (model === 'm-fb1') return fakeResponse('fb1-ok')
+      throw new Error(`unexpected call to ${model}`)
+    },
+  })
+  assert.equal(result.model, 'm-fb1')
+  assert.deepEqual(calls, ['m-primary', 'm-fb1'])
+})
+
+test('runResilientCall chain: walks chain until one succeeds', async () => {
+  const calls: string[] = []
+  const result = await runResilientCall({
+    primaryModel: 'm-primary',
+    fallbackModel: ['m-fb1', 'm-fb2'],
+    retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+    call: async (model) => {
+      calls.push(model)
+      if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+      if (model === 'm-fb1') throw makeProviderError({ status: 404, category: 'unsupported' })
+      return fakeResponse('fb2-ok')
+    },
+  })
+  assert.equal(result.model, 'm-fb2')
+  assert.deepEqual(calls, ['m-primary', 'm-fb1', 'm-fb2'])
+})
+
+test('runResilientCall chain: all fail → throws last error', async () => {
+  let attempts = 0
+  await assert.rejects(
+    () => runResilientCall({
+      primaryModel: 'm-primary',
+      fallbackModel: ['m-fb1', 'm-fb2'],
+      retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+      call: async (model) => {
+        attempts++
+        // Tag the error so we can identify which call was the last one.
+        const err = makeProviderError({ status: 503, category: 'provider_error' })
+        err.message = `fail-${model}`
+        throw err
+      },
+    }),
+    (err: Error) => err.message === 'fail-m-fb2',
+  )
+  assert.equal(attempts, 3, 'primary + 2 fallbacks all attempted')
+})
+
+test('runResilientCall chain: short-circuits on auth error mid-chain', async () => {
+  const calls: string[] = []
+  await assert.rejects(
+    () => runResilientCall({
+      primaryModel: 'm-primary',
+      fallbackModel: ['m-fb1', 'm-fb2'],
+      retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+      call: async (model) => {
+        calls.push(model)
+        if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+        if (model === 'm-fb1') throw makeProviderError({ status: 401, category: 'authentication' })
+        return fakeResponse('should-not-run')
+      },
+    }),
+  )
+  assert.deepEqual(calls, ['m-primary', 'm-fb1'], 'fb2 must not run after auth error')
+})
+
+test('runResilientCall chain: short-circuits on prompt-too-long mid-chain', async () => {
+  const calls: string[] = []
+  await assert.rejects(
+    () => runResilientCall({
+      primaryModel: 'm-primary',
+      fallbackModel: ['m-fb1', 'm-fb2'],
+      retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+      call: async (model) => {
+        calls.push(model)
+        if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+        if (model === 'm-fb1') {
+          const err = new Error('prompt is too long: 250000 tokens') as ProviderError
+          err.status = 400
+          throw err
+        }
+        return fakeResponse('should-not-run')
+      },
+    }),
+    /prompt is too long/i,
+  )
+  assert.deepEqual(calls, ['m-primary', 'm-fb1'])
+})
+
+test('runResilientCall chain: short-circuits on abort mid-chain', async () => {
+  const controller = new AbortController()
+  const calls: string[] = []
+  await assert.rejects(
+    () => runResilientCall({
+      primaryModel: 'm-primary',
+      fallbackModel: ['m-fb1', 'm-fb2'],
+      abortSignal: controller.signal,
+      retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+      call: async (model) => {
+        calls.push(model)
+        if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+        // Abort in the middle of the chain (after fb1 starts but before fb2 would).
+        controller.abort()
+        throw abortError()
+      },
+    }),
+  )
+  assert.deepEqual(calls, ['m-primary', 'm-fb1'], 'fb2 must not run after abort')
+})
+
+test('runResilientCall chain: onAttempt fires once per attempted model', async () => {
+  let attempts = 0
+  await runResilientCall({
+    primaryModel: 'm-primary',
+    fallbackModel: ['m-fb1', 'm-fb2'],
+    retryConfig: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, retryableStatusCodes: [] },
+    call: async (model) => {
+      if (model === 'm-primary') throw makeProviderError({ status: 503, category: 'provider_error' })
+      if (model === 'm-fb1') throw makeProviderError({ status: 503, category: 'provider_error' })
+      return fakeResponse('fb2-ok')
+    },
+    onAttempt: () => { attempts++ },
+  })
+  assert.equal(attempts, 3)
+})

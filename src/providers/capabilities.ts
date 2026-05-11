@@ -28,8 +28,12 @@ function inferApiType(model: string, requested?: ApiType): ApiType {
     normalized.startsWith('qwen') ||
     normalized.startsWith('yi-') ||
     normalized.startsWith('glm') ||
+    normalized.startsWith('grok') ||
+    normalized.startsWith('kimi') ||
+    normalized.startsWith('moonshot') ||
     normalized.startsWith('mistral') ||
-    normalized.startsWith('gemma')
+    normalized.startsWith('gemma') ||
+    normalized.startsWith('gemini')
   ) {
     return 'openai-completions'
   }
@@ -53,6 +57,23 @@ function getContextWindow(model: string, apiType: ApiType): number | undefined {
   if (modelMatchesAny(model, ['o1', 'o3', 'o4'])) return 200_000
   if (model.startsWith('deepseek')) return 128_000
 
+  // Third-party OpenAI-compatible families.
+  if (model.startsWith('grok-4') || model.startsWith('grok-3')) return 256_000
+  if (model.startsWith('grok-2') || model.startsWith('grok-')) return 131_072
+  if (model.startsWith('glm-4.6') || model.startsWith('glm-4-6')) return 200_000
+  if (model.startsWith('glm-4.5') || model.startsWith('glm-4-5')) return 128_000
+  if (model.startsWith('glm-4-plus') || model.startsWith('glm-4-long')) return 128_000
+  if (model.startsWith('glm-4')) return 128_000
+  if (model.startsWith('qwen2.5-max') || model.startsWith('qwen-max')) return 32_768
+  if (model.startsWith('qwen3') || model.startsWith('qwen2.5') || model.startsWith('qwen2-5')) return 131_072
+  if (model.startsWith('qwen')) return 32_768
+  if (model.startsWith('kimi-k2') || model.startsWith('moonshot-v1-128k')) return 128_000
+  if (model.startsWith('kimi') || model.startsWith('moonshot')) return 128_000
+  if (model.startsWith('gemini-2.5') || model.startsWith('gemini-1.5-pro')) return 2_000_000
+  if (model.startsWith('gemini-1.5-flash')) return 1_000_000
+  if (model.startsWith('gemini-2.0')) return 1_000_000
+  if (model.startsWith('gemini')) return 1_000_000
+
   return apiType === 'anthropic-messages' && model.includes('claude') ? 200_000 : undefined
 }
 
@@ -73,6 +94,24 @@ function getKnownPricing(model: string): ModelCapabilities['pricing'] | undefine
   if (model === 'o4-mini' || model.startsWith('o4-mini-')) return { inputPerMillionUsd: 1.1, outputPerMillionUsd: 4.4 }
   if (model.includes('deepseek-chat')) return { inputPerMillionUsd: 0.27, outputPerMillionUsd: 1.1 }
   if (model.includes('deepseek-reasoner')) return { inputPerMillionUsd: 0.55, outputPerMillionUsd: 2.19 }
+
+  // Third-party OpenAI-compatible families (list prices, may vary by region/quota).
+  if (model.startsWith('grok-4')) return { inputPerMillionUsd: 5, outputPerMillionUsd: 25 }
+  if (model.startsWith('grok-3-mini') || model.startsWith('grok-3-fast') || model.startsWith('grok-3-mini-fast')) return { inputPerMillionUsd: 0.3, outputPerMillionUsd: 0.5 }
+  if (model.startsWith('grok-3')) return { inputPerMillionUsd: 3, outputPerMillionUsd: 15 }
+  if (model.startsWith('grok-2')) return { inputPerMillionUsd: 2, outputPerMillionUsd: 10 }
+  if (model.startsWith('glm-4.6') || model.startsWith('glm-4-6')) return { inputPerMillionUsd: 0.6, outputPerMillionUsd: 2.2 }
+  if (model.startsWith('glm-4.5-air') || model.startsWith('glm-4-5-air')) return { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.1 }
+  if (model.startsWith('glm-4.5') || model.startsWith('glm-4-5')) return { inputPerMillionUsd: 0.6, outputPerMillionUsd: 2.2 }
+  if (model.startsWith('glm-4-plus')) return { inputPerMillionUsd: 7.1, outputPerMillionUsd: 7.1 }
+  if (model.startsWith('qwen-max')) return { inputPerMillionUsd: 1.6, outputPerMillionUsd: 6.4 }
+  if (model.startsWith('qwen-plus')) return { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.2 }
+  if (model.startsWith('qwen-turbo')) return { inputPerMillionUsd: 0.05, outputPerMillionUsd: 0.2 }
+  if (model.startsWith('kimi-k2') || model.startsWith('moonshot-v1-128k')) return { inputPerMillionUsd: 0.6, outputPerMillionUsd: 2.5 }
+  if (model.startsWith('moonshot-v1-32k')) return { inputPerMillionUsd: 0.34, outputPerMillionUsd: 1.4 }
+  if (model.startsWith('moonshot-v1-8k')) return { inputPerMillionUsd: 0.17, outputPerMillionUsd: 0.69 }
+  if (model.startsWith('gemini-2.5-pro') || model.startsWith('gemini-1.5-pro')) return { inputPerMillionUsd: 1.25, outputPerMillionUsd: 10 }
+  if (model.startsWith('gemini-2.5-flash') || model.startsWith('gemini-2.0-flash') || model.startsWith('gemini-1.5-flash')) return { inputPerMillionUsd: 0.075, outputPerMillionUsd: 0.3 }
 
   return undefined
 }
@@ -107,17 +146,39 @@ export function getModelCapabilities(
   const isGpt5Responses = isGpt5 && !isChatSpecificGpt5
   const isGpt4Family = isGpt && (normalizedModel.includes('gpt-4') || normalizedModel.includes('gpt-4o'))
   const isReasoning = isOpenAI && (modelMatchesAny(normalizedModel, ['o1', 'o3', 'o4']) || normalizedModel.includes('reasoner'))
-  const known = isClaude || isGpt || isReasoning || (isOpenAI && normalizedModel.startsWith('deepseek'))
+  const isDeepseek = isOpenAI && normalizedModel.startsWith('deepseek')
+  // Third-party OpenAI-compatible families. Each is recognized as "known" so
+  // capability gates do not silently disable tools/streaming/json_schema. They
+  // still go over the OpenAI Chat Completions transport.
+  const isGrok = isOpenAI && normalizedModel.startsWith('grok')
+  const isGlm = isOpenAI && normalizedModel.startsWith('glm')
+  const isQwen = isOpenAI && normalizedModel.startsWith('qwen')
+  const isKimi = isOpenAI && (normalizedModel.startsWith('kimi') || normalizedModel.startsWith('moonshot'))
+  const isGemini = isOpenAI && normalizedModel.startsWith('gemini')
+  const isThirdParty = isGrok || isGlm || isQwen || isKimi || isGemini
+  const known = isClaude || isGpt || isReasoning || isDeepseek || isThirdParty
+
+  // Vision support per family (best-effort current generation).
+  const isGrokVision = isGrok && (normalizedModel.startsWith('grok-4') || normalizedModel.startsWith('grok-2-vision') || normalizedModel.includes('vision'))
+  const isGlmVision = isGlm && (normalizedModel.includes('-v') || normalizedModel.startsWith('glm-4.5v') || normalizedModel.startsWith('glm-4-5v') || normalizedModel.startsWith('glm-4v') || normalizedModel.startsWith('glm-4.6'))
+  const isQwenVision = isQwen && (normalizedModel.includes('vl') || normalizedModel.includes('omni'))
+  const isKimiVision = isKimi && (normalizedModel.includes('vision') || normalizedModel.startsWith('kimi-k2'))
+
+  // Reasoning / extended thinking surfaces per family.
+  const isGrokThinking = isGrok && (normalizedModel.startsWith('grok-4') || normalizedModel.includes('reason') || normalizedModel.includes('think'))
+  const isGlmThinking = isGlm && (normalizedModel.includes('think') || normalizedModel.startsWith('glm-zero') || normalizedModel.startsWith('glm-4.6'))
+  const isQwenThinking = isQwen && (normalizedModel.startsWith('qwq') || normalizedModel.includes('thinking') || normalizedModel.startsWith('qwen3'))
+  const isKimiThinking = isKimi && normalizedModel.startsWith('kimi-k2')
 
   const supportsTools = isAnthropic
     ? isClaude
-    : isGpt || isReasoning || normalizedModel.startsWith('deepseek')
+    : isGpt || isReasoning || isDeepseek || isThirdParty
   const supportsImages = isAnthropic
     ? isClaude
-    : isGpt5 || isGpt4Family
+    : isGpt5 || isGpt4Family || isGemini || isGrokVision || isGlmVision || isQwenVision || isKimiVision
   const supportsThinking = isAnthropic
     ? isClaude && (normalizedModel.includes('opus-4') || normalizedModel.includes('sonnet-4'))
-    : isReasoning || isGpt5Responses
+    : isReasoning || isGpt5Responses || isGrokThinking || isGlmThinking || isQwenThinking || isKimiThinking
 
   const capabilities: ModelCapabilities = {
     model,
@@ -128,7 +189,7 @@ export function getModelCapabilities(
     supportsTools,
     supportsImages,
     supportsThinking,
-    supportsJsonSchema: isOpenAI ? isGpt || isReasoning : isClaude,
+    supportsJsonSchema: isOpenAI ? isGpt || isReasoning || isDeepseek || isThirdParty : isClaude,
     supportsStreaming: known,
   }
 

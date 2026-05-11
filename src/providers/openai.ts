@@ -7,6 +7,8 @@
  * Uses native fetch (no openai SDK dependency required).
  */
 
+import { createHash } from 'node:crypto'
+
 import type {
   LLMProvider,
   CreateMessageParams,
@@ -46,6 +48,40 @@ function buildOpenAIResponseFormat(schema: OutputSchema): Record<string, any> {
   }
   if (schema.description) jsonSchema.description = schema.description
   return { type: 'json_schema', json_schema: jsonSchema }
+}
+
+/**
+ * Tier A #4 — derive a stable `prompt_cache_key` from the prefix-shaped
+ * portion of the request. We hash:
+ *   - model id (different models cache separately on OpenAI's side anyway)
+ *   - system prompt text
+ *   - tool schema (post-conversion to OpenAI shape, so order/structure is
+ *     fixed before hashing)
+ *
+ * Conversation `input` is intentionally excluded — it changes every turn
+ * and would defeat prefix caching. When there's nothing to fingerprint
+ * (no system + no tools) we omit the key so the request looks identical
+ * to clients that never opted in.
+ *
+ * Returns `undefined` when the prefix is too small to benefit from
+ * caching (no system, no tools).
+ */
+function computeOpenAIPromptCacheKey(input: {
+  model: string
+  system?: string
+  tools?: unknown[]
+}): string | undefined {
+  const hasSystem = typeof input.system === 'string' && input.system.length > 0
+  const hasTools = Array.isArray(input.tools) && input.tools.length > 0
+  if (!hasSystem && !hasTools) return undefined
+
+  const hash = createHash('sha256')
+  hash.update(input.model)
+  hash.update('\u0000')
+  if (hasSystem) hash.update(input.system as string)
+  hash.update('\u0000')
+  if (hasTools) hash.update(JSON.stringify(input.tools))
+  return `clavue-sdk:${hash.digest('hex').slice(0, 32)}`
 }
 
 function buildOpenAIResponsesTextFormat(schema: OutputSchema): Record<string, any> {
@@ -385,6 +421,19 @@ export class OpenAIProvider implements LLMProvider {
       body.response_format = buildOpenAIResponseFormat(params.outputSchema)
     }
 
+    // Tier A #4 — prompt prefix caching. Chat Completions also supports
+    // `prompt_cache_key` for prefix-cache routing on supported models;
+    // see provider docs. Unsupported gateways will simply ignore the
+    // field.
+    const cacheKey = computeOpenAIPromptCacheKey({
+      model: params.model,
+      system: params.system,
+      tools,
+    })
+    if (cacheKey) {
+      body.prompt_cache_key = cacheKey
+    }
+
     let response: Response
     try {
       response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -428,6 +477,22 @@ export class OpenAIProvider implements LLMProvider {
       // Responses API uses `text.format` for structured outputs.
       // Reference: https://platform.openai.com/docs/api-reference/responses/create
       body.text = { format: buildOpenAIResponsesTextFormat(params.outputSchema) }
+    }
+
+    // Tier A #4 — prompt prefix caching. The Responses API surfaces a
+    // `prompt_cache_key` field that lets clients group requests sharing the
+    // same long prefix (system prompt + tool schema). When the field is
+    // stable across turns, OpenAI reuses the cached prefix and bills only
+    // the suffix tokens. We hash the prompt-shaped inputs that are
+    // expected to repeat: model id, system prompt, and tool schema.
+    // Reference: https://platform.openai.com/docs/guides/prompt-caching
+    const cacheKey = computeOpenAIPromptCacheKey({
+      model: params.model,
+      system: params.system,
+      tools,
+    })
+    if (cacheKey) {
+      body.prompt_cache_key = cacheKey
     }
 
     let response: Response

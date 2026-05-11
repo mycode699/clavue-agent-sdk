@@ -104,6 +104,63 @@ test('model capability decisions make unsupported and unknown features explicit'
   })
 })
 
+test('third-party OpenAI-compatible families are auto-routed and recognized as known', async () => {
+  // Grok (xAI) — auto-routes to openai-completions, gains tools/streaming/json_schema.
+  const grok = getModelCapabilities('grok-4-latest')
+  assert.equal(grok.apiType, 'openai-completions')
+  assert.equal(grok.known, true)
+  assert.equal(grok.supportsTools, true)
+  assert.equal(grok.supportsStreaming, true)
+  assert.equal(grok.supportsJsonSchema, true)
+  assert.equal(grok.supportsImages, true) // grok-4 is multimodal
+  assert.equal(grok.supportsThinking, true) // grok-4 reasons by default
+  assert.equal(grok.contextWindow, 256_000)
+
+  // GLM (Zhipu) — glm-4.6 is the current flagship.
+  const glm = getModelCapabilities('glm-4.6')
+  assert.equal(glm.apiType, 'openai-completions')
+  assert.equal(glm.known, true)
+  assert.equal(glm.supportsTools, true)
+  assert.equal(glm.supportsThinking, true)
+  assert.equal(glm.contextWindow, 200_000)
+  assert.deepEqual(glm.pricing, { inputPerMillionUsd: 0.6, outputPerMillionUsd: 2.2 })
+
+  // Qwen (Alibaba).
+  const qwen = getModelCapabilities('qwen-max')
+  assert.equal(qwen.apiType, 'openai-completions')
+  assert.equal(qwen.known, true)
+  assert.equal(qwen.supportsTools, true)
+  assert.equal(qwen.contextWindow, 32_768)
+
+  // Kimi / Moonshot.
+  const kimi = getModelCapabilities('kimi-k2-0711-preview')
+  assert.equal(kimi.apiType, 'openai-completions')
+  assert.equal(kimi.known, true)
+  assert.equal(kimi.supportsTools, true)
+  assert.equal(kimi.supportsThinking, true)
+
+  // Gemini through OpenAI-compatible gateway.
+  const gemini = getModelCapabilities('gemini-2.5-pro')
+  assert.equal(gemini.apiType, 'openai-completions')
+  assert.equal(gemini.known, true)
+  assert.equal(gemini.supportsTools, true)
+  assert.equal(gemini.supportsImages, true)
+  assert.equal(gemini.contextWindow, 2_000_000)
+})
+
+test('third-party model capability gates no longer return "unknown"', async () => {
+  const grokTools = decideModelCapability('grok-3', 'tools')
+  assert.equal(grokTools.support, 'supported')
+  assert.equal(grokTools.apiType, 'openai-completions')
+
+  const glmStream = decideModelCapability('glm-4.5', 'streaming')
+  assert.equal(glmStream.support, 'supported')
+
+  // grok-3 is not vision; should be 'unsupported' (known) rather than 'unknown'.
+  const grokVision = decideModelCapability('grok-3', 'images')
+  assert.equal(grokVision.support, 'unsupported')
+})
+
 test('top-level package exports model capability helpers', async () => {
   const sdk = await import('../src/index.ts')
 
@@ -1554,4 +1611,165 @@ test('OpenAI Responses request without outputSchema omits text.format', async ()
   }
 
   assert.equal(mock.calls[0]?.body.text, undefined)
+})
+
+test('Tier A #4: Responses request emits a stable prompt_cache_key for repeated prefixes', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: 'hi',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    const params = {
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are a helpful assistant.',
+      messages: [{ role: 'user' as const, content: 'first' }],
+      tools: [{
+        name: 'lookup',
+        description: 'Lookup information.',
+        input_schema: { type: 'object' as const, properties: {} },
+      }],
+    }
+    await provider.createMessage(params)
+  } finally {
+    mock.restore()
+  }
+
+  const body = mock.calls[0]?.body
+  assert.ok(typeof body.prompt_cache_key === 'string')
+  assert.match(body.prompt_cache_key, /^clavue-sdk:[0-9a-f]{32}$/)
+})
+
+test('Tier A #4: prompt_cache_key is identical across turns when system + tools are stable', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: 'ok',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    const baseParams = {
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are a helpful assistant.',
+      tools: [{
+        name: 'lookup',
+        description: 'Lookup information.',
+        input_schema: { type: 'object' as const, properties: {} },
+      }],
+    }
+    await provider.createMessage({
+      ...baseParams,
+      messages: [{ role: 'user', content: 'first turn' }],
+    })
+    await provider.createMessage({
+      ...baseParams,
+      messages: [
+        { role: 'user', content: 'first turn' },
+        { role: 'assistant', content: 'response' },
+        { role: 'user', content: 'second turn' },
+      ],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  assert.equal(mock.calls.length, 2)
+  assert.equal(
+    mock.calls[0]?.body.prompt_cache_key,
+    mock.calls[1]?.body.prompt_cache_key,
+    'prompt_cache_key must be stable when only the conversation grows',
+  )
+})
+
+test('Tier A #4: prompt_cache_key changes when system prompt or tools change', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: 'ok',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'x' }],
+    })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are terse.',
+      messages: [{ role: 'user', content: 'x' }],
+    })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'x' }],
+      tools: [{
+        name: 'lookup',
+        description: 'Lookup',
+        input_schema: { type: 'object', properties: {} },
+      }],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  const k0 = mock.calls[0]?.body.prompt_cache_key
+  const k1 = mock.calls[1]?.body.prompt_cache_key
+  const k2 = mock.calls[2]?.body.prompt_cache_key
+  assert.notEqual(k0, k1, 'different system prompt → different cache key')
+  assert.notEqual(k0, k2, 'adding tools → different cache key')
+})
+
+test('Tier A #4: omits prompt_cache_key when there is no system + no tools to fingerprint', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'resp_x',
+    output_text: 'ok',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-5.4',
+      maxTokens: 64,
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  assert.equal(mock.calls[0]?.body.prompt_cache_key, undefined)
+})
+
+test('Tier A #4: Chat Completions also emits prompt_cache_key', async () => {
+  const mock = mockOnceJsonResponse({
+    id: 'chatcmpl_x',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+
+  try {
+    const provider = new OpenAIProvider({ apiKey: 'test-key', baseURL: 'https://example.test/v1' })
+    await provider.createMessage({
+      model: 'gpt-4o',
+      maxTokens: 64,
+      system: 'You are helpful.',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  } finally {
+    mock.restore()
+  }
+
+  const body = mock.calls[0]?.body
+  assert.equal(body.url ?? mock.calls[0]?.url, 'https://example.test/v1/chat/completions')
+  assert.match(String(body.prompt_cache_key), /^clavue-sdk:[0-9a-f]{32}$/)
 })

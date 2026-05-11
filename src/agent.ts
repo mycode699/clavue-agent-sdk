@@ -413,6 +413,7 @@ export class Agent {
       appendSystemPrompt,
       maxTurns: opts.maxTurns ?? 10,
       maxToolConcurrency: opts.maxToolConcurrency,
+      adaptiveToolConcurrency: opts.adaptiveToolConcurrency,
       maxBudgetUsd: opts.maxBudgetUsd,
       maxTokens: opts.maxTokens ?? 16384,
       thinking: opts.thinking,

@@ -156,6 +156,38 @@ const processRunnerId = `${process.pid}:${randomUUID()}`
 const defaultJobHeartbeatIntervalMs = 5_000
 const defaultJobStaleAfterMs = 60_000
 
+// ---------------------------------------------------------------------------
+// In-memory list cache (Tier B — same shape as `listMemories` cache)
+// ---------------------------------------------------------------------------
+//
+// `listAgentJobs()` is the dominant scan path: it backs `summarizeAgentJobs`,
+// the `AgentJobList` tool, and `doctor`'s storage check. With N jobs on disk
+// it does N readFile + JSON.parse on every call.
+//
+// We cache the *raw* per-namespace job records (pre-stale-refresh) keyed by
+// absolute namespace dir. Stale-state refresh still runs on every call —
+// when it writes back via `saveAgentJob`, that path itself invalidates the
+// cache, so the next list rebuilds from disk.
+//
+// All write paths (`writeAgentJobFile`, `clearAgentJobs`) invalidate the
+// entry for their dir. External writers must call `invalidateAgentJobsCache`
+// (exported), matching the same escape hatch as `invalidateMemoryCache`.
+
+const listCache = new Map<string, AgentJobRecord[]>()
+
+/**
+ * Drop the cached `listAgentJobs()` result for a directory (or all
+ * directories when `dir` is omitted). Use after writing job files outside
+ * this module — e.g. an external maintenance script or a sibling process.
+ */
+export function invalidateAgentJobsCache(dir?: string): void {
+  if (dir === undefined) {
+    listCache.clear()
+    return
+  }
+  listCache.delete(dir)
+}
+
 function getHeartbeatIntervalMs(options?: AgentJobStoreOptions): number {
   const value = options?.heartbeatIntervalMs
   return Number.isFinite(value) && value! > 0 ? value! : defaultJobHeartbeatIntervalMs
@@ -232,11 +264,13 @@ async function withAgentJobWriteLock<T>(
 }
 
 async function writeAgentJobFile(job: AgentJobRecord, options?: AgentJobStoreOptions): Promise<AgentJobRecord> {
-  await mkdir(getNamespaceDir(options), { recursive: true })
+  const dir = getNamespaceDir(options)
+  await mkdir(dir, { recursive: true })
   const path = getJobPath(job.id, options)
   const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`
   await writeFile(tmpPath, JSON.stringify(job, null, 2), 'utf-8')
   await rename(tmpPath, path)
+  invalidateAgentJobsCache(dir)
   return cloneJob(job)
 }
 
@@ -460,18 +494,38 @@ export async function getAgentJob(
   return job ? cloneJob(job) : null
 }
 
+async function loadRawAgentJobsForDir(dir: string): Promise<AgentJobRecord[]> {
+  const entries = await readdir(dir)
+  const jobs = await Promise.all(
+    entries
+      .filter((entry) => entry.endsWith('.json'))
+      .map(async (entry) => {
+        try {
+          const content = await readFile(join(dir, `${entry}`), 'utf-8')
+          return JSON.parse(content) as AgentJobRecord
+        } catch {
+          return null
+        }
+      }),
+  )
+  return jobs.filter((job): job is AgentJobRecord => job !== null)
+}
+
 export async function listAgentJobs(options?: AgentJobStoreOptions): Promise<AgentJobRecord[]> {
   try {
     const dir = getNamespaceDir(options)
-    const entries = await readdir(dir)
-    const jobs = await Promise.all(
-      entries
-        .filter((entry) => entry.endsWith('.json'))
-        .map(async (entry) => loadAgentJob(entry.slice(0, -'.json'.length), options)),
-    )
+    let raw = listCache.get(dir)
+    if (raw === undefined) {
+      raw = await loadRawAgentJobsForDir(dir)
+      listCache.set(dir, raw)
+    }
 
-    return jobs
-      .filter((job): job is AgentJobRecord => job !== null)
+    // Stale-refresh still runs per call. When it writes back via
+    // `saveAgentJob`, that path invalidates `dir` and the next list call
+    // will rebuild from disk.
+    const refreshed = await Promise.all(raw.map((job) => refreshAgentJobState(job, options)))
+
+    return refreshed
       .filter((job) => !options?.batch_id || job.batch_id === options.batch_id)
       .filter((job) => !options?.correlation_id || job.correlation_id === options.correlation_id)
       .map(cloneJob)
@@ -621,5 +675,7 @@ export async function clearAgentJobs(options?: AgentJobStoreOptions): Promise<vo
     }
   }
 
-  await rm(getNamespaceDir(options), { recursive: true, force: true })
+  const dir = getNamespaceDir(options)
+  await rm(dir, { recursive: true, force: true })
+  invalidateAgentJobsCache(dir)
 }

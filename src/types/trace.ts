@@ -164,6 +164,46 @@ export interface AgentRunCompactionTrace {
   failure_reason?: string
 }
 
+export interface AgentRunToolCacheTrace {
+  /**
+   * Number of cacheable `tool_use` blocks served from the turn-scoped
+   * result cache instead of running `tool.call()`.
+   */
+  hits: number
+  /**
+   * Number of cacheable `tool_use` blocks that fell through the cache and
+   * actually ran the tool. Tools that are not concurrency-safe / read-only
+   * bypass the cache entirely and are not counted here.
+   */
+  misses: number
+}
+
+export type AgentRunAdaptiveConcurrencyReason = 'error' | 'success'
+
+export interface AgentRunAdaptiveConcurrencyAdjustment {
+  /** 0-based index over adaptive-affecting concurrent chunks (size > 1). */
+  batch_index: number
+  previous: number
+  current: number
+  reason: AgentRunAdaptiveConcurrencyReason
+}
+
+/**
+ * Adaptive concurrency state for a run. Only present when the host opts in
+ * via `AgentOptions.adaptiveToolConcurrency`. The static fallback path
+ * leaves the trace untouched (Tier A #2).
+ */
+export interface AgentRunAdaptiveConcurrencyTrace {
+  enabled: true
+  initial: number
+  min: number
+  max: number
+  /** Final concurrent chunk limit at the end of the run. */
+  final: number
+  /** AIMD adjustment events in chronological order. */
+  adjustments: AgentRunAdaptiveConcurrencyAdjustment[]
+}
+
 export interface AgentRunTrace {
   schema_version: string
   turns: AgentRunTurnTrace[]
@@ -177,4 +217,18 @@ export interface AgentRunTrace {
   permission_denials: Array<{ tool: string; reason: string }>
   policy_decisions?: AgentRunPolicyDecisionTrace[]
   memory?: AgentRunMemoryTrace[]
+  /**
+   * Aggregate counters for the turn-scoped tool result cache (Tier A #1).
+   * Only present when at least one cacheable tool dispatch happened.
+   * Tools without `isReadOnly() && isConcurrencySafe()` bypass the cache
+   * entirely and are not counted in either hits or misses.
+   */
+  tool_cache?: AgentRunToolCacheTrace
+  /**
+   * Adaptive concurrency state for the run (Tier A #2). Only present when
+   * the host opted in via `AgentOptions.adaptiveToolConcurrency`. The
+   * static-limit fallback leaves this field absent so default-mode traces
+   * stay byte-identical with prior versions.
+   */
+  tool_concurrency_adaptive?: AgentRunAdaptiveConcurrencyTrace
 }

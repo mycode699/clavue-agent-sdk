@@ -66,6 +66,36 @@ function getSessionPath(sessionId: string, options?: SessionStoreOptions): strin
   return sessionPath
 }
 
+// ---------------------------------------------------------------------------
+// In-memory list cache (Tier B — same shape as memory / agent-jobs caches)
+// ---------------------------------------------------------------------------
+//
+// `listSessions()` was both O(N) and serial — for each session it did a full
+// transcript.json readFile + JSON.parse, even though only `metadata` is
+// needed for the list. We now (1) parallelize the per-session reads and
+// (2) cache the metadata-only array keyed by absolute sessions dir.
+//
+// All write paths (`saveSession`, `deleteSession`) invalidate the entry for
+// their dir. External writers must call `invalidateSessionCache()`
+// (exported), matching the same escape hatch as `invalidateMemoryCache` and
+// `invalidateAgentJobsCache`.
+
+const listCache = new Map<string, SessionMetadata[]>()
+
+/**
+ * Drop the cached `listSessions()` result for a directory (or all
+ * directories when `dir` is omitted). Use after writing session files
+ * outside this module — e.g. an external maintenance script or a sibling
+ * process.
+ */
+export function invalidateSessionCache(dir?: string): void {
+  if (dir === undefined) {
+    listCache.clear()
+    return
+  }
+  listCache.delete(dir)
+}
+
 /**
  * Save session to disk.
  */
@@ -96,6 +126,7 @@ export async function saveSession(
     JSON.stringify(data, null, 2),
     'utf-8',
   )
+  invalidateSessionCache(getSessionsDir(options))
 }
 
 /**
@@ -120,24 +151,21 @@ export async function loadSession(
 export async function listSessions(options?: SessionStoreOptions): Promise<SessionMetadata[]> {
   try {
     const dir = getSessionsDir(options)
+    const cached = listCache.get(dir)
+    if (cached !== undefined) return cached.slice()
+
     const entries = await readdir(dir)
-    const sessions: SessionMetadata[] = []
+    const loaded = await Promise.all(
+      entries.map((entry) => loadSession(entry, options).catch(() => null)),
+    )
 
-    for (const entry of entries) {
-      try {
-        const data = await loadSession(entry, options)
-        if (data?.metadata) {
-          sessions.push(data.metadata)
-        }
-      } catch {
-        // Skip invalid sessions
-      }
-    }
+    const sessions = loaded
+      .map((data) => data?.metadata)
+      .filter((meta): meta is SessionMetadata => Boolean(meta))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 
-    // Sort by updatedAt descending
-    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-
-    return sessions
+    listCache.set(dir, sessions)
+    return sessions.slice()
   } catch {
     return []
   }
@@ -210,6 +238,7 @@ export async function deleteSession(
   try {
     const { rm } = await import('fs/promises')
     await rm(getSessionPath(sessionId, options), { recursive: true, force: true })
+    invalidateSessionCache(getSessionsDir(options))
     return true
   } catch {
     return false

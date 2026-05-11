@@ -1,5 +1,5 @@
 /**
- * ResilientCall — single retry+fallback wrapper for the per-turn model call.
+ * ResilientCall — retry+fallback wrapper for the per-turn model call.
  *
  * Slice K2 / P1-4: previously the engine had three overlapping recovery
  * paths (`withRetry` for primary, manual fallback dispatch, prompt-too-long
@@ -11,15 +11,17 @@
  * Contract:
  * - `primary(model)` is invoked first via `withRetry` (exponential backoff,
  *   shared with the rest of the SDK).
- * - If it throws and a `fallbackModel` is configured, we evaluate three
- *   guards before falling back:
+ * - If it throws and a fallback chain is configured, we evaluate three
+ *   guards before attempting each fallback step:
  *     1. `AbortError` / aborted signal — never fallback, always rethrow.
  *     2. `isPromptTooLongError` — bubble up so the engine can trigger
  *        compaction-and-retry. Fallback wouldn't help an oversize prompt.
  *     3. `shouldUseFallbackModel` — checks normalized provider error
  *        categories (404 unsupported, transient 5xx, etc.).
- * - Fallback call is a single attempt (no nested retry) — matches legacy
- *   behavior. Future Slice can wrap fallback in retry too.
+ * - Tier A #3: when `fallbackModel` is an array, the chain is tried in
+ *   order; each step is a single attempt (no nested retry) and the first
+ *   that returns wins. If every step fails, the *last* error is thrown
+ *   (matching legacy single-fallback behaviour).
  *
  * Returns the model used + response so the engine can record per-model
  * usage / cost without the caller threading state.
@@ -36,7 +38,8 @@ import { isAbortError, shouldUseFallbackModel } from './error-helpers.js'
 
 export interface ResilientCallInput {
   primaryModel: string
-  fallbackModel?: string
+  /** Single fallback (legacy) or ordered chain of fallback models. */
+  fallbackModel?: string | string[]
   abortSignal?: AbortSignal
   /** Issues the model call. Returns the raw provider response. */
   call: (model: string) => Promise<CreateMessageResponse>
@@ -48,12 +51,19 @@ export interface ResilientCallInput {
 
 export interface ResilientCallResult {
   response: CreateMessageResponse
-  /** Which model produced the response (primary or fallback). */
+  /** Which model produced the response (primary or one of the fallbacks). */
   model: string
 }
 
+function normalizeFallbackChain(input: string | string[] | undefined): string[] {
+  if (!input) return []
+  if (Array.isArray(input)) return input.filter((m) => typeof m === 'string' && m.length > 0)
+  return [input]
+}
+
 export async function runResilientCall(input: ResilientCallInput): Promise<ResilientCallResult> {
-  const { primaryModel, fallbackModel, abortSignal, call, retryConfig, onAttempt } = input
+  const { primaryModel, abortSignal, call, retryConfig, onAttempt } = input
+  const chain = normalizeFallbackChain(input.fallbackModel)
 
   try {
     const response = await withRetry(
@@ -66,21 +76,29 @@ export async function runResilientCall(input: ResilientCallInput): Promise<Resil
     )
     return { response, model: primaryModel }
   } catch (primaryErr: any) {
-    // Order of guards matters: abort > oversize > category-check.
-    if (!fallbackModel || isAbortError(primaryErr) || abortSignal?.aborted) {
-      throw primaryErr
-    }
-    if (isPromptTooLongError(primaryErr)) {
-      // Engine handles this with compaction-and-retry; fallback wouldn't help.
-      throw primaryErr
-    }
-    if (!shouldUseFallbackModel(primaryErr)) {
-      throw primaryErr
-    }
-    if (abortSignal?.aborted) throw abortError()
+    if (chain.length === 0) throw primaryErr
+    if (isAbortError(primaryErr) || abortSignal?.aborted) throw primaryErr
+    if (isPromptTooLongError(primaryErr)) throw primaryErr
+    if (!shouldUseFallbackModel(primaryErr)) throw primaryErr
 
-    onAttempt?.()
-    const response = await call(fallbackModel)
-    return { response, model: fallbackModel }
+    let lastErr: any = primaryErr
+    for (const fallbackModel of chain) {
+      if (abortSignal?.aborted) throw abortError()
+      try {
+        onAttempt?.()
+        const response = await call(fallbackModel)
+        return { response, model: fallbackModel }
+      } catch (err: any) {
+        // Abort short-circuits the whole chain.
+        if (isAbortError(err) || abortSignal?.aborted) throw err
+        // Configuration-class errors (auth, prompt-too-long) make further
+        // fallbacks pointless — surface immediately rather than burning
+        // through the rest of the chain on the same root cause.
+        if (isPromptTooLongError(err)) throw err
+        if (!shouldUseFallbackModel(err)) throw err
+        lastErr = err
+      }
+    }
+    throw lastErr
   }
 }

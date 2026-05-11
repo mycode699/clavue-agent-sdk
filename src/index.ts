@@ -84,7 +84,7 @@ export {
 } from './runtime-profiles.js'
 export { extractRunImprovementCandidates, runSelfImprovement } from './improvement.js'
 export type { ImprovementCandidate, RunSelfImprovementOptions } from './improvement.js'
-export { createIssueWorkflowRun, listIssueWorkflowRuns, loadIssueWorkflowRun, loadLocalIssues, normalizeIssueInput, runIssueWorkflow, stopIssueWorkflowRun } from './issue-workflow.js'
+export { createIssueWorkflowRun, invalidateIssueWorkflowRunsCache, listIssueWorkflowRuns, loadIssueWorkflowRun, loadLocalIssues, normalizeIssueInput, runIssueWorkflow, stopIssueWorkflowRun } from './issue-workflow.js'
 export { runIssueWorkflowWithAgent } from './workflow/issue-workflow-real.js'
 export type {
   AgentLike,
@@ -625,6 +625,7 @@ export {
   tagSession,
   appendToSession,
   deleteSession,
+  invalidateSessionCache,
 } from './session.js'
 export type { SessionMetadata, SessionData, SessionStoreOptions } from './session.js'
 
@@ -640,7 +641,17 @@ export {
   queryMemoryMatches,
   deleteMemory,
   getMemoryStoreInfo,
+  invalidateMemoryCache,
 } from './memory.js'
+export {
+  consolidateMemories,
+  findDuplicateMemories,
+} from './memory/consolidate.js'
+export type {
+  ConsolidateMemoriesOptions,
+  ConsolidateMemoriesReport,
+  ConsolidationMergedGroup,
+} from './memory/consolidate.js'
 export {
   extractSessionMemoryCandidates,
   persistSessionMemoryCandidates,
@@ -801,6 +812,7 @@ export {
   stopAgentJob,
   summarizeAgentJobs,
   clearAgentJobs,
+  invalidateAgentJobsCache,
 } from './agent-jobs.js'
 export type {
   AgentJobBatchResult,
@@ -889,6 +901,10 @@ export type {
   QualityGateResult,
   QualityGatePolicy,
   AgentRunToolTrace,
+  AgentRunToolCacheTrace,
+  AgentRunAdaptiveConcurrencyTrace,
+  AgentRunAdaptiveConcurrencyAdjustment,
+  AgentRunAdaptiveConcurrencyReason,
   AgentRunTurnTrace,
   AgentRunPolicyDecisionSource,
   AgentRunToolInputSummaryType,
