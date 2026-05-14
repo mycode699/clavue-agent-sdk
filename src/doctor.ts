@@ -1,4 +1,4 @@
-import { access, mkdir } from 'node:fs/promises'
+import { access, mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -341,7 +341,23 @@ async function checkPackageEntrypoints(options: DoctorOptions): Promise<DoctorCh
   }
 
   const root = options.packageRoot || packageRoot
-  const files = ['dist/index.js', 'dist/index.d.ts', 'dist/cli.js']
+  const files = new Set<string>(['dist/index.js', 'dist/index.d.ts', 'dist/cli.js'])
+
+  // Pull every declared subpath export out of package.json#exports so a
+  // silent subpath build failure (e.g. tsc skipped one of the v3 axes)
+  // surfaces as a doctor warning rather than a runtime crash for the host.
+  try {
+    const raw = await readFile(join(root, 'package.json'), 'utf-8')
+    const pkg = JSON.parse(raw) as { exports?: Record<string, unknown> }
+    if (pkg.exports && typeof pkg.exports === 'object') {
+      for (const value of Object.values(pkg.exports)) {
+        collectExportTargets(value, files)
+      }
+    }
+  } catch {
+    // package.json missing or unparseable — fall back to the static set.
+  }
+
   const missing: string[] = []
   for (const file of files) {
     try {
@@ -350,6 +366,7 @@ async function checkPackageEntrypoints(options: DoctorOptions): Promise<DoctorCh
       missing.push(file)
     }
   }
+  missing.sort()
 
   return [{
     name: 'package.entrypoints',
@@ -358,8 +375,20 @@ async function checkPackageEntrypoints(options: DoctorOptions): Promise<DoctorCh
     message: missing.length > 0
       ? 'Some compiled package entrypoints are missing. Run npm run build before packing or publishing.'
       : 'Compiled package entrypoints are present.',
-    details: { packageRoot: root, missing },
+    details: { packageRoot: root, missing, checked: [...files].sort() },
   }]
+}
+
+function collectExportTargets(value: unknown, into: Set<string>): void {
+  if (typeof value === 'string') {
+    if (value.startsWith('./')) into.add(value.slice(2))
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const inner of Object.values(value as Record<string, unknown>)) {
+      collectExportTargets(inner, into)
+    }
+  }
 }
 
 function findDuplicates(values: string[]): string[] {

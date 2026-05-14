@@ -928,7 +928,7 @@ import {
 } from 'clavue-agent-sdk/contracts'
 ```
 
-1.0.1 全部仍是 `'1.0.0'`——添加可选字段不算 bump，只有破坏性才 bump。
+1.0.3 全部仍是 `'1.0.0'`——添加可选字段不算 bump，只有破坏性才 bump。
 
 **何时用**
 

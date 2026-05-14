@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/clavue-agent-sdk)](https://www.npmjs.com/package/clavue-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-698%2F698-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-700%2F700-brightgreen)](./tests)
 
 Production-grade TypeScript agent runtime. Embed `run()`, `query()`, or
 `createAgent()` directly in your Node.js process — no daemon, no subprocess,
@@ -42,7 +42,7 @@ bench`):
 |---|---:|---:|---:|
 | `src/engine.ts` lines | 1537 | **1041** | -32% |
 | Engine helper modules | 0 | **15** | +15 files |
-| Tests passing | 272 | **698** | +157% |
+| Tests passing | 272 | **700** | +157% |
 | Token estimator content classes separated | 1 (constant 0.25) | **4** (0.25 / 0.33 / 0.39 / 0.63) | — |
 | Worker_thread spawn p50 | n/a (stub) | **~60 ms** | runtime real |
 | Worker_thread preflight abort p95 | n/a | **<0.1 ms** | short-circuit |

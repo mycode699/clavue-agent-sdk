@@ -201,3 +201,84 @@ test('doctor surfaces actionable warnings and errors without network calls', asy
     await rm(dirs.root, { recursive: true, force: true })
   }
 })
+
+test('doctor package.entrypoints inspects every subpath export declared in package.json', async () => {
+  const dirs = await createDoctorDirs()
+  const { doctor } = await import('../src/index.ts')
+
+  try {
+    const report = await doctor({
+      env: {
+        CLAVUE_AGENT_API_TYPE: 'openai-completions',
+        CLAVUE_AGENT_MODEL: 'gpt-5.4',
+        CLAVUE_AGENT_API_KEY: 'test-key',
+      },
+      memory: { dir: dirs.memory },
+      session: { dir: dirs.sessions },
+      agentJobs: { dir: dirs.jobs, runtimeNamespace: 'doctor-subpaths' },
+      packageRoot: process.cwd(),
+    })
+
+    const entry = report.checks.find((check) => check.name === 'package.entrypoints')
+    assert.equal(entry?.status, 'ok')
+    const checked = (entry?.details?.checked as string[]) ?? []
+    // Root + the v3 axes that the README advertises must all be checked.
+    for (const expected of [
+      'dist/index.js',
+      'dist/cli.js',
+      'dist/subpath/core.js',
+      'dist/subpath/tools.js',
+      'dist/subpath/contracts.js',
+      'dist/graph/index.js',
+      'dist/guardrails/index.js',
+      'dist/tracing/index.js',
+      'dist/sandbox/index.js',
+      'dist/rag/index.js',
+      'dist/genui/index.js',
+      'dist/voice/index.js',
+    ]) {
+      assert.ok(checked.includes(expected), `expected ${expected} in checked entrypoints, got ${checked.join(', ')}`)
+    }
+    assert.deepEqual(entry?.details?.missing, [])
+  } finally {
+    await rm(dirs.root, { recursive: true, force: true })
+  }
+})
+
+test('doctor package.entrypoints reports missing subpath builds as warn', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'clavue-agent-sdk-doctor-fakeroot-'))
+  const dirs = await createDoctorDirs()
+  const { doctor } = await import('../src/index.ts')
+
+  try {
+    // Synthesize a fake package root with the same exports map but no dist/.
+    const realPkg = JSON.parse(await (await import('node:fs/promises')).readFile(join(process.cwd(), 'package.json'), 'utf-8'))
+    await (await import('node:fs/promises')).writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: realPkg.name, exports: realPkg.exports }),
+      'utf-8',
+    )
+
+    const report = await doctor({
+      env: {
+        CLAVUE_AGENT_API_TYPE: 'openai-completions',
+        CLAVUE_AGENT_MODEL: 'gpt-5.4',
+        CLAVUE_AGENT_API_KEY: 'test-key',
+      },
+      memory: { dir: dirs.memory },
+      session: { dir: dirs.sessions },
+      agentJobs: { dir: dirs.jobs, runtimeNamespace: 'doctor-missing-subpaths' },
+      packageRoot: root,
+    })
+
+    const entry = report.checks.find((check) => check.name === 'package.entrypoints')
+    assert.equal(entry?.status, 'warn')
+    const missing = (entry?.details?.missing as string[]) ?? []
+    assert.ok(missing.includes('dist/index.js'))
+    assert.ok(missing.includes('dist/graph/index.js'))
+    assert.ok(missing.includes('dist/voice/index.js'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(dirs.root, { recursive: true, force: true })
+  }
+})
