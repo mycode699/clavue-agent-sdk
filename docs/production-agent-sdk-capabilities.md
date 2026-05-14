@@ -1,6 +1,6 @@
 # Production Agent SDK Capability Analysis
 
-Last updated: 2026-04-28
+Last updated: 2026-05-14 (reflects clavue-agent-sdk@1.0.3)
 
 ## Purpose
 
@@ -66,7 +66,7 @@ A mature SDK must isolate host applications from provider-specific API differenc
 - Normalized error taxonomy for auth, rate limit, overload, timeout, prompt-too-long, content filter, model unsupported, and provider conversion failure.
 - Optional request and response streaming at provider level, not only event streaming after a full response.
 
-Current status: provider normalization exists, OpenAI Responses fallback exists for GPT-5-style models, retry exists, and cost tracking exists. Missing maturity pieces are a first-class model capability registry, fallback policy enforcement, provider-level streaming, and richer normalized error types.
+Current status: provider normalization exists, OpenAI Responses fallback exists for GPT-5-style models, retry exists, cost tracking exists, **multi-provider fallback chain enforcement** (`fallbackModel: string | string[]`) is implemented in `src/engine/resilient-call.ts` as of 1.0.3, and per-model capability flags live in `src/providers/capabilities.ts`. Missing maturity pieces are richer normalized error types and provider-level streaming health metrics.
 
 ### 3. Tool Runtime
 
@@ -227,7 +227,7 @@ Production hosts need to understand every run:
 - Export hooks for OpenTelemetry or host logging.
 - Debug mode that is safe to enable without leaking secrets.
 
-Current status: trace, usage, cost, evidence, quality gates, events, and hook system exist. Missing maturity pieces are OpenTelemetry integration, richer timing breakdown, artifact store references, redacted structured logs, and stable event schema docs.
+Current status: trace, usage, cost, evidence, quality gates, events, hook system, **OpenTelemetry exporter shim** (`src/tracing/otel-shim.ts`, see `examples/29-otel-shim.ts`), trace persistence + replay, and stable schema-versioned event/result/trace surfaces (`SDK_EVENT_SCHEMA_VERSION` / `AGENT_RUN_RESULT_SCHEMA_VERSION` / `AGENT_RUN_TRACE_SCHEMA_VERSION` in `src/types.ts`) all exist as of 1.0.3. Missing maturity pieces are richer timing breakdown, artifact store references, and redacted structured logs.
 
 ### 12. Quality, Evaluation, And Self-Improvement
 
@@ -262,7 +262,7 @@ The SDK should support:
 - Incremental event delivery for UI responsiveness.
 - Low startup overhead for reusable agents.
 
-Current status: read-only tool concurrency and result truncation exist. Missing maturity pieces are benchmarks and target budgets.
+Current status: read-only tool concurrency, result truncation, opt-in adaptive AIMD concurrency (`adaptiveToolConcurrency`), and turn-scoped tool-result cache for read-only concurrency-safe tools all exist as of 1.0.3. Deterministic local benchmarks ship via `npm run bench` (`bench:tokens`, `bench:worker`, `bench:engine`); SLO thresholds live in `docs/v2_benchmark_report.md`. Tier A landings are summarized in `docs/tier-a-summary.md`.
 
 Recommended initial targets:
 
@@ -287,7 +287,7 @@ The SDK should support:
 - Budget controls for turns, tokens, cost, and elapsed time.
 - Recovery for prompt-too-long and max-output-token responses.
 
-Current status: retry, prompt-too-long compaction, max-output continuation, max turns, max tokens, and max budget exist. Missing maturity pieces are fallback model enforcement, elapsed-time budget, circuit breaker, and provider-level streaming.
+Current status: retry with `Retry-After`, prompt-too-long compaction, max-output continuation, max turns, max tokens, max budget, and **multi-provider fallback chain** (`fallbackModel: string | string[]`, traversed in order on retryable errors — see `src/engine/resilient-call.ts`) all exist as of 1.0.3. OpenAI `prompt_cache_key` is also derived and forwarded automatically from `(model, system prompt, tool schema)`. Missing maturity pieces are elapsed-time budget, circuit breaker, and provider-level streaming health metrics.
 
 ### Context Performance
 

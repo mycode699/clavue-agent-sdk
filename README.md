@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/clavue-agent-sdk)](https://www.npmjs.com/package/clavue-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-625%2F625-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-698%2F698-brightgreen)](./tests)
 
 Production-grade TypeScript agent runtime. Embed `run()`, `query()`, or
 `createAgent()` directly in your Node.js process — no daemon, no subprocess,
@@ -20,34 +20,40 @@ capability-token sandbox、RAG、框架无关的 Generative UI 与 provider 无�
 voice 接入。
 
 ```bash
-npm install clavue-agent-sdk             # latest = 1.0.1
+npm install clavue-agent-sdk             # latest = 1.0.3
 ```
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
 
 ---
 
-## What's in 1.0.1 / 1.0.1 速览
+## What's in 1.0.3 / 1.0.3 速览
 
-The 1.0.1 release closes the 17-item v2 audit and ships the v3 seven-axis
-capability layer. Hard numbers (reproduce with `npm run bench`):
+The 1.0.x line closes the 17-item v2 audit, ships the v3 seven-axis
+capability layer (1.0.1), and adds the Tier A performance landings plus the
+Tier B list-cache family (1.0.3). Hard numbers (reproduce with `npm run
+bench`):
 
-1.0.1 关闭了 v2 审计的 17 项问题，同时发布 v3 七轴能力层。下面这些数字
-都可以用 `npm run bench` 复现：
+1.0.x 关闭了 v2 审计的 17 项问题，发布 v3 七轴能力层（1.0.1），并在 1.0.3
+补齐 Tier A 性能项与 Tier B list-cache 家族。下面这些数字都可以用
+`npm run bench` 复现：
 
-| Metric / 指标 | 0.7.5 baseline | 1.0.1 | Δ |
+| Metric / 指标 | 0.7.5 baseline | 1.0.3 | Δ |
 |---|---:|---:|---:|
-| `src/engine.ts` lines | 1537 | **965** | -37% |
+| `src/engine.ts` lines | 1537 | **1041** | -32% |
 | Engine helper modules | 0 | **15** | +15 files |
-| Tests passing | 272 | **625** | +130% |
+| Tests passing | 272 | **698** | +157% |
 | Token estimator content classes separated | 1 (constant 0.25) | **4** (0.25 / 0.33 / 0.39 / 0.63) | — |
-| Worker_thread spawn p50 | n/a (stub) | **56 ms** | runtime real |
+| Worker_thread spawn p50 | n/a (stub) | **~60 ms** | runtime real |
 | Worker_thread preflight abort p95 | n/a | **<0.1 ms** | short-circuit |
+| `listMemories` / `listAgentJobs` / `listSessions` / `listIssueWorkflowRuns` warm calls | O(N) readdir + readFile | **O(0)** (cached, invalidated on write) | new in 1.0.3 |
 
-See [`docs/v2_benchmark_report.md`](./docs/v2_benchmark_report.md) for
-methodology, raw output, and SLO thresholds for regression detection.
+See [`docs/v2_benchmark_report.md`](./docs/v2_benchmark_report.md) for the
+v2 methodology and raw output, and
+[`docs/tier-a-summary.md`](./docs/tier-a-summary.md) for the 1.0.3 Tier A /
+Tier B landings (per-item goal, files, public API, trace surface, tests).
 
-### Headline capabilities at 1.0.1
+### Headline capabilities at 1.0.3
 
 - **Streaming first.** `client.messages.stream(...)` for Anthropic,
   SSE for OpenAI Chat. Set `includePartialMessages: true` and consume
@@ -109,7 +115,14 @@ npx tsx examples/27-trace-exporter.ts     # console + JSONL exporters
 npx tsx examples/28-rag-graph.ts          # retriever node kind
 npx tsx examples/29-otel-shim.ts          # OtelTraceExporter bridge
 npx tsx examples/30-voice-adapters.ts     # Deepgram / Whisper / ElevenLabs (stub fetch)
-npx tsx examples/31-worker-thread-subagent.ts   # hard subagent isolation
+npx tsx examples/32-tier-a-performance.ts # tool cache + adaptive concurrency + fallback chain + memory consolidation
+```
+
+`examples/31-worker-thread-subagent.ts` needs a real API key (it spawns a
+Worker that constructs its own Agent from env credentials):
+
+```bash
+CLAVUE_AGENT_API_KEY=... npx tsx examples/31-worker-thread-subagent.ts
 ```
 
 详细用法见 [`docs/USAGE.md`](./docs/USAGE.md)（每个能力轴：何时用 / 如何用 / 示例 / 注意事项）。

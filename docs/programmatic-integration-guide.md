@@ -350,7 +350,35 @@ const result = await run({
 });
 ```
 
+Multi-provider fallback chain (1.0.3+) — `fallbackModel` accepts an array
+and is traversed in order until one succeeds:
+
+```typescript
+const result = await run({
+  prompt: "Review the repository for release blockers.",
+  options: {
+    model: "gpt-5.4",
+    fallbackModel: ["claude-sonnet-4-6", "glm-4.6"],
+    apiType: "openai-completions",
+  },
+});
+```
+
 The provider layer normalizes common failures into stable categories such as `authentication`, `rate_limit`, `timeout`, `network`, `unsupported_capability`, `content_filter`, `context_overflow`, `tool_protocol_error`, and `provider_conversion_error`.
+
+### Performance & resilience knobs (1.0.3)
+
+| Knob | Default | When to flip |
+|---|---|---|
+| Turn-scoped tool-result cache | always-on, transparent | n/a — duplicate read-only tool calls in one turn auto-share results |
+| `adaptiveToolConcurrency: boolean \| { min, max, initial }` | off | Set to `true` (or a bounds object) when running large mixed read/write batches; AIMD halves the cap on errors and +1s on clean batches |
+| `fallbackModel: string \| string[]` | none | Provide an array for multi-provider failover under retryable errors |
+| OpenAI `prompt_cache_key` | always-on, transparent | n/a — derived from `(model, system prompt, tool schema)` and forwarded automatically |
+| `invalidateMemoryCache(dir?)` / `invalidateAgentJobsCache(dir?)` / `invalidateSessionCache(dir?)` / `invalidateIssueWorkflowRunsCache(dir?)` | n/a | Call after raw out-of-band writes by sibling processes; see `docs/USAGE.md §21` |
+| `consolidateMemories({ dryRun?, embedder?, similarityThreshold? })` | manual | Run as a maintenance job to merge near-duplicate memory entries |
+
+See [`docs/tier-a-summary.md`](./tier-a-summary.md) for per-item goal,
+public API, trace surface, and tests.
 
 ## 10. Custom Tools
 

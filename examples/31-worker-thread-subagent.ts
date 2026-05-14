@@ -17,7 +17,7 @@
  * Run:
  *   CLAVUE_AGENT_API_KEY=... npx tsx examples/31-worker-thread-subagent.ts
  */
-import { runAgentSubagent } from '../src/tools/agent-tool.js'
+import { runAgentSubagent } from '../src/index.js'
 import type { ToolContext } from '../src/index.js'
 
 async function main() {
