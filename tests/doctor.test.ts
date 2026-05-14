@@ -51,6 +51,7 @@ test('doctor reports ready checks for provider, tools, skills, storage, mcp, and
     assert.ok(report.checks.some((check) => check.name === 'storage.agentJobs' && check.status === 'ok'))
     assert.ok(report.checks.some((check) => check.name === 'mcp.local' && check.status === 'ok'))
     assert.ok(report.checks.some((check) => check.name === 'package.entrypoints' && check.status === 'ok'))
+    assert.ok(report.checks.some((check) => check.name === 'contracts.schema_versions' && check.status === 'ok'))
   } finally {
     await rm(dirs.root, { recursive: true, force: true })
   }
@@ -165,6 +166,54 @@ test('doctor applies workflow profiles before checking tools and provider policy
     assert.equal(toolsCheck?.status, 'ok')
     assert.deepEqual(toolsCheck?.details?.tools, ['Bash', 'Read', 'Glob', 'Grep'])
     assert.equal(memoryCheck?.status, 'skipped')
+  } finally {
+    await rm(dirs.root, { recursive: true, force: true })
+  }
+})
+
+test('doctor contracts.schema_versions reports every public schema-version constant', async () => {
+  const dirs = await createDoctorDirs()
+  const {
+    doctor,
+    SDK_EVENT_SCHEMA_VERSION,
+    AGENT_RUN_RESULT_SCHEMA_VERSION,
+    AGENT_RUN_TRACE_SCHEMA_VERSION,
+    AGENT_JOB_RECORD_SCHEMA_VERSION,
+    MEMORY_TRACE_SCHEMA_VERSION,
+    PROOF_OF_WORK_SCHEMA_VERSION,
+    CONTROLLED_EXECUTION_CONTRACT_VERSION,
+  } = await import('../src/index.ts')
+
+  try {
+    const report = await doctor({
+      env: {
+        CLAVUE_AGENT_API_TYPE: 'openai-completions',
+        CLAVUE_AGENT_MODEL: 'gpt-5.4',
+        CLAVUE_AGENT_API_KEY: 'test-key',
+      },
+      memory: { dir: dirs.memory },
+      session: { dir: dirs.sessions },
+      agentJobs: { dir: dirs.jobs, runtimeNamespace: 'doctor-contracts' },
+      checkPackageEntrypoints: false,
+    })
+
+    const entry = report.checks.find((check) => check.name === 'contracts.schema_versions')
+    assert.equal(entry?.status, 'ok')
+    assert.equal(entry?.category, 'contracts')
+    const contracts = entry?.details?.contracts as Record<string, string>
+    assert.deepEqual(contracts, {
+      SDK_EVENT_SCHEMA_VERSION,
+      AGENT_RUN_RESULT_SCHEMA_VERSION,
+      AGENT_RUN_TRACE_SCHEMA_VERSION,
+      AGENT_JOB_RECORD_SCHEMA_VERSION,
+      MEMORY_TRACE_SCHEMA_VERSION,
+      PROOF_OF_WORK_SCHEMA_VERSION,
+      CONTROLLED_EXECUTION_CONTRACT_VERSION,
+    })
+    // Every shipped value must parse as MAJOR.MINOR.PATCH at minimum.
+    for (const [name, value] of Object.entries(contracts)) {
+      assert.match(value, /^\d+\.\d+\.\d+/, `${name} = ${value} is not semver`)
+    }
   } finally {
     await rm(dirs.root, { recursive: true, force: true })
   }

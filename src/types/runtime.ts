@@ -93,6 +93,7 @@ export type DoctorCheckCategory =
   | 'mcp'
   | 'storage'
   | 'package'
+  | 'contracts'
 
 export interface DoctorCheck {
   name: string

@@ -18,6 +18,15 @@ import { summarizeAgentJobs } from './agent-jobs.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import type { ApiType } from './providers/index.js'
 import { getModelCapabilities } from './providers/index.js'
+import {
+  SDK_EVENT_SCHEMA_VERSION,
+  AGENT_RUN_RESULT_SCHEMA_VERSION,
+  AGENT_RUN_TRACE_SCHEMA_VERSION,
+  AGENT_JOB_RECORD_SCHEMA_VERSION,
+  MEMORY_TRACE_SCHEMA_VERSION,
+} from './types/schema-versions.js'
+import { CONTROLLED_EXECUTION_CONTRACT_VERSION } from './runtime-profiles.js'
+import { PROOF_OF_WORK_SCHEMA_VERSION } from './proof-of-work.js'
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -35,6 +44,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
   checks.push(await checkMemoryStorage(resolvedOptions))
   checks.push(await checkAgentJobStorage(resolvedOptions))
   checks.push(...await checkPackageEntrypoints(resolvedOptions))
+  checks.push(checkSchemaVersionContracts())
 
   const summary = summarizeChecks(checks)
   return {
@@ -388,6 +398,47 @@ function collectExportTargets(value: unknown, into: Set<string>): void {
     for (const inner of Object.values(value as Record<string, unknown>)) {
       collectExportTargets(inner, into)
     }
+  }
+}
+
+// Tight semver-ish parser: MAJOR.MINOR.PATCH with optional -prerelease and
+// +build. Intentionally not a full SemVer-2.0.0 PCRE — we only need to catch
+// typos like '1.0' or '1.0.0a' before they ship in a public surface.
+const SCHEMA_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+
+function checkSchemaVersionContracts(): DoctorCheck {
+  const contracts: Record<string, string> = {
+    SDK_EVENT_SCHEMA_VERSION,
+    AGENT_RUN_RESULT_SCHEMA_VERSION,
+    AGENT_RUN_TRACE_SCHEMA_VERSION,
+    AGENT_JOB_RECORD_SCHEMA_VERSION,
+    MEMORY_TRACE_SCHEMA_VERSION,
+    PROOF_OF_WORK_SCHEMA_VERSION,
+    CONTROLLED_EXECUTION_CONTRACT_VERSION,
+  }
+  const invalid: Array<{ name: string; value: string }> = []
+  for (const [name, value] of Object.entries(contracts)) {
+    if (typeof value !== 'string' || !SCHEMA_VERSION_PATTERN.test(value)) {
+      invalid.push({ name, value: String(value) })
+    }
+  }
+
+  if (invalid.length > 0) {
+    return {
+      name: 'contracts.schema_versions',
+      category: 'contracts',
+      status: 'error',
+      message: 'One or more public schema-version constants are not valid semver.',
+      details: { invalid, contracts },
+    }
+  }
+
+  return {
+    name: 'contracts.schema_versions',
+    category: 'contracts',
+    status: 'ok',
+    message: `All ${Object.keys(contracts).length} public schema-version constants parse as semver.`,
+    details: { contracts },
   }
 }
 
