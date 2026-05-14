@@ -11,6 +11,86 @@ explicitly when they bump.
 
 ---
 
+## [1.0.4] — 2026-05-14
+
+Docs alignment + two additive `doctor()` enhancements. **No source behavior
+change in the hot agent loop.** No `*_SCHEMA_VERSION` bump. Tests 698 →
+**701 / 701** passing; `npm run build` clean.
+
+### Doctor (additive `DoctorReport` shape)
+
+- **`package.entrypoints` now walks `package.json#exports`**. Previously only
+  three files (`dist/index.js`, `dist/index.d.ts`, `dist/cli.js`) were
+  verified; `package.json#exports` declares 13 subpaths (root + `core` /
+  `tools` / `contracts` / `workflow` / `retro` / `testing` + 7 v3 axes).
+  A silent subpath build failure would have shipped undetected and crashed
+  hosts that did `import 'clavue-agent-sdk/graph'`. Doctor now recursively
+  collects every `./...` target into a `Set`, `access()`-checks each, and
+  reports `details.checked` alongside `details.missing` so hosts can
+  introspect the verified surface. Falls back to the static 3-file list if
+  `package.json` is missing or unparseable.
+  Files: `src/doctor.ts`. Tests: `tests/doctor.test.ts` (×2 new).
+- **New `contracts.schema_versions` check.** All 7 public schema-version
+  constants (`SDK_EVENT_SCHEMA_VERSION`, `AGENT_RUN_RESULT_SCHEMA_VERSION`,
+  `AGENT_RUN_TRACE_SCHEMA_VERSION`, `AGENT_JOB_RECORD_SCHEMA_VERSION`,
+  `MEMORY_TRACE_SCHEMA_VERSION`, `PROOF_OF_WORK_SCHEMA_VERSION`,
+  `CONTROLLED_EXECUTION_CONTRACT_VERSION`) are now validated against a
+  tight semver pattern at doctor time. Typos like `'1.0'` or `'1.0.0a'`
+  surface as `status: 'error'` pre-publish instead of after a downstream
+  parser fails. `details.contracts` is a ready-to-display map for host UIs.
+  **API**: new `DoctorCheckCategory` value `'contracts'` (additive).
+  Files: `src/doctor.ts`, `src/types/runtime.ts`. Tests:
+  `tests/doctor.test.ts` (×1 new).
+
+### Examples / docs alignment
+
+- **`examples/31-worker-thread-subagent.ts`** now imports `runAgentSubagent`
+  from `'../src/index.js'` (public re-export) instead of
+  `'../src/tools/agent-tool.js'` (private path that triggered a
+  circular-import TDZ: *Cannot access `AgentTool` before initialization*).
+- **`README.md`** test badge / install hint / "What's in 1.0.x" headline +
+  metric table + offline-example list realigned to 1.0.3+. `examples/31`
+  moved out of the "no API key" block into a separate "needs a real API
+  key" snippet (the worker constructs its own Agent from env credentials
+  by design). Cross-link to `docs/tier-a-summary.md` from the headline.
+- **`docs/USAGE.md`** banner: `1.0.1 详细用法` → `1.0.3 详细用法`. §20
+  stale version anchor: `1.0.1 全部仍是 '1.0.0'` → `1.0.3 全部仍是 '1.0.0'`
+  (all 7 schema-version constants are still `'1.0.0'`; no semantic change).
+- **`docs/production-agent-sdk-capabilities.md`** "Last updated" bumped to
+  2026-05-14 (tagged "reflects 1.0.3"). Four "Current status" lines
+  rewritten to mark shipped features as present with concrete file
+  pointers: fallback chain (`src/engine/resilient-call.ts`), OpenTelemetry
+  shim (`src/tracing/otel-shim.ts`), benchmark suite (`npm run bench`
+  family), tool-result cache + opt-in adaptive AIMD concurrency,
+  schema-versioned event/result/trace surfaces.
+- **`docs/programmatic-integration-guide.md` §9** added array-form
+  fallback-chain example plus a "Performance & resilience knobs (1.0.3)"
+  six-row table covering tool-result cache, `adaptiveToolConcurrency`,
+  `fallbackModel: string | string[]`, OpenAI `prompt_cache_key`, the four
+  `invalidateXxxCache` hatches, and `consolidateMemories`. Cross-links
+  `docs/tier-a-summary.md` and `docs/USAGE.md §21`.
+
+### Tests / build
+
+- `npm run test`: 698 → **701 / 701** passing (+2 doctor subpath tests,
+  +1 doctor contracts test).
+- `npm run build` clean (`tsc --strict`).
+- README offline-list smoke (unset all `*_API_KEY` / `*_AUTH_TOKEN` envs +
+  `perl -e 'alarm 30; exec @ARGV' npx tsx` for examples 19/20/21/22/23/
+  24/27/28/29/30/32): **11 / 11 pass**.
+
+### Compatibility
+
+- No `*_SCHEMA_VERSION` change. All 7 still `'1.0.0'`.
+- `DoctorReport.checks` gains one new entry (`contracts.schema_versions`)
+  and `package.entrypoints.details` gains `checked: string[]`. Both
+  changes are additive — pre-existing assertions on the report shape
+  remain valid.
+- `DoctorCheckCategory` union gains `'contracts'` (additive).
+- No agent-loop, provider, tool, or trace behavior change.
+
+---
+
 ## [1.0.3] — 2026-05-11
 
 Tier A 性能落地 + Tier B list-cache 家族扩展。**默认行为字节级不变**——所有

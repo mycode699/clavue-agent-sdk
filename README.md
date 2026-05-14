@@ -20,7 +20,7 @@ capability-token sandbox、RAG、框架无关的 Generative UI 与 provider 无�
 voice 接入。
 
 ```bash
-npm install clavue-agent-sdk             # latest = 1.0.3
+npm install clavue-agent-sdk             # latest = 1.0.4
 ```
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
