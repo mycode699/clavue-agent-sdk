@@ -22,6 +22,7 @@ import type {
   GuardrailEventData,
   ToolCacheEventData,
   ToolCallEventData,
+  ToolConcurrencyAdjustEventData,
   TraceEvent,
   TraceQuery,
   TraceRun,
@@ -125,6 +126,19 @@ export class TraceStore {
   appendToolCache(payload: ToolCacheEventData, runId?: string): number {
     return this.append(
       { kind: 'tool_cache', data: payload, spanId: `tool:${payload.toolName}` },
+      runId,
+    )
+  }
+
+  /**
+   * Append a `tool_concurrency_adjust` event. Engine calls this once
+   * per AIMD limit change (only when adaptive concurrency is opt-in
+   * and the limit actually moved). Static-mode controllers never
+   * call this.
+   */
+  appendToolConcurrencyAdjust(payload: ToolConcurrencyAdjustEventData, runId?: string): number {
+    return this.append(
+      { kind: 'tool_concurrency_adjust', data: payload, spanId: 'tool:concurrency' },
       runId,
     )
   }

@@ -17,7 +17,7 @@ import type { GraphStep } from '../graph/types.js'
 import type { GuardrailEvaluation, GuardrailScope } from '../guardrails/types.js'
 
 export interface TraceEvent {
-  /** Discriminator. Built-in kinds: `graph_step`, `guardrail`, `tool_call`, `tool_cache`, `note`. Hosts may extend. */
+  /** Discriminator. Built-in kinds: `graph_step`, `guardrail`, `tool_call`, `tool_cache`, `tool_concurrency_adjust`, `note`. Hosts may extend. */
   kind: string
   /** Unix epoch ms when the event occurred. */
   at: number
@@ -82,4 +82,26 @@ export interface ToolCacheEventData {
   toolName: string
   toolUseId: string
   outcome: 'hit' | 'miss'
+}
+
+/**
+ * `tool_concurrency_adjust` event payload — one event per AIMD limit
+ * change. Mirrors `AgentRunAdaptiveConcurrencyAdjustment` but as a
+ * streaming TraceEvent so OTel consumers see every halve/+1 decision
+ * in real time, not only at run end via
+ * `AgentRunTrace.tool_concurrency_adaptive.adjustments`.
+ *
+ * Emitted only when the host opts into `adaptiveToolConcurrency`. The
+ * static-fallback controller never produces this event (byte-identical
+ * default trace behavior preserved).
+ */
+export interface ToolConcurrencyAdjustEventData {
+  /** 0-based index over adaptive-affecting concurrent chunks (size > 1). */
+  batchIndex: number
+  /** Limit before this adjustment. */
+  previous: number
+  /** Limit after this adjustment. */
+  current: number
+  /** `'error'` = batch had at least one tool error → halve. `'success'` = clean batch → +1. */
+  reason: 'error' | 'success'
 }

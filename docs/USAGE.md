@@ -571,7 +571,7 @@ agent.useTracing(exporter)
 
 - `AGENT_RUN_TRACE_SCHEMA_VERSION = '1.0.0'`——升级时检查 host 的 trace consumer
 - OTel shim 是结构化注入，不强依赖 `@opentelemetry/sdk-node`——你传什么 tracer 它用什么
-- 内建 event kinds：`graph_step`、`guardrail`、`tool_call`、`tool_cache`（Tier A #1 per-call cache 命中/未命中，OTel 映射 `tool.cache.<outcome>`，详见 §20.1）；host 可自定义任意 `kind`
+- 内建 event kinds：`graph_step`、`guardrail`、`tool_call`、`tool_cache`（Tier A #1 per-call cache 命中/未命中，OTel 映射 `tool.cache.<outcome>`，详见 §20.1）、`tool_concurrency_adjust`（Tier A #2 AIMD per-call 调整，OTel 映射 `tool.concurrency.adjust.<reason>`，详见 §20.1）；host 可自定义任意 `kind`
 - 见 `examples/21-tracing-replay.ts` / `27-trace-exporter.ts` / `29-otel-shim.ts`
 
 ---
@@ -989,6 +989,11 @@ if (r2.trace?.tool_concurrency_adaptive) {
 - `adjustments[]` 按时间顺序；`reason: 'error'` = 上个 batch 有工具失败（halve），`reason: 'success'` = clean batch（+1）。
 - `min ≤ final ≤ max`；`initial` 是 host 配的起点（默认等于 resolved `maxToolConcurrency`）。
 - 默认 fallback（不 opt-in）路径**完全不写**这个字段——legacy trace 字节级保持原样。Contract 锁在 `tests/dispatch-executor.test.ts`。
+
+**实时 per-call 事件（v3.3 tracing）**
+
+`AgentRunTrace.tool_concurrency_adaptive` 同样是 **run 级聚合**。
+如果你接了 `TraceStore` / `OtelTraceExporter`，engine 会在每次 limit 变动时 append 一个 `kind: 'tool_concurrency_adjust'` 的 `TraceEvent`，payload 形状 `{ batchIndex, previous, current, reason: 'error' | 'success' }`，spanId 是 `tool:concurrency`（不绑定具体 tool —— 这是 turn-级 fan-out 决策）。OTel exporter 把它映射成 `tool.concurrency.adjust.error` / `tool.concurrency.adjust.success` span，attributes 含 `tool.concurrency.reason` / `tool.concurrency.previous` / `tool.concurrency.current` / `tool.concurrency.batch_index`。Pin-bounce 到 min/max（`current === previous`）不发事件。Contract 锁在 `tests/tracing-tool-concurrency-event.test.ts`。
 
 **何时用**
 

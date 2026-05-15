@@ -76,4 +76,17 @@ test('USAGE.md §11 lists tool_cache among the built-in TraceEvent kinds', async
   // OTel consumers discover it without spelunking into §20.1.
   const sec11 = text.split('## 11.')[1]?.split('## 12.')[0] ?? ''
   assert.match(sec11, /tool_cache/, '§11 should list tool_cache as a built-in kind')
+  assert.match(sec11, /tool_concurrency_adjust/, '§11 should list tool_concurrency_adjust as a built-in kind')
+})
+
+test('USAGE.md §20.1 documents the per-call tool_concurrency_adjust TraceEvent + OTel mapping', async () => {
+  const text = await readUsage()
+  assert.match(text, /kind: 'tool_concurrency_adjust'/, 'TraceEvent discriminator missing')
+  assert.match(text, /tool\.concurrency\.adjust\.error/, 'OTel error span name missing')
+  assert.match(text, /tool\.concurrency\.adjust\.success/, 'OTel success span name missing')
+  assert.match(text, /tool\.concurrency\.reason/, 'OTel reason attribute missing')
+  assert.match(text, /tool\.concurrency\.previous/, 'OTel previous attribute missing')
+  assert.match(text, /tool\.concurrency\.current/, 'OTel current attribute missing')
+  assert.match(text, /tool:concurrency/, 'spanId convention missing')
+  assert.match(text, /tests\/tracing-tool-concurrency-event\.test\.ts/, 'event contract test ref missing')
 })

@@ -147,6 +147,22 @@ export class QueryEngine {
     this.concurrencyController = buildConcurrencyController(
       config.adaptiveToolConcurrency,
       toolConcurrency.limit,
+      // Telemetry sink — fires only when adaptive mode is on AND the
+      // limit actually moves. Static mode never reaches this callback.
+      config.trace
+        ? (adjustment) => {
+            try {
+              config.trace!.appendToolConcurrencyAdjust({
+                batchIndex: adjustment.batch_index,
+                previous: adjustment.previous,
+                current: adjustment.current,
+                reason: adjustment.reason,
+              })
+            } catch {
+              // Telemetry must never break a run.
+            }
+          }
+        : undefined,
     )
     this.trace = {
       schema_version: AGENT_RUN_TRACE_SCHEMA_VERSION,

@@ -10,6 +10,7 @@ export type {
   GuardrailEventData,
   ToolCacheEventData,
   ToolCallEventData,
+  ToolConcurrencyAdjustEventData,
   TraceEvent,
   TraceQuery,
   TraceRun,

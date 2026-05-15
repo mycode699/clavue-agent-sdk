@@ -11,6 +11,62 @@ explicitly when they bump.
 
 ---
 
+## [1.0.6] — 2026-05-15
+
+Adaptive concurrency observability parity with `tool_cache`. **No source
+behavior change in the hot agent loop default path.** No `*_SCHEMA_VERSION`
+bump (new `TraceEvent.kind` value is host-extensible by contract). Tests
+720 → **728 / 728** passing; `npm run build` clean; `bench:engine` green
+(engine.ts 1054 → 1070 LoC, still under the 1100 SLO).
+
+### New TraceEvent kind
+
+- **`tool_concurrency_adjust` per-call event.** AIMD adaptive concurrency
+  previously only surfaced through the run-level
+  `AgentRunTrace.tool_concurrency_adaptive` aggregate. Hosts wiring a
+  `TraceStore` / `OtelTraceExporter` now also receive a streamed event
+  on every real limit change (halve / +1), with payload
+  `{ batchIndex, previous, current, reason: 'error' | 'success' }` and
+  spanId `'tool:concurrency'` (turn-level — concurrency is a fan-out
+  decision, not bound to a specific tool). Pin-bounce against `min`/`max`
+  emits nothing. Static-mode controller is byte-identical to legacy.
+- **OTel mapping.** `eventToOtelSpan` maps the new kind to
+  `tool.concurrency.adjust.error` / `tool.concurrency.adjust.success`
+  with attributes `tool.concurrency.{reason,previous,current,batch_index}`.
+- **Controller telemetry sink.** New
+  `AdaptiveConcurrencyOptions.onAdjustment(adjustment)` callback fires
+  synchronously inside the controller after every real limit change.
+  `buildConcurrencyController` now takes an optional third `onAdjustment`
+  parameter (additive, non-breaking). Engine wires this to
+  `traceStore.appendToolConcurrencyAdjust` wrapped in try/catch —
+  telemetry failures never break a run.
+
+### Public surface (additive)
+
+- `TraceEvent.kind = 'tool_concurrency_adjust'`
+- `ToolConcurrencyAdjustEventData` (re-exported from `clavue-agent-sdk/tracing`)
+- `TraceStore.appendToolConcurrencyAdjust(...)`
+- `AdaptiveConcurrencyOptions.onAdjustment`
+- `buildConcurrencyController(_, _, onAdjustment?)`
+
+### Documentation
+
+- `docs/USAGE.md` §11 lists `tool_concurrency_adjust` among the built-in
+  TraceEvent kinds.
+- `docs/USAGE.md` §20.1 gains a "实时 per-call 事件" paragraph for the
+  AIMD axis, mirroring the `tool_cache` write-up shipped in 1.0.5.
+- `tests/docs-usage-trace-fields.test.ts` grows from 7 → 8 assertions
+  pinning the new doc claims.
+
+### Tests
+
+- New `tests/tracing-tool-concurrency-event.test.ts` (7 tests) locks the
+  TraceStore / exporter / controller / `buildConcurrencyController` /
+  `JsonlExporter` interleaving contract.
+- Suite total: **728 / 728**.
+
+---
+
 ## [1.0.5] — 2026-05-15
 
 Runtime observability + enforced perf SLO gate. **No source behavior

@@ -21,6 +21,11 @@
  *   tool_cache    → name = "tool.cache.<outcome>"
  *                   attributes: tool.name, tool.cache.outcome,
  *                               tool.use_id?
+ *   tool_concurrency_adjust → name = "tool.concurrency.adjust.<reason>"
+ *                              attributes: tool.concurrency.reason,
+ *                                          tool.concurrency.previous,
+ *                                          tool.concurrency.current,
+ *                                          tool.concurrency.batch_index
  *   <other>       → name = "trace.<kind>" (verbatim attributes)
  *
  * @module
@@ -151,6 +156,27 @@ export function eventToOtelSpan(event: TraceEvent): OtelSpanLike {
       baseAttributes['tool.name'] = data.toolName
       baseAttributes['tool.cache.outcome'] = data.outcome
       baseAttributes['tool.use_id'] = data.toolUseId
+      return {
+        name,
+        traceId,
+        ...(event.spanId !== undefined ? { spanId: event.spanId } : {}),
+        startTime: event.at,
+        endTime,
+        attributes: baseAttributes,
+      }
+    }
+    case 'tool_concurrency_adjust': {
+      const data = event.data as {
+        batchIndex: number
+        previous: number
+        current: number
+        reason: 'error' | 'success'
+      }
+      name = `tool.concurrency.adjust.${data.reason}`
+      baseAttributes['tool.concurrency.reason'] = data.reason
+      baseAttributes['tool.concurrency.previous'] = data.previous
+      baseAttributes['tool.concurrency.current'] = data.current
+      baseAttributes['tool.concurrency.batch_index'] = data.batchIndex
       return {
         name,
         traceId,

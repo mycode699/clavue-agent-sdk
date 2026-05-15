@@ -30,6 +30,13 @@ export interface AdaptiveConcurrencyOptions {
   min?: number
   /** Upper bound. Default = `initial`. */
   max?: number
+  /**
+   * Optional sink for individual adjustments. Fires synchronously after
+   * every limit change (halve / +1). Used by the engine to emit
+   * `tool_concurrency_adjust` TraceEvents in real time; static-mode
+   * controllers never invoke it.
+   */
+  onAdjustment?: (adjustment: AgentRunAdaptiveConcurrencyAdjustment) => void
 }
 
 export interface ConcurrencyController {
@@ -77,12 +84,20 @@ export function createAdaptiveConcurrencyController(
         current = Math.min(max, current + 1)
       }
       if (current !== previous) {
-        adjustments.push({
+        const adjustment: AgentRunAdaptiveConcurrencyAdjustment = {
           batch_index: batchIndex,
           previous,
           current,
           reason: errors > 0 ? 'error' : 'success',
-        })
+        }
+        adjustments.push(adjustment)
+        if (opts.onAdjustment) {
+          try {
+            opts.onAdjustment(adjustment)
+          } catch {
+            // Telemetry must never break a run.
+          }
+        }
       }
       batchIndex++
     },
@@ -116,14 +131,19 @@ function clamp(value: number, min: number, max: number): number {
 export function buildConcurrencyController(
   configured: boolean | { min?: number; max?: number; initial?: number } | undefined,
   resolvedLimit: number,
+  onAdjustment?: (adjustment: AgentRunAdaptiveConcurrencyAdjustment) => void,
 ): ConcurrencyController {
   if (!configured) return createStaticConcurrencyController(resolvedLimit)
   if (configured === true) {
-    return createAdaptiveConcurrencyController({ initial: resolvedLimit })
+    return createAdaptiveConcurrencyController({
+      initial: resolvedLimit,
+      ...(onAdjustment ? { onAdjustment } : {}),
+    })
   }
   return createAdaptiveConcurrencyController({
     initial: configured.initial ?? resolvedLimit,
     min: configured.min,
     max: configured.max,
+    ...(onAdjustment ? { onAdjustment } : {}),
   })
 }
