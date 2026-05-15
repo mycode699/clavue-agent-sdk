@@ -175,14 +175,18 @@ no external dependencies beyond the SDK's own dev deps.
 
 ## 7. SLOs for 1.0.0 regression detection
 
-Treat these as guard-rails for future PRs:
+Treat these as guard-rails for future PRs. The first three rows
+(`engine.ts` LoC, test count, test wall-time) are **enforced** —
+`npm run bench:engine` exits non-zero on breach. The rest are
+advisory: `bench:tokens` / `bench:worker` print metrics for human
+inspection but do not gate.
 
-| Metric | Threshold | Source |
-|---|---|---|
-| `engine.ts` LoC | < 1100 | `npm run bench:engine` |
-| Test count | ≥ 625 | `npm run bench:engine` |
-| Test wall-time | < 60s | `npm run bench:engine` |
-| Token v2 density spread | > 0.30 | `npm run bench:tokens` |
-| spawnLatency p95 | < 200ms | `npm run bench:worker` |
-| preflightAbort p95 | < 5ms | `npm run bench:worker` |
-| abortResolveLatency p95 | < 5ms | `npm run bench:worker` |
+| Metric | Threshold | Source | Enforced |
+|---|---|---|---|
+| `engine.ts` LoC | < 1100 | `npm run bench:engine` | ✅ |
+| Test count | ≥ 625 | `npm run bench:engine` | ✅ |
+| Test wall-time | < 60s | `npm run bench:engine` | ✅ |
+| Token v2 density spread | > 0.30 | `npm run bench:tokens` | ❌ advisory |
+| spawnLatency p95 | < 200ms | `npm run bench:worker` | ❌ advisory |
+| preflightAbort p95 | < 5ms | `npm run bench:worker` | ❌ advisory |
+| abortResolveLatency p95 | < 5ms | `npm run bench:worker` | ❌ advisory |

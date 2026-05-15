@@ -11,7 +11,81 @@ explicitly when they bump.
 
 ---
 
-## [1.0.4] — 2026-05-14
+## [1.0.5] — 2026-05-15
+
+Runtime observability + enforced perf SLO gate. **No source behavior
+change in the hot agent loop default path.** No `*_SCHEMA_VERSION` bump
+(new `TraceEvent.kind` value is host-extensible by contract). Tests
+701 → **720 / 720** passing; `npm run build` clean.
+
+### Enforced regression gate
+
+- **`npm run bench:engine` now exits non-zero on SLO breach.** Previously
+  the script only printed metrics; `clavue.md` claimed it "enforces the
+  line-count ceiling" — that claim was false. New pure-function module
+  `scripts/bench/engine-slo.ts` evaluates the three SLOs already published
+  in `docs/v2_benchmark_report.md §7` (engine.ts LoC < 1100, test count
+  ≥ 625, wall-time < 60s) and prints a verdict table; the bench script
+  calls `process.exit(1)` on any breach. `clavue.md` claim corrected;
+  `docs/v2_benchmark_report.md §7` gains an "Enforced" column.
+  Files: `scripts/bench/engine-slo.ts` (new), `scripts/bench/engine-footprint.ts`,
+  `clavue.md`, `docs/v2_benchmark_report.md`. Tests:
+  `tests/bench-engine-slo.test.ts` (new, 7 tests pinning every threshold
+  + null-metric breach paths + renderer output).
+
+### Tracing — per-call `tool_cache` event
+
+- **New built-in `TraceEvent.kind: 'tool_cache'`** for real-time cache
+  visibility. Previously the OTel/JSONL stream only had three built-in
+  kinds (`graph_step`, `guardrail`, `tool_call`); cache outcomes lived
+  only in the post-hoc `AgentRunTrace.tool_cache` aggregate. Engine now
+  emits one event per cacheable dispatch (gated on `AgentOptions.trace`),
+  payload `{ toolName, toolUseId, outcome: 'hit' | 'miss' }`, spanId
+  `tool:<name>` (shared with `tool_call` for parent/child correlation).
+- **OTel shim mapping**: `eventToOtelSpan` now maps `tool_cache` events
+  to `tool.cache.hit` / `tool.cache.miss` spans with attributes
+  `tool.name`, `tool.cache.outcome`, `tool.use_id`.
+- **Public surface** (additive): `ToolCacheEventData` type re-exported
+  from `clavue-agent-sdk/tracing`; `TraceStore.appendToolCache(payload,
+  runId?)` convenience appender mirroring `appendToolCall`. Telemetry
+  writes are wrapped in try/catch — a TraceStore failure cannot break
+  a run.
+  Files: `src/tracing/types.ts`, `src/tracing/runtime.ts`,
+  `src/tracing/exporter.ts`, `src/tracing/index.ts`, `src/engine.ts`.
+  Tests: `tests/tracing-tool-cache-event.test.ts` (new, 5 tests pinning
+  payload shape, OTel span mapping for hit + miss, engine emission
+  count for cacheable / non-cacheable tools, JsonlExporter correlation
+  via shared `tool:<name>` spanId). `src/engine.ts` 1040 → 1054 LoC
+  (under the enforced SLO ceiling of 1100).
+
+### Docs alignment
+
+- **`docs/USAGE.md §20.1` (new)** documents the two optional Tier A
+  trace perf fields shipped in 1.0.3 — `tool_cache` and
+  `tool_concurrency_adaptive`. Field-presence table, opt-in /
+  consumption snippets, contract invariants per field, references to
+  the canonical contract tests, and the new "实时 per-call 事件"
+  paragraph covering the streaming TraceEvent + OTel span shape.
+- **`docs/USAGE.md §11`** now lists `tool_cache` among the built-in
+  `TraceEvent` kinds so OTel users discover the streaming signal
+  without spelunking into §20.1.
+  Files: `docs/USAGE.md`. Tests: `tests/docs-usage-trace-fields.test.ts`
+  (new, 7 tests pinning headings, field names, contract invariants,
+  test-file references, and ToC anchor wiring).
+
+### Cumulative impact
+
+- 5 retro rounds, 3 keeps, 0 discards in
+  `2026-05-15-runtime-observability`.
+- Tests 701 → 720 (+19).
+- `src/engine.ts` 1040 → 1054 LoC (+14, well under enforced 1100 SLO).
+- `bench:engine` becomes a real PR-time regression gate.
+- Two new public surfaces (`ToolCacheEventData`,
+  `TraceStore.appendToolCache`).
+
+---
+
+
 
 Docs alignment + two additive `doctor()` enhancements. **No source behavior
 change in the hot agent loop.** No `*_SCHEMA_VERSION` bump. Tests 698 →

@@ -8,6 +8,7 @@
 export type {
   GraphStepEventData,
   GuardrailEventData,
+  ToolCacheEventData,
   ToolCallEventData,
   TraceEvent,
   TraceQuery,

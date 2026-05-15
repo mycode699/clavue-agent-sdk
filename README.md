@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/clavue-agent-sdk)](https://www.npmjs.com/package/clavue-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-701%2F701-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-720%2F720-brightgreen)](./tests)
 
 Production-grade TypeScript agent runtime. Embed `run()`, `query()`, or
 `createAgent()` directly in your Node.js process — no daemon, no subprocess,
@@ -20,7 +20,7 @@ capability-token sandbox、RAG、框架无关的 Generative UI 与 provider 无�
 voice 接入。
 
 ```bash
-npm install clavue-agent-sdk             # latest = 1.0.4
+npm install clavue-agent-sdk             # latest = 1.0.5
 ```
 
 Also available in **Go**: [clavue-agent-sdk-go](https://github.com/mycode699/clavue-agent-sdk-go)
@@ -42,7 +42,7 @@ bench`):
 |---|---:|---:|---:|
 | `src/engine.ts` lines | 1537 | **1041** | -32% |
 | Engine helper modules | 0 | **15** | +15 files |
-| Tests passing | 272 | **701** | +158% |
+| Tests passing | 272 | **720** | +165% |
 | Token estimator content classes separated | 1 (constant 0.25) | **4** (0.25 / 0.33 / 0.39 / 0.63) | — |
 | Worker_thread spawn p50 | n/a (stub) | **~60 ms** | runtime real |
 | Worker_thread preflight abort p95 | n/a | **<0.1 ms** | short-circuit |

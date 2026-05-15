@@ -18,6 +18,9 @@
  *                               tool.name?
  *   tool_call     → name = "tool.<phase>.<name>"
  *                   attributes: tool.name, tool.phase
+ *   tool_cache    → name = "tool.cache.<outcome>"
+ *                   attributes: tool.name, tool.cache.outcome,
+ *                               tool.use_id?
  *   <other>       → name = "trace.<kind>" (verbatim attributes)
  *
  * @module
@@ -133,6 +136,21 @@ export function eventToOtelSpan(event: TraceEvent): OtelSpanLike {
       name = `tool.${data.phase}.${data.toolName}`
       baseAttributes['tool.name'] = data.toolName
       baseAttributes['tool.phase'] = data.phase
+      return {
+        name,
+        traceId,
+        ...(event.spanId !== undefined ? { spanId: event.spanId } : {}),
+        startTime: event.at,
+        endTime,
+        attributes: baseAttributes,
+      }
+    }
+    case 'tool_cache': {
+      const data = event.data as { toolName: string; toolUseId: string; outcome: 'hit' | 'miss' }
+      name = `tool.cache.${data.outcome}`
+      baseAttributes['tool.name'] = data.toolName
+      baseAttributes['tool.cache.outcome'] = data.outcome
+      baseAttributes['tool.use_id'] = data.toolUseId
       return {
         name,
         traceId,

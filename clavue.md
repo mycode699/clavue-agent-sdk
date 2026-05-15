@@ -40,7 +40,7 @@ npx tsx examples/14-openai-compat.ts
 npm run bench
 npm run bench:tokens
 npm run bench:worker
-npm run bench:engine            # enforces engine.ts line-count ceiling
+npm run bench:engine            # exits non-zero if engine.ts LoC, test count, or wall-time SLO is breached
 
 # Local web demo:
 npm run web                     # http://localhost:8081
@@ -149,8 +149,9 @@ src/doctor.ts  src/benchmark.ts   preflight + perf gates
 - **Engine helpers.** `engine.ts` is intentionally split into 15 modules
   under `src/engine/` to stay under ~1000 lines. New agent-loop logic →
   extend an existing helper or add a new one; don't inline back into
-  `engine.ts`. `npm run bench:engine` enforces the line-count regression
-  threshold.
+  `engine.ts`. `npm run bench:engine` enforces the SLO budget from
+  `docs/v2_benchmark_report.md §7` (engine.ts LoC, test count, wall-time)
+  and exits non-zero on breach.
 
 - **Subpath exports.** Adding a new public symbol means updating BOTH
   `src/index.ts` (root barrel) AND the relevant `src/subpath/*.ts` or v3

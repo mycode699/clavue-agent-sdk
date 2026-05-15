@@ -17,7 +17,7 @@ import type { GraphStep } from '../graph/types.js'
 import type { GuardrailEvaluation, GuardrailScope } from '../guardrails/types.js'
 
 export interface TraceEvent {
-  /** Discriminator. Built-in kinds: `graph_step`, `guardrail`, `tool_call`, `note`. Hosts may extend. */
+  /** Discriminator. Built-in kinds: `graph_step`, `guardrail`, `tool_call`, `tool_cache`, `note`. Hosts may extend. */
   kind: string
   /** Unix epoch ms when the event occurred. */
   at: number
@@ -64,4 +64,22 @@ export interface ToolCallEventData {
   input?: unknown
   output?: unknown
   error?: string
+}
+
+/**
+ * `tool_cache` event payload — one event per cacheable `tool.call()`
+ * dispatch. `outcome: 'hit'` means the result was served from the
+ * turn-scoped cache; `'miss'` means the tool actually ran. Tools that
+ * are not `isReadOnly() && isConcurrencySafe()` bypass the cache and
+ * emit no `tool_cache` event.
+ *
+ * The event mirrors the aggregate counters in
+ * `AgentRunTrace.tool_cache?: { hits, misses }` but is per-call, so
+ * OTel/streaming consumers can correlate cache outcomes to individual
+ * `tool_use` ids in real time.
+ */
+export interface ToolCacheEventData {
+  toolName: string
+  toolUseId: string
+  outcome: 'hit' | 'miss'
 }

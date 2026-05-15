@@ -14,6 +14,8 @@ import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 
+import { evaluateEngineFootprintSlos, renderSloVerdict } from './engine-slo.js'
+
 const REPO_ROOT = join(import.meta.dirname ?? new URL('.', import.meta.url).pathname, '..', '..')
 
 async function lineCount(path: string): Promise<number> {
@@ -92,15 +94,26 @@ async function main(): Promise<void> {
 
   console.log('\n## Test suite size and wall-time\n')
   const testRun = await runProcess('npm', ['run', '--silent', 'test'])
+  let testCount: number | null = null
+  let testWallMs: number | null = null
   if (testRun.exitCode !== 0) {
     console.log(`Test run failed with exit ${testRun.exitCode}:`)
     console.log(testRun.stderr.slice(0, 500))
   } else {
     const passMatch = testRun.stdout.match(/^# pass (\d+)$/m)
     const failMatch = testRun.stdout.match(/^# fail (\d+)$/m)
+    testCount = passMatch ? Number(passMatch[1]) : null
+    testWallMs = testRun.durationMs
     console.log(`- Tests passing: **${passMatch?.[1] ?? '?'}**`)
     console.log(`- Tests failing: **${failMatch?.[1] ?? '?'}**`)
     console.log(`- Wall-time (single run): **${(testRun.durationMs / 1000).toFixed(1)}s**`)
+  }
+
+  // Enforced SLO gate — exits non-zero on breach so PRs see the regression.
+  const verdict = evaluateEngineFootprintSlos({ engineLoc, testCount, testWallMs })
+  console.log('\n' + renderSloVerdict(verdict))
+  if (!verdict.ok) {
+    process.exit(1)
   }
 }
 

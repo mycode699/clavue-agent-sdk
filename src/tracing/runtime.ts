@@ -20,6 +20,7 @@
 import type {
   GraphStepEventData,
   GuardrailEventData,
+  ToolCacheEventData,
   ToolCallEventData,
   TraceEvent,
   TraceQuery,
@@ -111,6 +112,19 @@ export class TraceStore {
   appendToolCall(payload: ToolCallEventData, runId?: string): number {
     return this.append(
       { kind: 'tool_call', data: payload, spanId: `tool:${payload.toolName}` },
+      runId,
+    )
+  }
+
+  /**
+   * Append a per-call `tool_cache` event. Engine calls this once per
+   * cacheable dispatch; non-cacheable tools never reach this method.
+   * `spanId` mirrors `appendToolCall` so OTel consumers can correlate
+   * cache outcomes with the parent tool span.
+   */
+  appendToolCache(payload: ToolCacheEventData, runId?: string): number {
+    return this.append(
+      { kind: 'tool_cache', data: payload, spanId: `tool:${payload.toolName}` },
       runId,
     )
   }

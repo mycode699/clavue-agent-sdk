@@ -813,6 +813,19 @@ export class QueryEngine {
           )
           toolResult = outcome.result
           fromCache = outcome.cached
+          // v3.3 tracing — emit per-call cache event so OTel/JSONL streams
+          // get real-time hit/miss visibility, not just the run aggregate.
+          if (this.config.trace) {
+            try {
+              this.config.trace.appendToolCache({
+                toolName: block.name,
+                toolUseId: block.id,
+                outcome: fromCache ? 'hit' : 'miss',
+              })
+            } catch {
+              // Telemetry must never break a run.
+            }
+          }
         } else {
           toolResult = await tool.call(block.input, context)
         }

@@ -45,6 +45,7 @@
 18. [Quality Gates + Proof-of-Work](#18-quality-gates--proof-of-work)
 19. [Memory（结构化 + 向量检索）](#19-memory)
 20. [Schema Versions 与 Trace](#20-schema-versions-与-trace)
+    - [20.1 Trace 上的可选 perf 字段](#201-trace-上的可选-perf-字段)
 21. [List caches & invalidation hatches](#21-list-caches--invalidation-hatches)
 
 ---
@@ -570,6 +571,7 @@ agent.useTracing(exporter)
 
 - `AGENT_RUN_TRACE_SCHEMA_VERSION = '1.0.0'`——升级时检查 host 的 trace consumer
 - OTel shim 是结构化注入，不强依赖 `@opentelemetry/sdk-node`——你传什么 tracer 它用什么
+- 内建 event kinds：`graph_step`、`guardrail`、`tool_call`、`tool_cache`（Tier A #1 per-call cache 命中/未命中，OTel 映射 `tool.cache.<outcome>`，详见 §20.1）；host 可自定义任意 `kind`
 - 见 `examples/21-tracing-replay.ts` / `27-trace-exporter.ts` / `29-otel-shim.ts`
 
 ---
@@ -934,6 +936,66 @@ import {
 
 - 在你的 trace consumer / artifact storage 里硬编码版本检查
 - 升级 SDK 后比对，schema bump 就跟随升级 reader
+
+---
+
+## 20.1 Trace 上的可选 perf 字段
+
+**是什么**：`result.trace` 上有两个 **可选** 字段，仅在对应 Tier A 能力实际命中时才出现——不出现 = byte-identical 默认行为。详见 [`tier-a-summary.md`](./tier-a-summary.md)。
+
+| 字段 | 出现条件 | 形状 | 何时为空 |
+|---|---|---|---|
+| `tool_cache` | 单 turn 内至少有一次 cacheable tool dispatch | `{ hits, misses }` | 无 read-only + concurrency-safe 工具被调度 |
+| `tool_concurrency_adaptive` | `AgentOptions.adaptiveToolConcurrency` opt-in 且实际跑过 size > 1 的并发 chunk | `{ enabled: true, initial, min, max, final, adjustments[] }` | 未 opt-in 或全部 chunk size = 1 |
+
+```ts
+const r = await run({ prompt: '...', options: {} })
+
+// (1) Tool-result cache（默认就开，仅在有 cacheable 工具时填）
+if (r.trace?.tool_cache) {
+  const { hits, misses } = r.trace.tool_cache
+  console.log(`tool cache: ${hits} hits / ${misses} misses`)
+}
+
+// (2) AIMD adaptive concurrency（必须 opt-in）
+const r2 = await run({
+  prompt: '...',
+  options: { adaptiveToolConcurrency: { min: 1, max: 8, initial: 4 } },
+})
+if (r2.trace?.tool_concurrency_adaptive) {
+  const t = r2.trace.tool_concurrency_adaptive
+  console.log(`AIMD: ${t.initial} → ${t.final}, ${t.adjustments.length} adjustments`)
+  for (const adj of t.adjustments) {
+    console.log(`  batch ${adj.batch_index}: ${adj.previous} → ${adj.current} (${adj.reason})`)
+  }
+}
+```
+
+**Cache 字段语义（contract）**
+
+- 只有 `isReadOnly() === true && isConcurrencySafe() === true` 的工具进 cache；其他工具完全 **bypass**，既不算 hit 也不算 miss。
+- Cache scope = 单 turn；turn 之间不复用。跨 turn 同样的 input 第二次仍算 miss。
+- PostToolUse hook 只在真正 run `tool.call()` 时 fire 一次；cached 命中 **不** fire hook（避免副作用重放）。
+- Contract 锁在 `tests/engine-tool-cache.test.ts`（5 个 test，包含 hits/misses 计数、key 顺序无关、hook fire 次数、跨 turn 重置）。
+
+**实时 per-call 事件（v3.3 tracing）**
+
+`AgentRunTrace.tool_cache` 是 **run 级聚合**，只在 run 结束后能看。
+如果你接了 `TraceStore` / `OtelTraceExporter`，engine 还会在每次 cacheable dispatch 时 append 一个 `kind: 'tool_cache'` 的 `TraceEvent`，payload 形状 `{ toolName, toolUseId, outcome: 'hit' | 'miss' }`，spanId 是 `tool:<name>`（与 `tool_call` event 同 span，便于 OTel 端做父子关联）。OTel exporter 把它映射成 `tool.cache.hit` / `tool.cache.miss` span，attributes 含 `tool.name` / `tool.cache.outcome` / `tool.use_id`。Contract 锁在 `tests/tracing-tool-cache-event.test.ts`。
+
+**AIMD 字段语义（contract）**
+
+- `enabled: true` 是字面量——这个字段存在 ⟺ adaptive 跑过。
+- `adjustments[]` 按时间顺序；`reason: 'error'` = 上个 batch 有工具失败（halve），`reason: 'success'` = clean batch（+1）。
+- `min ≤ final ≤ max`；`initial` 是 host 配的起点（默认等于 resolved `maxToolConcurrency`）。
+- 默认 fallback（不 opt-in）路径**完全不写**这个字段——legacy trace 字节级保持原样。Contract 锁在 `tests/dispatch-executor.test.ts`。
+
+**何时用**
+
+- ✅ debug 为什么 turn 比预期快 / 慢 → 先看 `tool_cache.hits`
+- ✅ 调 `adaptiveToolConcurrency` 的 `min` / `max` / `initial` → 看 `adjustments[]` 的 halve/+1 分布
+- ✅ 写 trace consumer 时按 `if (trace.tool_cache)` 守门，**不要**假设字段一定存在
+- ❌ 不要把这两个字段当作 schema-version 化的承诺——它们是 additive optional，未来可能扩字段；删字段才会 bump `AGENT_RUN_TRACE_SCHEMA_VERSION`
 
 ---
 
