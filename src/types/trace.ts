@@ -231,4 +231,25 @@ export interface AgentRunTrace {
    * stay byte-identical with prior versions.
    */
   tool_concurrency_adaptive?: AgentRunAdaptiveConcurrencyTrace
+  /**
+   * Per-stage timing + status for the 7-stage v2.0 pipeline. Field is
+   * populated by `engine.ts` after each turn. Absent when the engine is
+   * running in the v1-compat fallback path.
+   */
+  pipeline_stages?: Partial<Record<
+    'guard' | 'compact' | 'render' | 'call' | 'stream' | 'tools' | 'decide',
+    AgentRunPipelineStageTrace
+  >>
+}
+
+/**
+ * Per-stage execution trace for the v2.0 pipeline. One entry per stage
+ * per turn aggregated across the run. `status: 'denied'` corresponds to
+ * a `StageDenied` short-circuit; `status: 'skipped'` is for stages that
+ * had no work (e.g. compact when context fits).
+ */
+export interface AgentRunPipelineStageTrace {
+  duration_ms: number
+  status: 'ok' | 'skipped' | 'denied' | 'error'
+  error_message?: string
 }

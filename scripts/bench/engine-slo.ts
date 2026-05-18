@@ -13,6 +13,12 @@ export interface EngineFootprintMetrics {
   testCount: number | null
   /** Wall-time of `npm run test` in milliseconds. `null` if the run failed. */
   testWallMs: number | null
+  /**
+   * Optional retro overall score (0-100). When `undefined`, the check is
+   * omitted (offline-safe — bench can opt out by not running retro). When
+   * `null`, the retro run was attempted and failed → enforced as breach.
+   */
+  retroOverall?: number | null
 }
 
 export interface SloCheck {
@@ -34,9 +40,10 @@ export interface SloVerdict {
  * SLO thresholds — single source of truth alongside docs.
  */
 export const ENGINE_FOOTPRINT_SLOS = {
-  engineLocCeiling: 1100,
-  testCountFloor: 625,
+  engineLocCeiling: 500,
+  testCountFloor: 720,
   testWallMsCeiling: 60_000,
+  retroOverallFloor: 70,
 } as const
 
 function compare(value: number, op: SloCheck['op'], threshold: number): boolean {
@@ -109,6 +116,27 @@ export function evaluateEngineFootprintSlos(metrics: EngineFootprintMetrics): Sl
         : ok
           ? `${(value / 1000).toFixed(1)}s < ${(threshold / 1000).toFixed(0)}s`
           : `${(value / 1000).toFixed(1)}s ≥ ${(threshold / 1000).toFixed(0)}s — suite slowed past the SLO ceiling`,
+    })
+  }
+
+  // Retro overall floor — only enforced when caller passes a value.
+  // `undefined` skips the check (offline-safe). `null` means the retro
+  // run was attempted and failed → enforced as breach.
+  if (metrics.retroOverall !== undefined) {
+    const value = metrics.retroOverall
+    const threshold = ENGINE_FOOTPRINT_SLOS.retroOverallFloor
+    const ok = value !== null && compare(value, '>=', threshold)
+    checks.push({
+      name: 'retro overall',
+      value,
+      threshold,
+      op: '>=',
+      ok,
+      message: value === null
+        ? 'retro run failed — overall score unavailable'
+        : ok
+          ? `${value} ≥ ${threshold}`
+          : `${value} < ${threshold} — retro overall regressed past the SLO floor`,
     })
   }
 

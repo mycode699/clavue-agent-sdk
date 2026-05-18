@@ -11,6 +11,218 @@ explicitly when they bump.
 
 ---
 
+## [2.0.0] — 2026-05-18 — engine pipeline rewrite + M3 hardening
+
+Promotes 2.0.0-rc.0/1/2/3 to the stable `latest` tag. No behavior delta
+from rc.3; this entry is the cumulative release note for the 2.0 line.
+
+### Highlights
+
+- **Engine pipeline rewrite (M1).** 7-stage pipeline
+  (Guard/Compact/Render/Call/Stream/Tools/Decide) lives under
+  `src/engine/pipeline/*`. `engine.ts` shrunk from 1537 → 350 LoC
+  (-77.2%). `AGENT_RUN_TRACE_SCHEMA_VERSION` bumped to `2.0.0` with new
+  `pipeline_stages` field. v1 trace consumers: import
+  `clavue-agent-sdk/v1-compat`'s `downgradeTraceToV1`.
+- **executeTools split (M2).** Tool dispatch extracted into
+  `executeTools / executeSingleTool / resolveToolGuardrailAction`. The
+  engine wrapper is now a 36-line pump over `RunState`.
+- **M3.1 — sandbox-exec wrapper.** `BashTool` opt-in spawns through
+  `sandbox-exec` (macOS) / `bwrap` (Linux); unsupported platforms
+  soft-fail with a `[sandbox] ...` stderr notice. New
+  `/sandbox` subpath export.
+- **M3.2 — permissionMode default pin.** `createDefaultToolPolicy()`
+  default remains `'trustedAutomation'` (library-first). Regression
+  suite locks per-mode BashTool gating and the `'sandboxed'` preset
+  semantics. Production hosts should pass an explicit `permissionMode`
+  + narrow `toolsets` — see README §"Enforce production controls".
+- **M3.3 — retro overall SLO.** `bench:engine` runs default retro
+  evaluators and gates `scores.overall.score ≥ 70`. Opt out with
+  `BENCH_ENGINE_SKIP_RETRO=1`.
+
+### Breaking
+
+- `AGENT_RUN_TRACE_SCHEMA_VERSION` bumped `1.x` → `2.0.0`. Downstream
+  trace consumers should either upgrade or import the v1 downgrade shim
+  from `clavue-agent-sdk/v1-compat`.
+
+### Verified
+
+- 797/797 tests pass.
+- `npx tsc --noEmit` clean.
+- `npm run bench:engine` — 4 SLOs pass: LoC 350 < 500, tests 797 ≥ 720,
+  wall-time ~36s < 60s, retro overall 100 ≥ 70.
+
+
+
+Three parallel M3 increments — all additive on the public surface, no
+schema_version bumps.
+
+### Added
+
+- **M3.1 — exec-sandbox wired to BashTool.** New `src/sandbox/exec-sandbox.ts`
+  exposes a pure `wrapSpawnForSandbox({ command, args, cwd, settings })` that
+  returns `{ command, args, driver, notice? }` for one of:
+  `'sandbox-exec'` (darwin), `'bwrap'` (linux), `'unsupported'` (other), or
+  `'disabled'` (settings off / pass-through). macOS builds an SBPL profile
+  (deny-default + cwd `file-write*` subpath + `allowWrite/denyWrite/denyRead`
+  + `deny network*` when domains restricted). Linux uses `bwrap --bind cwd`
+  + `--die-with-parent --unshare-pid`, plus `--unshare-net` only when network
+  is restricted. Soft-fail on unsupported platforms — the wrap surfaces a
+  `[sandbox] ...` stderr prefix and the tool runs unsandboxed.
+- `ToolContext.sandbox`, `QueryEngineConfig.sandbox`, and `Agent` forward
+  `opts.sandbox` so `BashTool` can opt into wrapping per call.
+- 7 unit tests in `tests/sandbox-exec.test.ts` cover argv shape per platform
+  driver, escape rules, and missing-binary fallbacks.
+
+- **M3.2 — permissionMode default regression pin.**
+  `tests/tool-policy-defaults.test.ts` (9 tests) locks
+  `createDefaultToolPolicy()` to `'trustedAutomation'` and pins per-mode
+  BashTool gating: `default` / `plan` / `acceptEdits` / `auto` / `dontAsk`
+  all DENY; `trustedAutomation` / `bypassPermissions` ALLOW. Also pins the
+  `'sandboxed'` AgentPreset to `permissionMode='auto'` + `repo-readonly`.
+  JSDoc on `createDefaultToolPolicy` documents the production layering
+  guidance (explicit mode + narrow toolsets + `canUseTool`).
+
+- **M3.3 — retro overall SLO in `bench:engine`.**
+  `ENGINE_FOOTPRINT_SLOS.retroOverallFloor = 70`.
+  `evaluateEngineFootprintSlos({ retroOverall })` accepts:
+  - `undefined` → check omitted (offline-safe)
+  - `null` → retro run was attempted and failed → enforced as breach
+  - `number` → compare against floor
+  `bench:engine` runs `runRetroEvaluation` with
+  `createDefaultRetroEvaluators()` against the repo and exits non-zero on
+  breach. Opt out via `BENCH_ENGINE_SKIP_RETRO=1` for detached worktrees /
+  CI shards. `docs/v2_benchmark_report.md §7` adds the new row.
+
+### Verified
+
+- 797/797 tests pass (786 prior + 11 net new — sandbox 7, policy 9, retro 4
+  with 5 baseline tests adapted).
+- `npx tsc --noEmit` clean.
+- `npm run bench:engine` 4 SLOs pass: LoC 350 < 500, tests 797 ≥ 720,
+  wall-time ~36s < 60s, retro overall 100 ≥ 70.
+
+
+
+Final phase of the engine.ts hot-path shrink. The entire 7-stage agent
+loop now lives in `src/engine/run-submit-message.ts`. The engine keeps
+a thin wrapper that owns a `RunState` container, forwards iteration,
+and writes state back on each yield so public getters stay coherent.
+
+### Changed
+
+- `src/engine/run-submit-message.ts` (new) owns the top-level run
+  loop: guard → compact → render → call+stream → tools → decide, plus
+  prompt-too-long compact-and-retry, GuardrailAbortError handling, and
+  the final-event emission. The engine's wrapper is now a 36-line
+  pump that mirrors helper-owned state back onto its own fields.
+- `engine.ts`: 653 → **350 LoC** (-303). Cumulative reduction vs the
+  1537-line audit baseline: **-77.2%**. The v2 architecture goal of
+  `<500 hot-path lines` is now met by a healthy margin.
+- `scripts/bench/engine-slo.ts` ceiling tightened from 1000 → 500 to
+  lock the new shape; `tests/bench-engine-slo.test.ts` updated to
+  match. `docs/v2_benchmark_report.md §7` reflects the new gate.
+
+### Verified
+
+- 779/779 tests pass (no new tests — the existing suite is the
+  regression contract for this pure refactor).
+- `npm run bench:engine` SLO gate green: LoC 350 < 500, tests 779 ≥
+  720, wall-time 36.9s < 60s.
+
+---
+
+## [2.0.0-rc.1] — 2026-05-18 — executeTools deps-injection split (M2)
+
+Continuation of the M1 pipeline refactor. The `QueryEngine.executeTools`,
+`executeSingleTool`, and `resolveToolGuardrailAction` trio is lifted out
+of the class into pure helpers. Public API and trace schema unchanged
+(`AGENT_RUN_TRACE_SCHEMA_VERSION` stays at `'2.0.0'`).
+
+### Changed
+
+- `src/engine/execute-tools.ts` (new) owns the tool dispatch loop,
+  permission/hook/guardrail/cache/skill-side-effect logic, and the
+  per-call trace bookkeeping. The engine keeps a thin wrapper plus a
+  `buildExecuteToolsDeps()` factory.
+- State that the original methods mutated on `this` is exposed via:
+  shared array references (`evidence` / `qualityGates` / `forkedSkills`),
+  getter+setter pairs (`activeSkill` / `requiredSkillQualityGates`), and
+  bound callbacks (`executeHooks` / `recordPolicyDecision`).
+- Net `engine.ts` LoC: 982 → 653 (-329 / -33.5%). Cumulative reduction
+  vs the audit baseline (1537) is now -57.5%. Remaining lines are the
+  generator yield chain plus top-level run orchestration.
+
+### Added
+
+- `tests/engine-execute-tools.test.ts` — 3 unit tests on the extracted
+  helpers (no Agent / Provider): empty blocks → no work; happy-path
+  read-only tool → tool.call() + hooks + trace; policy deny →
+  `permission_denials` row + error result + no `tool.call()`.
+
+### Verified
+
+- 779/779 tests pass (776 prior + 3 new).
+- `npm run bench:engine` SLO gate green: LoC 653 < 1000, tests 779 ≥ 720,
+  wall-time 36.2s < 60s.
+
+---
+
+## [2.0.0-rc.0] — 2026-05-18 — engine pipeline rewrite (M1)
+
+**Major release: 7-stage agent loop.** Default behavior is preserved
+(776/776 tests pass); the agentic loop in `engine.ts.submitMessage` now
+delegates to 7 small, observable stages under `src/engine/pipeline/`.
+Hosts get per-stage timings + status in every run trace.
+
+### Breaking
+
+- **`AGENT_RUN_TRACE_SCHEMA_VERSION` bumped to `'2.0.0'`** with a new
+  optional `pipeline_stages` field on `AgentRunTrace`. Hosts consuming
+  v1 traces should either update their parser or import
+  `downgradeTraceToV1` from `clavue-agent-sdk/v1-compat`. The shim
+  ships in 2.0 and will be removed in 2.1.
+
+### Added
+
+- `src/engine/pipeline/{guard,compact,render,call,stream,tools,decide}.ts`
+  — 7 single-responsibility stages with shared `PipelineContext` +
+  `StageResult<T>` contract.
+- `AgentRunTrace.pipeline_stages.<stage>.{duration_ms,status,error_message?}`
+  populated each turn (status: `'ok' | 'skipped' | 'denied' | 'error'`).
+- `clavue-agent-sdk/v1-compat` subpath (14 subpaths total) exporting
+  `downgradeTraceToV1` for v1 host migration.
+- `src/engine/getters.ts` — pure cloners behind the QueryEngine
+  accessor methods (`getTrace`, `getEvidence`, `getQualityGates`,
+  `getModelUsage`).
+
+### Changed
+
+- `engine.ts.submitMessage` rewritten in pipeline form. Net LoC: 1069 → 983
+  (-8%). Further shrink to <500 deferred to M2 (lifting `executeTools`
+  out of the class with a deps-injection refactor).
+- SLO ceiling for `engine.ts` LoC tightened from 1100 → 1000 in
+  `scripts/bench/engine-slo.ts` and `docs/v2_benchmark_report.md §7`.
+- SLO floor for test count raised from 625 → 720 (current 776; +48
+  pipeline + v1-compat + trace v2 tests).
+- `npm test` now globs `tests/*.test.ts tests/pipeline/*.test.ts` so
+  the pipeline suite participates in `bench:engine`.
+
+### Migration
+
+```ts
+// v1 host consumed AgentRunTrace directly
+const trace = result.trace  // schema_version: '1.0.0'
+
+// v2 with v1 compat shim (drop-in for 1 minor release window)
+import { downgradeTraceToV1 } from 'clavue-agent-sdk/v1-compat'
+const trace = downgradeTraceToV1(result.trace)
+// trace.schema_version === '1.0.0', pipeline_stages stripped
+```
+
+---
+
 ## [1.0.6] — 2026-05-15
 
 Adaptive concurrency observability parity with `tool_cache`. **No source

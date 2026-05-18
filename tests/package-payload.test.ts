@@ -54,8 +54,8 @@ test('npm package payload includes compiled entrypoints and excludes temp artifa
   )
   assert.equal(
     packageJson.scripts?.test,
-    'npx tsx --test tests/*.test.ts',
-    'expected npm test to run the checked-in test suite',
+    'npx tsx --test tests/*.test.ts tests/pipeline/*.test.ts',
+    'expected npm test to run the checked-in test suite (incl. pipeline subdir)',
   )
   assert.equal(packageJson.name, 'clavue-agent-sdk')
   assert.equal(

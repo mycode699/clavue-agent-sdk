@@ -434,6 +434,7 @@ export class Agent {
       guardrails: opts.guardrails,
       onToolViolation: opts.onToolViolation,
       trace: opts.trace,
+      sandbox: opts.sandbox,
     })
     this.currentEngine = engine
 

@@ -48,6 +48,7 @@ export function createToolContext(
     runtimeNamespace: config.runtimeNamespace,
     availableTools: tools.map((tool) => tool.name),
     autonomyMode: config.autonomyMode,
+    sandbox: config.sandbox,
   }
 }
 

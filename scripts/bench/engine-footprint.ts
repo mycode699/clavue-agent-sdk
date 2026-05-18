@@ -15,6 +15,10 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { evaluateEngineFootprintSlos, renderSloVerdict } from './engine-slo.js'
+import {
+  createDefaultRetroEvaluators,
+  runRetroEvaluation,
+} from '../../src/retro/index.js'
 
 const REPO_ROOT = join(import.meta.dirname ?? new URL('.', import.meta.url).pathname, '..', '..')
 
@@ -85,12 +89,15 @@ async function main(): Promise<void> {
   console.log('|---|---:|---:|---:|')
   console.log('| Audit baseline (commit 2567223) | 1537 | — | 0 |')
   console.log('| After Slice A-J (pre-K) | 1162 | -375 | 7 |')
-  console.log(`| After Slice K1-K5 (current) | ${engineLoc} | ${engineLoc - 1537} | ${helperFiles.length} |`)
+  console.log('| After Slice K1-K5 (M1 pipeline) | 983 | -554 | 19 |')
+  console.log('| After M2 (executeTools + runSubmitMessage) | ' + engineLoc + ' | ' + (engineLoc - 1537) + ' | ' + helperFiles.length + ' |')
   console.log('')
   console.log(`Net reduction: **${(((1537 - engineLoc) / 1537) * 100).toFixed(1)}%** vs audit baseline.`)
-  console.log(`v2 architecture goal was <500 hot-path lines; current is ${engineLoc}.`)
-  console.log(`The remaining gap (~${engineLoc - 500} lines) is the generator yield chain plus`)
-  console.log(`top-level run orchestration — those need true pipeline (M2 phase 2), not local extracts.`)
+  if (engineLoc < 500) {
+    console.log(`v2 architecture goal (<500 hot-path lines) met; current is ${engineLoc}.`)
+  } else {
+    console.log(`v2 architecture goal was <500 hot-path lines; current is ${engineLoc} (${engineLoc - 500} over).`)
+  }
 
   console.log('\n## Test suite size and wall-time\n')
   const testRun = await runProcess('npm', ['run', '--silent', 'test'])
@@ -109,8 +116,37 @@ async function main(): Promise<void> {
     console.log(`- Wall-time (single run): **${(testRun.durationMs / 1000).toFixed(1)}s**`)
   }
 
+  // Retro overall score — eval harness wired in M3.3. Offline-safe: any
+  // throw or NaN downgrades to `null`, which the SLO gate treats as
+  // breach. Opt out by setting `BENCH_ENGINE_SKIP_RETRO=1`.
+  console.log('\n## Retro overall score\n')
+  let retroOverall: number | null | undefined
+  if (process.env.BENCH_ENGINE_SKIP_RETRO) {
+    retroOverall = undefined
+    console.log('- Skipped (BENCH_ENGINE_SKIP_RETRO set).')
+  } else {
+    try {
+      const retro = await runRetroEvaluation({
+        target: { name: 'clavue-agent-sdk', cwd: REPO_ROOT },
+        evaluators: createDefaultRetroEvaluators(),
+        runAt: new Date().toISOString(),
+      })
+      const overall = retro.scores.overall.score
+      retroOverall = Number.isFinite(overall) ? overall : null
+      console.log(`- Overall: **${retroOverall ?? '?'}**`)
+      console.log(`- Findings: ${retro.findings.length}`)
+      for (const dim of Object.keys(retro.scores.byDimension)) {
+        const s = retro.scores.byDimension[dim as keyof typeof retro.scores.byDimension]
+        console.log(`  - ${dim}: ${s.score}`)
+      }
+    } catch (err) {
+      retroOverall = null
+      console.log(`- Retro run failed: ${(err as Error).message}`)
+    }
+  }
+
   // Enforced SLO gate — exits non-zero on breach so PRs see the regression.
-  const verdict = evaluateEngineFootprintSlos({ engineLoc, testCount, testWallMs })
+  const verdict = evaluateEngineFootprintSlos({ engineLoc, testCount, testWallMs, retroOverall })
   console.log('\n' + renderSloVerdict(verdict))
   if (!verdict.ok) {
     process.exit(1)

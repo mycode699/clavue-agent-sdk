@@ -67,6 +67,13 @@ export interface ToolContext {
   autonomyMode?: AgentAutonomyMode
   /** Optional shared file state cache (Slice I): Read populates, Edit verifies stale-ness. */
   fileStateCache?: import('../utils/fileCache.js').FileStateCache
+  /**
+   * M3 sandbox settings forwarded by the engine. Tools that spawn shell
+   * commands (BashTool) wrap their spawn through
+   * `sandbox/exec-sandbox.ts` when `sandbox.enabled === true`. Other
+   * tools may ignore it.
+   */
+  sandbox?: import('./sandbox.js').SandboxSettings
 }
 
 export interface ToolResult {
@@ -100,6 +107,18 @@ export interface ToolPolicy {
   permissionMode: PermissionMode
 }
 
+/**
+ * Build the default tool policy for a given `permissionMode`.
+ *
+ * The default — `'trustedAutomation'` — is intentionally permissive so the
+ * library-first SDK works out of the box. Production hosts SHOULD pass an
+ * explicit `permissionMode` (e.g. `'plan'`, `'acceptEdits'`, `'auto'`) and
+ * narrow the tool surface via `toolsets`, `allowedTools`, `disallowedTools`,
+ * and `canUseTool`. For untrusted prompts, prefer the `'sandboxed'` agent
+ * preset, which forces `permissionMode: 'auto'` + `repo-readonly` toolset.
+ *
+ * See README §"Enforce production controls" for the recommended layering.
+ */
 export function createDefaultToolPolicy(permissionMode: PermissionMode = 'trustedAutomation'): ToolPolicy {
   const allow = (): CanUseToolResult => ({ behavior: 'allow', source: 'permission_mode' })
   const deny = (tool: ToolDefinition, reason: string): CanUseToolResult => ({

@@ -7,6 +7,7 @@ import type { Evidence, QualityGateResult, QualityGatePolicy } from './evidence.
 import type { MemoryConfig } from './memory.js'
 import type { OutputSchema } from './content.js'
 import type { ThinkingConfig } from './agent.js'
+import type { SandboxSettings } from './sandbox.js'
 import type { ToolDefinition, ToolPolicy } from './tools.js'
 import type { AgentAutonomyMode } from './runtime.js'
 
@@ -81,4 +82,11 @@ export interface QueryEngineConfig {
    * `tool.name` set, mirroring the graph runtime integration.
    */
   trace?: import('../tracing/runtime.js').TraceStore
+  /**
+   * M3 sandbox — when `enabled`, the engine forwards this to every tool
+   * context so shell-executing tools (BashTool first) can wrap spawns
+   * with `sandbox-exec` (macOS) / `bwrap` (Linux). Unsupported platforms
+   * fall through to unsandboxed execution with a notice.
+   */
+  sandbox?: SandboxSettings
 }

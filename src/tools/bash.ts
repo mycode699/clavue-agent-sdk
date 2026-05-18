@@ -4,6 +4,7 @@
 
 import { spawn } from 'child_process'
 import { defineTool } from './types.js'
+import { wrapSpawnForSandbox } from '../sandbox/exec-sandbox.js'
 
 function classifyShellCommand(command: string): { blocked: boolean; reason?: string; pattern?: string } {
   const destructivePatterns = [
@@ -65,11 +66,23 @@ export const BashTool = defineTool({
 
     const timeoutMs = Math.min(userTimeout || 120000, 600000)
 
+    // M3 sandbox — wrap when settings.enabled. Pass-through when off /
+    // unsupported (notice surfaced in trace via stderr prefix).
+    const wrap = wrapSpawnForSandbox({
+      command: 'bash',
+      args: ['-c', command],
+      cwd: context.cwd,
+      settings: context.sandbox,
+    })
+
     return new Promise<string>((resolve) => {
       const chunks: Buffer[] = []
       const errChunks: Buffer[] = []
+      if (wrap.notice) {
+        errChunks.push(Buffer.from(`[sandbox] ${wrap.notice}\n`))
+      }
 
-      const proc = spawn('bash', ['-c', command], {
+      const proc = spawn(wrap.command, wrap.args, {
         cwd: context.cwd,
         env: { ...process.env },
         timeout: timeoutMs,

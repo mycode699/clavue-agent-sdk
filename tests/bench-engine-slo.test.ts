@@ -16,51 +16,74 @@ import {
 
 test('engine SLO thresholds match docs/v2_benchmark_report.md §7', () => {
   // The docs table is the public contract; this catches accidental drift.
-  assert.equal(ENGINE_FOOTPRINT_SLOS.engineLocCeiling, 1100)
-  assert.equal(ENGINE_FOOTPRINT_SLOS.testCountFloor, 625)
+  assert.equal(ENGINE_FOOTPRINT_SLOS.engineLocCeiling, 500)
+  assert.equal(ENGINE_FOOTPRINT_SLOS.testCountFloor, 720)
   assert.equal(ENGINE_FOOTPRINT_SLOS.testWallMsCeiling, 60_000)
+  assert.equal(ENGINE_FOOTPRINT_SLOS.retroOverallFloor, 70)
 })
 
 test('all-green metrics produce ok verdict', () => {
   const verdict = evaluateEngineFootprintSlos({
-    engineLoc: 1040,
-    testCount: 701,
+    engineLoc: 350,
+    testCount: 779,
     testWallMs: 35_000,
+    retroOverall: 80,
   })
   assert.equal(verdict.ok, true)
-  assert.equal(verdict.checks.length, 3)
+  assert.equal(verdict.checks.length, 4)
   for (const c of verdict.checks) assert.equal(c.ok, true, `${c.name} should pass`)
 })
 
-test('engine.ts LoC at or above 1100 breaches the ceiling', () => {
-  const at = evaluateEngineFootprintSlos({ engineLoc: 1100, testCount: 701, testWallMs: 35_000 })
+test('engine.ts LoC at or above 500 breaches the ceiling', () => {
+  const at = evaluateEngineFootprintSlos({ engineLoc: 500, testCount: 779, testWallMs: 35_000, retroOverall: 80 })
   assert.equal(at.ok, false)
   const locCheck = at.checks.find((c) => c.name === 'engine.ts LoC')
   assert.equal(locCheck?.ok, false)
-  assert.match(locCheck!.message, /1100/)
+  assert.match(locCheck!.message, /500/)
 
-  const above = evaluateEngineFootprintSlos({ engineLoc: 1500, testCount: 701, testWallMs: 35_000 })
+  const above = evaluateEngineFootprintSlos({ engineLoc: 800, testCount: 779, testWallMs: 35_000, retroOverall: 80 })
   assert.equal(above.ok, false)
 })
 
-test('test count below 625 breaches the floor', () => {
-  const v = evaluateEngineFootprintSlos({ engineLoc: 1040, testCount: 624, testWallMs: 35_000 })
+test('test count below 720 breaches the floor', () => {
+  const v = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: 719, testWallMs: 35_000, retroOverall: 80 })
   assert.equal(v.ok, false)
   const c = v.checks.find((c) => c.name === 'test count')
   assert.equal(c?.ok, false)
-  assert.match(c!.message, /624 < 625/)
+  assert.match(c!.message, /719 < 720/)
 })
 
 test('test wall-time at or above 60s breaches the ceiling', () => {
-  const v = evaluateEngineFootprintSlos({ engineLoc: 1040, testCount: 701, testWallMs: 60_000 })
+  const v = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: 779, testWallMs: 60_000, retroOverall: 80 })
   assert.equal(v.ok, false)
   const c = v.checks.find((c) => c.name === 'test wall-time')
   assert.equal(c?.ok, false)
   assert.match(c!.message, /60\.0s/)
 })
 
+test('retro overall below 70 breaches the floor', () => {
+  const v = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: 779, testWallMs: 35_000, retroOverall: 69 })
+  assert.equal(v.ok, false)
+  const c = v.checks.find((c) => c.name === 'retro overall')
+  assert.equal(c?.ok, false)
+  assert.match(c!.message, /69 < 70/)
+})
+
+test('null retro (skipped or failed) is treated as a soft skip when undefined', () => {
+  // undefined → SLO not enforced (offline-safe). null → enforced and breached.
+  const skipped = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: 779, testWallMs: 35_000 })
+  assert.equal(skipped.ok, true)
+  assert.equal(skipped.checks.length, 3, 'undefined retro → no retro check')
+
+  const broken = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: 779, testWallMs: 35_000, retroOverall: null })
+  assert.equal(broken.ok, false)
+  const c = broken.checks.find((c) => c.name === 'retro overall')
+  assert.equal(c?.ok, false)
+  assert.match(c!.message, /retro run failed/)
+})
+
 test('null metrics (test run failure) breach the verdict', () => {
-  const v = evaluateEngineFootprintSlos({ engineLoc: 1040, testCount: null, testWallMs: null })
+  const v = evaluateEngineFootprintSlos({ engineLoc: 350, testCount: null, testWallMs: null })
   assert.equal(v.ok, false)
   const count = v.checks.find((c) => c.name === 'test count')
   const wall = v.checks.find((c) => c.name === 'test wall-time')
