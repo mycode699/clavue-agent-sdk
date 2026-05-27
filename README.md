@@ -138,6 +138,15 @@ CLAVUE_AGENT_API_KEY=... npx tsx examples/31-worker-thread-subagent.ts
   + structured outputs.
 - [`docs/programmatic-integration-guide.md`](./docs/programmatic-integration-guide.md)
   — embedding patterns: services, CI, workers, internal platforms.
+- [`docs/desktop-im-archiver-integration.md`](./docs/desktop-im-archiver-integration.md)
+  — handbook for embedding the SDK into a desktop app that archives
+  WeChat / Feishu / QQ / DingTalk messages via clipboard + screenshots
+  (no client internals touched). Pairs with `examples/33-im-archiver.ts`.
+- [`docs/desktop-tools-integration.md`](./docs/desktop-tools-integration.md)
+  — opt-in `clavue-agent-sdk/desktop` subpath: clipboard, screen capture,
+  file search, open folders/apps/URLs, draft emails, system notifications.
+  Per-app recipes for WeChat / Lark / Office / WPS / Gmail. Pairs with
+  `examples/34-desktop-tools.ts`.
 
 **Upgrade & contracts**
 
@@ -1610,6 +1619,8 @@ Register custom skills with `registerSkill()`.
 | 15  | `examples/15-self-improvement.ts`    | Opt-in run learning and improvement memories |
 | 16  | `examples/16-background-agent-jobs.ts` | Durable background AgentJob APIs       |
 | 32  | `examples/32-tier-a-performance.ts`  | **Offline** demo: tool cache, adaptive concurrency, fallback chain, memory consolidation |
+| 33  | `examples/33-im-archiver.ts`          | Desktop IM archiver — clipboard + screenshot + vision classification (WeChat / Feishu / QQ / DingTalk) |
+| 34  | `examples/34-desktop-tools.ts`        | `clavue-agent-sdk/desktop` subpath demo — clipboard, screencap, file search, open folders, email draft, notify |
 | web | `examples/web/`                       | Web chat UI for testing                |
 
 Run the offline smoke-tested example:

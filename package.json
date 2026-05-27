@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/mycode699/clavue-agent-sdk/issues"
   },
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "In-process TypeScript agent runtime with multi-agent graph DSL, live tracing, 4-scope guardrails, capability-token sandbox, RAG, framework-agnostic Generative UI, voice adapters, worker_thread subagent isolation, Anthropic prompt caching, streaming, and structured outputs. Anthropic + OpenAI-compatible.",
   "type": "module",
   "main": "./dist/index.js",
@@ -81,6 +81,10 @@
     "./voice": {
       "types": "./dist/voice/index.d.ts",
       "import": "./dist/voice/index.js"
+    },
+    "./desktop": {
+      "types": "./dist/desktop/index.d.ts",
+      "import": "./dist/desktop/index.js"
     },
     "./v1-compat": {
       "types": "./dist/subpath/v1-compat.d.ts",

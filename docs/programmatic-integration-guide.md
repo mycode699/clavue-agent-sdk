@@ -1059,7 +1059,91 @@ Prompt tips:
 - State stop conditions.
 - Do not mix unrelated tasks in one prompt.
 
-## 22. Release And npm Docs
+## 22. Desktop Integration: Clipboard, Screenshots, IM Archiving
+
+This section answers a common embedding question: *"Can the SDK be wired into a desktop app that watches the user's screen and clipboard, classifies messages from WeChat / Feishu / QQ / DingTalk, and archives them?"*
+
+**Yes — but the SDK is the brain, not the hands.** It does not bundle clipboard access, screen capture, OCR, or IM-specific protocol code. Those are platform-dependent and intentionally kept out of the core. You provide them as `tool()` definitions; the SDK handles the agent loop, vision, classification, and persistence orchestration.
+
+### 22.1 What The SDK Already Gives You
+
+| Capability | Where | Used For |
+| --- | --- | --- |
+| Vision input on tool results | `tool()` returning `{ type: 'image', data, mimeType }` | Screenshots fed straight to Claude / GPT-4o — **no separate OCR step** |
+| In-process tool injection | `createSdkMcpServer({ tools })` + `mcpServers` option | Zero-IPC tool calls from the host |
+| Per-call host veto | `canUseTool(name, input)` in `AgentOptions` | Privacy / consent gate before any tool runs |
+| Lifecycle observability | `hooks.PreToolUse`, `PostToolUse`, `Stop` | Audit logs, redaction, rate limits |
+| Cancellation | `abortSignal` in `AgentOptions` | Hotkey-cancel from the host |
+| Streaming events | `agent.query()` async generator | Live UI updates while the agent runs |
+
+### 22.2 What You Bring As Custom Tools
+
+The SDK does **not** ship these because they depend on platform binaries and the host's UX:
+
+- **Clipboard reader** — `pbpaste` (macOS), `Get-Clipboard` (Windows), `wl-paste` / `xclip` (Linux).
+- **Screen capture** — `screencapture` (macOS), `nircmd` / `screenshot-desktop` (Windows), `grim` / `scrot` (Linux).
+- **OCR (optional)** — only if your model is non-vision. Otherwise return the image directly.
+- **Database sink** — your real Postgres / SQLite / S3 store.
+- **Hotkey trigger** — Hammerspoon (macOS), AutoHotkey (Windows), Electron `globalShortcut` (cross-platform).
+
+### 22.3 Minimal Integration Shape
+
+```ts
+import { createAgent, createSdkMcpServer, tool } from "clavue-agent-sdk";
+
+const archiver = createSdkMcpServer({
+  name: "im_archiver",
+  tools: [readClipboard, captureScreen, archiveMessage], // your tool() defs
+});
+
+const agent = createAgent({
+  systemPrompt: "Pipeline: read_clipboard or capture_screen → extract → classify → archive_message.",
+  mcpServers: { im_archiver: archiver },
+  allowedTools: [
+    "mcp__im_archiver__read_clipboard",
+    "mcp__im_archiver__capture_screen",
+    "mcp__im_archiver__archive_message",
+  ],
+  permissionMode: "default",
+  canUseTool: async (name, input) => /* host privacy gate */ ({ behavior: "allow", updatedInput: input }),
+});
+
+// Wire to a global hotkey in your host app:
+hostApp.on("hotkey:archive", () => agent.run("Archive what I just copied or what is on screen."));
+```
+
+A working end-to-end script is in [`examples/33-im-archiver.ts`](../examples/33-im-archiver.ts). For the full integration handbook (consent gates, hooks, hotkeys, DB schema, security checklist, verification matrix) see [`docs/desktop-im-archiver-integration.md`](./desktop-im-archiver-integration.md).
+
+### 22.4 Why Screenshots Beat OCR Here
+
+For Claude 3.5+ and GPT-4o the image content block is read directly. A typical 1024×1024 chat-window screenshot consumes ~1.5k input tokens and the model returns sender / body / timestamps without a separate OCR call. **Skip OCR unless you are running on a non-vision model**, in which case wrap PaddleOCR / Tesseract / a cloud OCR service in a tool that returns text.
+
+### 22.5 Boundaries — Be Honest With Yourself
+
+The clipboard + screenshot pattern is the **cleanest** way to embed messaging archiving because it touches nothing the IM client owns. It also means:
+
+| Limitation | Mitigation |
+| --- | --- |
+| Triggered by user, not continuous | Add a hotkey or scheduled `cron` tool; do not silently watch |
+| Per-action vision token cost (~1.5k / image) | Set `maxTurns`, `maxBudgetUsd`, batch via `read_clipboard` when possible |
+| Single-window screenshots only — full-screen captures get downscaled and lose text | Default `region` to `interactive` so the user picks the chat window |
+| Only what the user can see / copy | For higher-fidelity Feishu archiving use the official Open Platform webhooks instead |
+
+### 22.6 Compliance Notes
+
+- Reading IM clients' local SQLite stores (`MSG*.db` etc.) is out of scope and typically violates platform ToS. The clipboard + screenshot pipeline keeps you on **user-initiated, user-visible** data.
+- For Feishu, prefer the official Open Platform event subscription. Wrap the webhook handler in a tool and let the agent classify the structured event payload.
+- Always surface a consent UI in `canUseTool` before `capture_screen` runs — it can capture content unrelated to the chat.
+
+### 22.7 Verification
+
+```bash
+npm run build
+npx tsx --test tests/single-tool-helpers.test.ts
+npx tsx examples/33-im-archiver.ts   # needs CLAVUE_AGENT_API_KEY + a vision model
+```
+
+## 23. Release And npm Docs
 
 GitHub shows the repository `README.md` immediately after pushing. npm shows the package README and metadata from the latest published version.
 
