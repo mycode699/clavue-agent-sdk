@@ -11,6 +11,7 @@ import type {
   SkillValidationOptions,
   SkillValidationResult,
 } from './types.js'
+import { inferSkillRiskTier } from '../orchestration-policy.js'
 import {
   DEFAULT_RUNTIME_NAMESPACE,
   getRuntimeNamespace,
@@ -392,7 +393,7 @@ export function formatSkillsForPrompt(
       skill.qualityGates?.filter((entry) => entry.required !== false).map((entry) => entry.name),
     )
 
-    const line = `- ${skill.name}: ${desc}${trigger}${argumentHint}${preconditions}${artifacts}${gates}`
+    const line = `- ${skill.name}: ${desc}${trigger}${argumentHint}${preconditions}${artifacts}${gates} TIER: ${inferSkillRiskTier(skill)}`
 
     if (used + line.length > budget) break
     lines.push(line)

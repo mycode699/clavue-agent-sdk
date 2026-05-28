@@ -1,3 +1,5 @@
+import type { SkillDefinition } from './skills/types.js'
+import type { ToolDefinition, ToolSafetyAnnotations } from './types/tools.js'
 import type { ResolvedWorkflowServiceConfig, WorkflowIssueInput } from './workflow-contract.js'
 import { normalizeWorkflowState } from './workflow-contract.js'
 
@@ -187,4 +189,90 @@ export function shouldReleaseIssueForState(
   if (normalizedSet(config.tracker.terminal_states).has(normalized)) return { release: true, reason: 'terminal' }
   if (!normalizedSet(config.tracker.active_states).has(normalized)) return { release: true, reason: 'inactive' }
   return { release: false }
+}
+
+// --------------------------------------------------------------------------
+// Dynamic synthesis risk tiers
+//
+// Three coexisting routes for capability synthesis (the "roundtable" model):
+//   - system_initiated:   runtime can compose/route without prompting (low risk)
+//   - llm_requested:      LLM asks; engine permission gate handles it (mid risk)
+//   - approval_required:  must pass an explicit gate before exposure (high risk)
+//
+// Routing is pure inference from existing ToolSafetyAnnotations + isReadOnly().
+// No tool definitions need to change.
+// --------------------------------------------------------------------------
+
+export type SynthesisRiskTier = 'system_initiated' | 'llm_requested' | 'approval_required'
+
+export interface SynthesisRoutingBuckets<T extends ToolDefinition = ToolDefinition> {
+  system_initiated: T[]
+  llm_requested: T[]
+  approval_required: T[]
+}
+
+function resolveToolSafety(tool: ToolDefinition): Required<
+  Pick<
+    ToolSafetyAnnotations,
+    'read' | 'write' | 'shell' | 'network' | 'externalState' | 'destructive' | 'approvalRequired'
+  >
+> {
+  const safety = tool.safety ?? {}
+  const read = safety.read ?? tool.isReadOnly?.() === true
+  const write = safety.write ?? !read
+  return {
+    read,
+    write,
+    shell: safety.shell ?? false,
+    network: safety.network ?? false,
+    externalState: safety.externalState ?? false,
+    destructive: safety.destructive ?? false,
+    approvalRequired: safety.approvalRequired ?? false,
+  }
+}
+
+export function inferSynthesisRiskTier(tool: ToolDefinition): SynthesisRiskTier {
+  const safety = resolveToolSafety(tool)
+
+  // High tier: anything that can run shell OR is destructive against external state.
+  // Local-only destructive (Edit/Write) stays in the mid tier — engine permission
+  // gates and acceptEdits mode are already designed for that path.
+  if (safety.shell) return 'approval_required'
+  if (safety.destructive && safety.externalState) return 'approval_required'
+
+  // Low tier: pure read-only, no writes, no network, no external state.
+  if (safety.read && !safety.write && !safety.network && !safety.externalState && !safety.destructive) {
+    return 'system_initiated'
+  }
+
+  // Everything else: local writes, network reads, non-destructive external state.
+  return 'llm_requested'
+}
+
+export function routeSynthesisCandidates<T extends ToolDefinition>(tools: T[]): SynthesisRoutingBuckets<T> {
+  const buckets: SynthesisRoutingBuckets<T> = {
+    system_initiated: [],
+    llm_requested: [],
+    approval_required: [],
+  }
+  for (const tool of tools) {
+    buckets[inferSynthesisRiskTier(tool)].push(tool)
+  }
+  return buckets
+}
+
+/**
+ * Skill counterpart to `inferSynthesisRiskTier`.
+ *
+ * Skills don't carry ToolSafetyAnnotations. They expose other risk signals:
+ *   - `context: 'fork'` spawns a subagent → approval tier
+ *   - `permissions.requiresApproval` is an explicit host signal → approval tier
+ *   - `qualityGates` declared → mid tier (must pass gates before completion)
+ *   - inline skill with no gates and no approval → low tier
+ */
+export function inferSkillRiskTier(skill: SkillDefinition): SynthesisRiskTier {
+  if (skill.context === 'fork') return 'approval_required'
+  if (skill.permissions?.requiresApproval === true) return 'approval_required'
+  if (Array.isArray(skill.qualityGates) && skill.qualityGates.length > 0) return 'llm_requested'
+  return 'system_initiated'
 }

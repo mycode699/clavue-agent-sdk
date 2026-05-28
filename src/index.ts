@@ -343,6 +343,9 @@ export type {
 } from './proof-of-work.js'
 export {
   calculateRetryDelayMs,
+  inferSkillRiskTier,
+  inferSynthesisRiskTier,
+  routeSynthesisCandidates,
   selectDispatchCandidates,
   shouldReleaseIssueForState,
 } from './orchestration-policy.js'
@@ -356,6 +359,8 @@ export type {
   OrchestrationRuntimeSnapshot,
   RetryDelayOptions,
   SelectDispatchCandidatesInput,
+  SynthesisRiskTier,
+  SynthesisRoutingBuckets,
 } from './orchestration-policy.js'
 export {
   runRetroEvaluation,

@@ -6,6 +6,7 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { inferSynthesisRiskTier } from '../orchestration-policy.js'
 import { parseCommaSeparatedList } from '../utils/parsing.js'
 import { getRuntimeNamespace, type RuntimeNamespaceContext } from '../utils/runtime.js'
 
@@ -89,7 +90,7 @@ export const ToolSearchTool: ToolDefinition = {
     }
 
     const lines = matches.map(t =>
-      `- ${t.name}: ${t.description.slice(0, 200)}`
+      `- ${t.name}: ${t.description.slice(0, 200)} [tier: ${inferSynthesisRiskTier(t)}]`
     )
 
     return {

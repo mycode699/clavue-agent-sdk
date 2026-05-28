@@ -11,6 +11,7 @@ import type {
 } from './types.js'
 import { applyRuntimeProfile } from './runtime-profiles.js'
 import { getAllBaseTools, filterTools, getToolsetTools, isToolsetName } from './tools/index.js'
+import { routeSynthesisCandidates, inferSkillRiskTier, type SynthesisRiskTier } from './orchestration-policy.js'
 import { initBundledSkills, getUserInvocableSkills } from './skills/index.js'
 import { getMemoryStoreInfo } from './memory.js'
 import { listSessions } from './session.js'
@@ -116,6 +117,7 @@ function checkTools(options: DoctorOptions): DoctorCheck {
     : []
   const unknownAllowedTools = (options.allowedTools || []).filter((name) => !available.has(name))
   const unknownDisallowedTools = (options.disallowedTools || []).filter((name) => !available.has(name))
+  const riskTierCounts = countRiskTiers(tools)
 
   if (unknownToolsets.length > 0) {
     return {
@@ -123,7 +125,7 @@ function checkTools(options: DoctorOptions): DoctorCheck {
       category: 'tools',
       status: 'error',
       message: 'One or more configured toolsets are not recognized.',
-      details: { unknownToolsets, toolCount: tools.length },
+      details: { unknownToolsets, toolCount: tools.length, riskTierCounts },
     }
   }
 
@@ -133,7 +135,7 @@ function checkTools(options: DoctorOptions): DoctorCheck {
       category: 'tools',
       status: 'error',
       message: 'Tool names must be unique.',
-      details: { duplicateNames, toolCount: tools.length },
+      details: { duplicateNames, toolCount: tools.length, riskTierCounts },
     }
   }
 
@@ -143,7 +145,7 @@ function checkTools(options: DoctorOptions): DoctorCheck {
       category: 'tools',
       status: 'warn',
       message: 'Some configured tool names do not match built-in tools.',
-      details: { unknownRequestedTools, unknownAllowedTools, unknownDisallowedTools, toolCount: tools.length },
+      details: { unknownRequestedTools, unknownAllowedTools, unknownDisallowedTools, toolCount: tools.length, riskTierCounts },
     }
   }
 
@@ -152,7 +154,16 @@ function checkTools(options: DoctorOptions): DoctorCheck {
     category: 'tools',
     status: 'ok',
     message: `Resolved ${tools.length} tool(s).`,
-    details: { toolCount: tools.length, tools: toolNames },
+    details: { toolCount: tools.length, tools: toolNames, riskTierCounts },
+  }
+}
+
+function countRiskTiers(tools: ToolDefinition[]): Record<SynthesisRiskTier, number> {
+  const buckets = routeSynthesisCandidates(tools)
+  return {
+    system_initiated: buckets.system_initiated.length,
+    llm_requested: buckets.llm_requested.length,
+    approval_required: buckets.approval_required.length,
   }
 }
 
@@ -178,6 +189,13 @@ function resolveTools(options: DoctorOptions): ToolDefinition[] {
 
 function checkSkills(): DoctorCheck {
   const skills = getUserInvocableSkills()
+  const riskTierCounts: Record<SynthesisRiskTier, number> = {
+    system_initiated: 0,
+    llm_requested: 0,
+    approval_required: 0,
+  }
+  for (const skill of skills) riskTierCounts[inferSkillRiskTier(skill)]++
+
   return {
     name: 'skills.registry',
     category: 'skills',
@@ -185,7 +203,7 @@ function checkSkills(): DoctorCheck {
     message: skills.length > 0
       ? `Registered ${skills.length} user-invocable skill(s).`
       : 'No user-invocable skills are registered.',
-    details: { skillCount: skills.length, skills: skills.map((skill) => skill.name) },
+    details: { skillCount: skills.length, skills: skills.map((skill) => skill.name), riskTierCounts },
   }
 }
 
