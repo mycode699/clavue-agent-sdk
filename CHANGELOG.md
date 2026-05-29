@@ -11,6 +11,47 @@ explicitly when they bump.
 
 ---
 
+## [2.2.0] — 2026-05-29 — synthesis risk-tier routing
+
+### Added
+
+- **Synthesis risk-tier routing layer** (`src/orchestration-policy.ts`). A
+  pure-function classification over the existing `ToolSafetyAnnotations`
+  metadata that sorts every tool/skill into one of three tiers —
+  `system_initiated` (read-only, no side effects), `llm_requested` (local
+  write / network read / non-destructive external), `approval_required`
+  (shell, or destructive + external state). No tool or skill definitions
+  changed; new capabilities are classified automatically from metadata they
+  already carry.
+- New public API (root barrel + `clavue-agent-sdk/contracts` subpath):
+  `inferSynthesisRiskTier(tool)`, `inferSkillRiskTier(skill)`,
+  `routeSynthesisCandidates(tools)`, plus the `SynthesisRiskTier` union and
+  `SynthesisRoutingBuckets<T>` interface.
+- Tier is surfaced at four read points without changing behavior:
+  `ToolSearch` result lines (`[tier: <tier>]`), `formatSkillsForPrompt`
+  (`TIER: <tier>`), `doctor` `tools.registry` + `skills.registry`
+  (`details.riskTierCounts`), and orchestration pre-grouping buckets.
+
+### Notes
+
+- **No schema-version bumps.** Tier is a pure runtime classification layer
+  *above* the engine permission gate — it does not become part of any
+  `*_SCHEMA_VERSION` contract. `engine.ts` is untouched; the existing
+  `canUseTool` + workspace-path containment remain the only execution gate.
+- Distribution on the bundled set: TOOLS `{system_initiated: 4,
+  llm_requested: 24, approval_required: 10}` (38 total); SKILLS
+  `{5, 4, 3}` (12 total).
+- Design rationale: `docs/superpowers/specs/2026-05-29-dynamic-synthesis-roundtable.md`.
+
+### Verified
+
+- 827/827 tests pass.
+- `npx tsc --noEmit` clean.
+- `npm run bench:engine` — 4 SLOs pass: engine.ts LoC 350 < 500, tests
+  827 ≥ 720, wall-time ~38s < 60s, retro overall 100 ≥ 70.
+
+---
+
 ## [2.0.0] — 2026-05-18 — engine pipeline rewrite + M3 hardening
 
 Promotes 2.0.0-rc.0/1/2/3 to the stable `latest` tag. No behavior delta
